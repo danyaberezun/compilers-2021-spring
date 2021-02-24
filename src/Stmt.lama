@@ -4,23 +4,39 @@ import State;
 import Expr;
 import World;
 
--- Evaluates a statement "stmt" in a configuration "c".
--- A configuration is a pair of a state "s" and a world "w".
--- Returns a final configuration (if any)
---
--- A statement is represented by a data structure of the following shape:
---
--- stmt = Assn   (string, expr)     |
---        Seq    (stmt, stmt)       |
---        Skip                      |
---        Read   (string)           |
---        Write  (expr)             |
+-- Types:
+--   World: [[int], [int]]
+--   Stmt :: Assn    (string, expr)
+--           | Seq   (stmt, stmt)
+--           | Skip
+--           | Read  (string)
+--           | Write (expr)
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+-- Implementation of the big-step operational semantics for statements.
+-- Evaluates a statement `stmt` in a configuration `c`.
+-- 
+-- Parameters:
+--   st :: State
+--   w :: World
+--   stmt :: Stmt
+--
+-- Returns: 
+--   [State, World]
+
+fun eval ([st, w], stmt) {
+  case stmt of
+    Assn (x, e) -> [st <- [x, evalExpr (st, e)], w]
+    | Seq (s1, s2) -> eval (eval ([st, w], s1), s2)
+    | Skip -> [st, w]
+    | Read (x) -> case readWorld (w) of
+        [z, nw] -> [st <- [x, z], nw]
+      esac
+    | Write (e) -> [st, writeWorld (evalExpr (st, e), w)]
+  esac
 }
 
--- Evaluates a program with a given input and returns an output
+-- Evaluates a program with a given input and returns an output.
+
 public fun evalStmt (input, stmt) {
   eval ([emptyState, createWorld (input)], stmt).snd.getOutput
 }
