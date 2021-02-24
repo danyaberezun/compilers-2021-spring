@@ -1,0 +1,9 @@
+language: c
+services:
+  - docker
+before_install:
+    - wget --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$(wget --quiet --save-cookies /tmp/cookies.txt --keep-session-cookies --no-check-certificate 'https://docs.google.com/uc?export=download&id=1XpZ9YqArvAm_0a67G5K8VjUK7FdOCJLZ' -O- | sed -rn 's/.*confirm=([0-9A-Za-z_]+).*/\1\n/p')&id=1XpZ9YqArvAm_0a67G5K8VjUK7FdOCJLZ" -O cw-20201.tar.gz && rm -rf /tmp/cookies.txt
+    - docker load < cw-20201.tar.gz
+    - docker run -d -it --name cw-2021 -v $(pwd):/usr/share/compiler-workout berezun/cw-2021
+script:
+     docker exec -it cw-2021 sh test.sh 

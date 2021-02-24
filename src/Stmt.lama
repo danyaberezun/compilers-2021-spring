@@ -16,8 +16,15 @@ import World;
 --        Read   (string)           |
 --        Write  (expr)             |
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+fun eval (c@[state, world], stmt) {
+  case stmt of
+    Skip -> c |
+    Assn (x, e) -> [state <- [x, evalExpr (state, e)], world] |
+    Read (x) -> var newWorld = readWorld (world); [state <- [x, newWorld.fst], newWorld.snd] |
+    Write (e) -> [state, writeWorld (evalExpr (state, e), world)] |
+    Seq (s1, s2) -> eval (eval (c, s1), s2) | 
+    _ -> failure("Bad eval") 
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output

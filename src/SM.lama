@@ -27,7 +27,43 @@ public fun showSM (prg) {
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  foldl (fun([stack, state, world], insn){
+    case insn of 
+      BINOP (op) -> case stack of
+        right:left:newStack -> var head = case op of
+          "+" -> left + right |
+          "-" -> left - right |
+          "*" -> left * right |
+          "/" -> left / right |
+          "%" -> left % right |
+          "<" -> left < right |
+          ">" -> left > right |
+          "<=" -> left <= right |
+          ">=" -> left >= right |
+          "==" -> left == right |
+          "!=" -> left != right |
+          "&&" -> left && right |
+          "!!" -> left !! right |
+          _ -> failure ("Bad operation\n")
+        esac;
+        [head:newStack, state, world]
+        |
+        _ -> failure ("Empty stack") 
+      esac |
+      CONST (n) -> [n:stack, state, world] |
+      READ -> var newWorld = readWorld (world); [newWorld.fst:stack, state, newWorld.snd] |
+      WRITE -> case stack of
+        x:xs -> [xs, state, writeWorld (x, world)] |
+        _ -> failure ("Empty stack") 
+      esac |
+      LD (x) -> [state(x):stack, state, world] |
+      ST (x) -> case stack of 
+        y:ys -> [ys, state <- [x, y], world] |
+        _ -> failure ("Empty stack")
+      esac |
+      _ -> failure ("Eval failure")
+    esac
+  }, c, insns)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -36,14 +72,33 @@ public fun evalSM (input, insns) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+-- Takes an expression, returns a list (of, possibly, lists)
+-- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of 
+    Var (n) -> singletonBuffer (LD (n)) |
+    Const (n) -> singletonBuffer (CONST (n)) |
+    Binop (op, left, right) -> compileExpr (left) <+> compileExpr (right) <+ BINOP (op) |
+    _ -> failure("Bad expression")
+  esac
+}
+
+
+
+fun insideCompileSM(stmt){
+  case stmt of 
+    Skip -> {} |
+    Assn (x, e) -> compileExpr (e) <+ ST (x) |
+    Read (x) -> listBuffer ({READ, ST (x)}) |
+    Write (e) -> compileExpr (e) <+ WRITE |
+    Seq (s1, s2) -> insideCompileSM (s1) <+> insideCompileSM (s2) |
+    _ -> failure("Bad statement")
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (insideCompileSM (stmt))
 }
