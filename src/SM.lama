@@ -24,10 +24,46 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
+public fun evalInsnRead ([stack, st, w], READ) {
+  var world = readWorld (w);
+  [world[0] : stack, st, world[1]]
+}
+
+public fun evalInsnWrite ([value : stack, st, w], WRITE) {
+  [stack, st, writeWorld (value, w)]
+}
+
+public fun evalInsnBinop ([exprRight : exprLeft : stack, st, w], BINOP (op)) {
+  [evalExprBinop (op, exprLeft, exprRight) : stack, st, w]
+}
+
+public fun evalInsnLd ([stack, st, w], LD (name)) {
+  [st(name) : stack, st, w]
+}
+
+public fun evalInsnSt ([value:stack, st, w], ST (name)) {
+  [stack, st <- [name, value], w]
+}
+
+public fun evalInsnConst ([stack, st, w], CONST (value)) {
+  [value : stack, st, w]
+}
+
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  var buffer = getBuffer (insns);
+  foldl (fun (config, insn) {
+    case insn of
+      READ      -> evalInsnRead (config, insn) |
+      WRITE     -> evalInsnWrite (config, insn) |
+      BINOP (_) -> evalInsnBinop (config, insn) |
+      LD (_)    -> evalInsnLd (config, insn) |
+      ST (_)    -> evalInsnSt (config, insn) |
+      CONST (_) -> evalInsnConst (config, insn) |
+      _         -> failure ("eval is not implemented for this operation\n")
+    esac
+  }, c, buffer)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -35,16 +71,60 @@ public fun evalSM (input, insns) {
   eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
+public fun compileExprVar (Var (name)) {
+  singletonBuffer (LD (name))
+}
+
+public fun compileExprConst (Const (value)) {
+  singletonBuffer (CONST (value))
+}
+
+public fun compileExprBinop (Binop (op, exprLeft, exprRight)) {
+  compileExpr (exprLeft) <+> compileExpr (exprRight) <+> singletonBuffer (BINOP (op))
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list (of, possibly, lists)
 -- of stack machine instructions
-fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+public fun compileExpr (expr) {
+  case expr of
+    Var (_)         -> compileExprVar (expr) | 
+    Const (_)       -> compileExprConst (expr) |
+    Binop (_, _, _) -> compileExprBinop (expr) |
+    _               -> failure ("compileExpr is not implemented for this operation\n")
+  esac
 }
+
+public fun compileStmtAssn (Assn (name, expr)) {
+  compileExpr (expr) <+> singletonBuffer (ST (name))
+}
+
+public fun compileStmtSeq (Seq (stmtLeft, stmtRight)) {
+  compileSM (stmtLeft) <+> compileSM (stmtRight)
+}
+
+public fun compileStmtRead (Read (name)) {
+  singletonBuffer (READ) <+> singletonBuffer (ST (name))
+}
+
+public fun compileStmtWrite (Write (expr)) {
+  compileExpr (expr) <+> singletonBuffer (WRITE)
+} 
+
+public fun compileStmtSkip (Skip) {
+  emptyBuffer ()
+} 
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  case stmt of
+    Assn (_, _) -> compileStmtAssn (stmt) |
+    Seq (_, _)  -> compileStmtSeq (stmt) |
+    Skip        -> compileStmtSkip (stmt) |
+    Read (_)    -> compileStmtRead (stmt) |
+    Write (_)   -> compileStmtWrite (stmt) |
+    _           -> failure ("compileSM is not implemented for this operation\n")
+  esac
 }
