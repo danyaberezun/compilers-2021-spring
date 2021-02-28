@@ -288,6 +288,53 @@ fun compile (env, code) {
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
+        | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s)]
+            esac
+        | LD (x) ->
+            case env.addGlobal (x).allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac
+        | ST (x)  ->
+            case env.addGlobal (x).pop of
+              [s, env] -> [env, code <+> move (s, env.loc (x))]
+            esac
+        | BINOP (op) ->
+            case env.pop2 of
+              [x, y, env] -> 
+                case op of
+                  "+" -> [env.push(x), code <+ Mov (y, eax) <+ Binop(op, x, eax) <+ Mov (eax, x)]
+                | "-" -> [env.push(x), code <+ Mov (y, eax) <+ Binop(op, x, eax) <+ Mov (eax, x)]
+                | "*" -> [env.push(x), code <+ Mov (y, eax) <+ Binop(op, x, eax) <+ Mov (eax, x)]
+                | "/" ->
+                  case env.allocate of
+                    [s, env] -> [env, code <+ Mov (y, eax)
+                                           <+ Cltd 
+                                           <+ Push (ebx)
+                                           <+ Mov (x, ebx)
+                                           <+ IDiv (ebx)
+                                           <+ Pop (ebx)
+                                           <+ Mov (eax, s)]
+                  esac
+                | "%" ->
+                  case env.allocate of
+                    [s, env] -> [env, code <+ Mov (y, eax)
+                                           <+ Cltd 
+                                           <+ Push (ebx)
+                                           <+ Mov (x, ebx)
+                                           <+ IDiv (ebx)
+                                           <+ Pop (ebx)
+                                           <+ Mov (edx, s)]
+                  esac
+                |  _ ->
+                  case env.allocate of
+                    [s, env] -> [env, code <+ Binop ("cmp", x, y)
+                                           <+ Set (suffix (op), "%AL")
+                                           <+ Mov (eax, s)]
+                  esac
+                esac
+            esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
