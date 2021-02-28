@@ -16,11 +16,23 @@ import World;
 --        Read   (string)           |
 --        Write  (expr)             |
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+fun eval (c@[st, w], stmt)
+{
+  case stmt of
+    Assn(x, e) -> [st <- [x, evalExpr(st, e)], w] |
+    Seq(x, y) -> eval(eval(c,x), y) |
+    Skip -> c |
+    Read(x) -> case readWorld(w) of
+                 [z, w0] -> [st <- [x, z], w0]
+               esac |
+    Write(e) -> [st, writeWorld(evalExpr(st, e), w)] |
+    _ -> failure ("Can not evaluate '" ++ string(stmt) ++ "'\n")
+  esac
 }
 
+
 -- Evaluates a program with a given input and returns an output
-public fun evalStmt (input, stmt) {
+public fun evalStmt (input, stmt)
+{
   eval ([emptyState, createWorld (input)], stmt).snd.getOutput
 }
