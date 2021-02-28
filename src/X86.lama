@@ -283,10 +283,66 @@ fun compile (env, code) {
           READ ->
             case env.allocate of
               [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+              | _ -> failure ("allocation failed\n")
             esac             
         | WRITE ->
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+              | _ -> failure ("write failed\n")
+            esac
+        | ST (x) ->
+            case env.addGlobal(x).pop of
+              [value, env] -> [env, code <+ Mov (value, env.loc (x))]
+              | _ -> failure ("st failed\n")
+            esac
+        | LD (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov (env.loc (x), s)]
+              | _ -> failure ("ld failed\n")
+            esac
+        | CONST (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov (L (x), s)]
+              | _ -> failure ("const failed\n")
+            esac
+        | BINOP (op) ->
+            case env.pop2 of
+              [x, y, env] -> 
+                 case op of
+                    "*" -> [env.push(y), code <+ Binop(op, x, y)] 
+                    | "+" -> 
+                        case env.allocate of
+                    	   [s, env] -> [env, code <+ Binop(op, y, x) <+ Mov (x, s)]
+                    	 esac
+                    | "-" -> 
+                        case env.allocate of
+                          [s, env] -> [env, code <+ Binop(op, x, y) <+ Mov(y, s)]
+                        esac
+                    | "/" ->  
+                        case env.allocate of
+                           [s, env] -> [env, code <+
+                           		              Mov (y, eax) <+ 
+                           		              Cltd <+ 
+                           		              Push (ebx) <+ 
+                           		              Mov (x, ebx) <+ 
+                           		              IDiv (ebx) <+
+                           		              Pop (ebx) <+
+                           		              Mov(eax, s) 
+                           		              ]
+                        esac
+                    | "%" ->
+                        case env.allocate of
+                           [s, env] -> [env, code <+ Mov (x, edx) <+ Mov (y, ebx) <+ IDiv (ebx) <+ Mov(edx, s)]
+                        esac
+                    | _ -> case env.allocate of 
+                           [s, env] -> [env, code <+ 
+                                             Binop("cmp", x, y) <+
+                                             Push(eax) <+
+                                             Set(suffix(op), "%AL") <+
+                                             Mov(eax, s) <+
+                                             Pop(eax)]
+                           esac
+                 esac
             esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
