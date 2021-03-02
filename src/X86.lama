@@ -253,7 +253,9 @@ fun memOpnd (opnd) {
 -- Generates a move between locations, using
 -- intermediate register if needed
 fun move (from, to) {
-  if memOpnd (from) && memOpnd (to)
+  if from == to 
+  then emptyBuffer ()
+  elif memOpnd (from) && memOpnd (to)
   then singletonBuffer (Mov (from, eax)) <+ Mov (eax, to)
   else singletonBuffer (Mov (from, to))
   fi
@@ -275,6 +277,56 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
+  fun isSimpleArithmeticLogicalBinop (op) {
+    -- TODO how to compare strings?
+    -- op == "+" !! op == "-" !! op == "*" !! op == "&&" !! op == "!!"
+    case op of
+      "+"   -> true
+    | "-"   -> true 
+    | "*"   -> true 
+    | "&&"  -> true 
+    | "!!"  -> true 
+    | _     -> false
+    esac
+  }
+
+  fun isDivBinop (op) {
+    -- op == "/" !! op == "%"
+    case op of
+      "/" -> true
+    | "%" -> true 
+    | _   -> false
+    esac
+  }
+
+  fun simpleArithmeticLogicalBinop (env, code, op) {
+    case env.pop2 of
+      [x, y, env] -> 
+        case env.allocate of 
+          [s, env] -> [env, code <+ Binop (op, x, y) <+> move (y, s)] 
+        esac 
+    esac
+  }
+
+  fun divBinop (env, code, op) {
+    var resultingRegister = case op of "/" -> eax | _ -> edx esac;
+    case env.pop2 of
+      [x, y, env] -> 
+        case env.allocate of 
+          [s, env] -> [env, code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (resultingRegister, s)] 
+        esac 
+    esac
+  }
+
+  fun cmpBinop (env, code, op) {
+    case env.pop2 of
+      [x, y, env] -> 
+        case env.allocate of 
+          [s, env] -> [env, code <+ Binop ("cmp", x, y) <+ Mov (L (0), ebx) <+ Set (suffix (op), "%bl") <+ Mov (ebx, s)] 
+      esac 
+    esac
+  }
+
   fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
@@ -288,6 +340,22 @@ fun compile (env, code) {
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
+        | CONST (n) -> 
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L(n), s)]
+            esac 
+        | LD (x) -> 
+            case env.addGlobal (x).allocate of
+              [s, env] -> [env, code <+> move (env.loc(x), s)]
+            esac  
+        | ST (x) -> 
+            case env.addGlobal (x).pop of
+              [s, env] -> [env, code <+> move (s, env.loc(x))]
+            esac  
+        | BINOP (op) ->
+            if isSimpleArithmeticLogicalBinop (op) then simpleArithmeticLogicalBinop (env, code, op)
+            elif isDivBinop (op) then divBinop (env, code, op)
+            else cmpBinop (env, code, op) fi
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
