@@ -32,7 +32,7 @@ var m =
          ["!!", infix !!]}
         );
 
-fun evalOp (op, x, y) {
+public fun evalOp (op, x, y) {
   case findMap (m, op) of Some (f) -> f (x, y) esac
 }
 

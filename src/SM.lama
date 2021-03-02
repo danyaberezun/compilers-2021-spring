@@ -26,8 +26,30 @@ public fun showSM (prg) {
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval ([stack, state, world], insns) {
+  case insns of
+    READ:tail ->
+      var value = readWorld (world);
+      eval ([value.fst:stack, state, value.snd], tail)
+  | WRITE:tail ->
+      case stack of
+        value:new_stack -> eval ([new_stack, state, writeWorld (value, world)], tail)
+      esac
+  | BINOP(op):tail ->
+      case stack of
+        second:first:new_stack -> eval ([evalOp (op, first, second):new_stack, state, world], tail)
+      esac
+  | LD(name):tail ->
+      eval ([state (name):stack, state, world], tail)
+  | ST(name):tail ->
+      case stack of
+        value:new_stack -> eval ([new_stack, state <- [name, value], world], tail)
+      esac
+  | CONST (value):tail ->
+      eval ([value:stack, state, world], tail)
+  | _ ->
+      [stack, state, world]
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -38,12 +60,25 @@ public fun evalSM (input, insns) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var(name)              -> singletonBuffer (LD(name))
+  | Const(value)           -> singletonBuffer (CONST(value))
+  | Binop(op, left, right) -> compileExpr (left) <+> compileExpr (right) <+ BINOP(op)
+  esac
+}
+
+fun compileSMHelper (stmt) {
+  case stmt of
+    Assn(name, expr)   -> compileExpr(expr) <+ ST(name)
+  | Seq(first, second) -> compileSMHelper (first) <+> compileSMHelper (second)
+  | Read(name)         -> singletonBuffer (READ) <+ ST(name)
+  | Write(expr)        -> compileExpr(expr) <+ WRITE
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compileSMHelper(stmt))
 }
