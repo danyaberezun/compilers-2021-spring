@@ -3,6 +3,24 @@
 import List;
 import State;
 
+-- An axulliary function to perform arbitrary binary operation in LaMa
+public fun binOp (op, lExpr, rExpr) {
+  case op of
+	"+"  -> lExpr + rExpr
+  | "-"  -> lExpr - rExpr
+  | "*"  -> lExpr * rExpr
+  | "/"  -> lExpr / rExpr
+  | "%"  -> lExpr % rExpr
+  | "<"  -> lExpr < rExpr
+  | ">"  -> lExpr > rExpr
+  | "<=" -> lExpr <= rExpr
+  | ">=" -> lExpr >= rExpr
+  | "==" -> lExpr == rExpr
+  | "!=" -> lExpr != rExpr
+  | "&&" -> lExpr && rExpr
+  | "||" -> lExpr !! rExpr
+  esac
+}
 
 -- The evaluator itself: takes a state and an expression,
 -- returns integer value
@@ -14,5 +32,9 @@ import State;
 --        Binop (string, expr, expr)
 
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var   (vr)        		 -> st (vr)
+  | Const (const) 			 -> const
+  | Binop (op, lExpr, rExpr) -> binOp (op, evalExpr(st, lExpr), evalExpr(st, rExpr))
+  esac
 }
