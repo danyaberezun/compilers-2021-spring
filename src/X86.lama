@@ -287,7 +287,53 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | CONST (n) -> fun ([s, env]) {
+            [env, code <+> move (L (n), s)]
+          } (env.allocate)
+      | LD (x) -> fun ([s, env]) {
+            [env, code <+> move (env.loc (x), s)]
+          } (env.addGlobal (x).allocate)
+      | ST (x) -> fun ([s, env]) {
+            [env, code <+> move (s, env.loc (x))]
+          } (env.addGlobal (x).pop)
+      | BINOP (op) -> fun ([r, l, env]) {
+            fun trivial () {
+              code <+> move (l, eax) <+ Binop (op, r, eax) <+> move (eax, l)
+            }
+
+            fun cmp (op, l, r) {
+              code <+> move (r, eax) <+ Binop ("cmp", eax, l)
+                   <+> move (L (0), eax) <+ Set (suffix (op), "%al")
+                   <+> move (eax, l)
+            }
+
+            fun div (rem) {
+              var res = if rem then edx else eax fi;
+              code <+> move (l, eax) <+ Cltd <+ IDiv (r) <+> move (res, l)
+            }
+
+            fun andor () {
+              code <+> trivial () <+> cmp (">", l, L(0))
+            }
+
+            [env.push (l), case op of
+              "+"  -> trivial ()
+            | "-"  -> trivial ()
+            | "*"  -> trivial ()
+            | "/"  -> div     (false)
+            | "%"  -> div     (true)
+            | "<"  -> cmp     (op, l, r)
+            | ">"  -> cmp     (op, l, r)
+            | "<=" -> cmp     (op, l, r)
+            | ">=" -> cmp     (op, l, r)
+            | "==" -> cmp     (op, l, r)
+            | "!=" -> cmp     (op, l, r)
+            | "&&" -> andor   ()
+            | "!!" -> andor   ()
+            | _    -> failure ("Binary operation %s not supported\n", op.string)
+            esac]
+          } (env.pop2)
+      | _ -> failure ("Code generation for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
