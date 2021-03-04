@@ -3,16 +3,31 @@
 import List;
 import State;
 
-
--- The evaluator itself: takes a state and an expression,
--- returns integer value
---
--- An expression is represented by a data structure of the following shape:
---
--- expr = Var   (string)             |
---        Const (int)                |
---        Binop (string, expr, expr)
-
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+ case expr of
+      Const(x) -> x
+     |Var(x) -> st(x)
+     |Binop(opr , l , r) -> evalBinOp(opr, evalExpr(st,l) , evalExpr(st,r))
+  esac
 }
+
+
+
+public fun evalBinOp(opr , l , r) {
+       case opr of
+      "+" -> l+r
+      |"-" -> l-r
+      |"*" -> l*r
+      |"/" -> l/r
+      |"%" -> l%r
+      |"==" -> l==r
+      |"!=" -> l!=r
+      |">" -> l>r
+      |"<" -> l<r
+      |">=" -> l>=r
+      |"<=" -> l<=r
+      |"&&" -> l&&r
+      |"!!" -> l!!r
+  esac
+}
+

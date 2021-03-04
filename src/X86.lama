@@ -276,18 +276,50 @@ fun suffix (op) {
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   foldl (
-    fun ([env, scode], i) {
+    fun ([env, scode], i) 
+    {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        READ ->     case env.allocate of
+                        [s, nenv] -> [nenv, code <+ Call ("Lread") <+ Mov (eax, s)]
+                    esac             
+        |WRITE ->   case env.pop of
+                        [s, nenv] -> [nenv, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+                    esac
+        |CONST (n) ->   case env.allocate of
+                            [s, nenv] -> [nenv, code <+ Mov (L (n), s)]
+                        esac
+        |LD (x) ->  case env.allocate of
+                        [s, nenv] -> [nenv, code <+> move (nenv.loc (x), s)]
+                    esac
+        |ST (x) ->   case env.addGlobal (x).pop of
+                        [v, nenv] -> [nenv, code <+> move (v, nenv.loc (x))]
+                    esac
+        | BINOP(op) ->  case pop2(env) of
+                          [y, x, nenv] ->
+                            fun sbinOp (op, l, r) {
+                              [push(nenv, r), code <+> move (r, eax) <+ Binop (op, l, eax) <+> move (eax, r)]
+                            }
+                            fun scmpOp (op, l, r) {
+                              [push(nenv, r), code <+ Binop("cmp", l, r) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, r)]
+                            }
+                            case op of
+                                  "-"  -> sbinOp(op, y, x)
+                                | "+"  -> sbinOp(op, y, x)
+                                | "*"  -> sbinOp(op, y, x)
+                                | "&&" -> sbinOp(op, y, x)
+                                | "!!" -> sbinOp(op, y, x)
+                                | "/"  -> [push(nenv, x), code <+> move(x, eax) <+ Cltd <+ IDiv(y) <+> move(eax, x)]
+                                | "%"  -> [push(nenv, x), code <+> move(x, eax) <+ Cltd <+ IDiv(y) <+> move(edx, x)]
+                                | "<"  -> scmpOp(op, y, x)
+                                | ">"  -> scmpOp(op, y, x)
+                                | "<=" -> scmpOp(op, y, x)
+                                | ">=" -> scmpOp(op, y, x)
+                                | "==" -> scmpOp(op, y, x)
+                                | "!=" -> scmpOp(op, y, x)
+                            esac
+                        esac
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
@@ -310,3 +342,4 @@ public fun compileX86 (code) {
            ).stringcat
   esac
 }
+
