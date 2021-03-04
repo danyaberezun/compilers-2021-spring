@@ -1,0 +1,6 @@
+*.i
+*.o
+*.s
+*.log
+regression/test*
+regression/tmp.sm
