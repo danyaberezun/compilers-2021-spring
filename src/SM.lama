@@ -7,16 +7,26 @@ import Expr;
 import Buffer;
 import Fun;
 
--- Stack code printer. Takes a list of SM instructions, return its
--- string representation.
+-- Types:
+--   Stack :: [int]
+--   Insn :: READ
+--           | WRITE
+--           | BINOP (op)
+--           | LD    (x)
+--           | ST    (x)
+--           | CONST (c)
+
+-- Stack code printer. 
+-- Takes a list of SM instructions, returns a string representation.
+
 public fun showSMInsn (i) {
   case i of
-    READ      -> sprintf ("READ")
-  | WRITE     -> sprintf ("WRITE")
-  | BINOP (s) -> sprintf ("BINOP %s", s)
-  | LD    (x) -> sprintf ("LD %s", x)
-  | ST    (x) -> sprintf ("ST %s", x)
-  | CONST (n) -> sprintf ("CONST %d", n)
+      READ      -> sprintf ("READ")
+    | WRITE     -> sprintf ("WRITE")
+    | BINOP (s) -> sprintf ("BINOP %s", s)
+    | LD    (x) -> sprintf ("LD %s", x)
+    | ST    (x) -> sprintf ("ST %s", x)
+    | CONST (n) -> sprintf ("CONST %d", n)
   esac
 }
 
@@ -24,26 +34,83 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
--- Stack machine interpreter. Takes an SM-configuration and a program,
--- returns a final configuration
-fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+-- Stack machine interpreter. 
+-- Takes an SM-configuration and a program, returns a final configuration.
+--
+-- Parameters:
+--   c :: [Stack, State, World]
+--   insns :: [Insn]
+--
+-- Returns:
+--   [Stack, State, World]
+
+fun eval ([s, st, w], insns) {
+  case insns of 
+      READ:is -> 
+        case readWorld (w) of
+          [z, nw] -> eval ([z:s, st, nw], is)
+        esac
+    | WRITE:is -> 
+        case s of
+          z:zs -> eval ([zs, st, writeWorld (z, w)], is)
+        esac
+    | BINOP (op):is -> 
+        case s of
+          y:x:zs -> eval ([evalBinop (op, x, y):zs, st, w], is)
+        esac
+    | LD (x):is -> eval ([st (x):s, st, w], is)
+    | ST (x):is -> 
+        case s of
+          z:zs -> eval ([zs, st <- [x, z], w], is)
+        esac
+    | CONST (c):is -> eval ([c:s, st, w], is)
+    | _ -> [s, st, w]
+  esac
 }
 
--- Runs a stack machine for a given input and a given program, returns an output
+-- Runs a stack machine for a given input and a given program.
+-- Returns an output.
+
 public fun evalSM (input, insns) {
   eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+-- Takes an expression, returns a list (of, possibly, lists) of stack machine instructions.
+--
+-- Parameters:
+--   expr :: Expr
+--
+-- Returns:
+--   Buffer
+
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+      Var (v)          -> singletonBuffer (LD (v))
+    | Const (c)        -> singletonBuffer (CONST (c))
+    | Binop (op, l, r) -> compileExpr (l) <+> compileExpr (r) <+> singletonBuffer (BINOP (op))
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
--- Takes a statement, returns a list of stack machine
--- instructions.
+-- Takes a statement, returns a list of stack machine instructions.
+--
+-- Parameters:
+--   stmt :: Stmt
+--
+-- Returns:
+--   [Insn]
+
+fun compileSMBase (stmt) {
+    case stmt of
+        Assn (x, e)  -> compileExpr (e) <+> singletonBuffer (ST (x))
+      | Read (x)     -> singletonBuffer (READ) <+> singletonBuffer (ST (x))
+      | Write (e)    -> compileExpr (e) <+> singletonBuffer (WRITE)
+      | Seq (s1, s2) -> compileSMBase (s1) <+> compileSMBase (s2)
+      | Skip         -> emptyBuffer
+    esac
+}
+
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+    getBuffer (compileSMBase (stmt))
 }

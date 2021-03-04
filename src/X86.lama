@@ -280,14 +280,60 @@ fun compile (env, code) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+          case allocate (env) of
+            [s, env] -> [env, code <+ Call ("Lread") <+> move (eax, s)]
           esac             
       | WRITE ->
-          case env.pop of
+          case pop (env) of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | CONST (c) ->
+          case allocate (env) of
+            [s, env] -> [env, code <+> move (L (c), s)]
+          esac
+      | LD (x) -> 
+          case allocate (env) of
+            [s, env] -> [env, code <+> move (loc (env, x), s)]
+          esac
+      | ST (x) ->
+          case pop (addGlobal (env, x)) of
+            [s, env] -> [env, code <+> move (s, loc (env, x))]
+          esac
+      | BINOP (op) ->
+          case pop2 (env) of
+            [x, y, env] ->
+              fun intOp (op, x, y) {
+                [push (env, y), code <+> move (y, eax) <+ Binop (op, x, eax) <+> move (eax, y)]
+              }
+
+              fun divOp (x, y) {
+                [push (env, y), code <+> move (y, eax) <+ Cltd <+ IDiv (x) <+> move (eax, y)]
+              }
+
+              fun modOp (x, y) {
+                [push (env, y), code <+> move (y, eax) <+ Cltd <+ IDiv (x) <+> move (edx, y)]
+              }
+
+              fun cmpOp (op, x, y) {
+                [push (env, y), code <+ Binop ("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix (op), "%al") <+> move (eax, y)] 
+              }
+
+              case op of
+                  "+"  -> intOp (op, x, y)
+                | "-"  -> intOp (op, x, y)
+                | "*"  -> intOp (op, x, y)
+                | "/"  -> divOp (x, y)
+                | "%"  -> modOp (x, y)
+                | "!!" -> intOp (op, x, y)
+                | "&&" -> intOp (op, x, y)
+                | "==" -> cmpOp (op, x, y)
+                | "!=" -> cmpOp (op, x, y)
+                | "<"  -> cmpOp (op, x, y)
+                | ">"  -> cmpOp (op, x, y)
+                | "<=" -> cmpOp (op, x, y)
+                | ">=" -> cmpOp (op, x, y)
+              esac
+          esac
       esac
     }, [env, emptyBuffer ()], code)
 }
