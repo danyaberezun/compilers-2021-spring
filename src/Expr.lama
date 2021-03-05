@@ -13,6 +13,31 @@ import State;
 --        Const (int)                |
 --        Binop (string, expr, expr)
 
+
+public fun evalBinop (op, lhs, rhs) {
+  case op of
+    "+"  -> lhs + rhs
+  | "-"  -> lhs - rhs
+  | "*"  -> lhs * rhs
+  | "/"  -> lhs / rhs
+  | "%"  -> lhs % rhs
+  | "<"  -> lhs < rhs
+  | ">"  -> lhs > rhs
+  | "<=" -> lhs <= rhs
+  | ">=" -> lhs >= rhs
+  | "==" -> lhs == rhs
+  | "!=" -> lhs != rhs
+  | "&&" -> lhs && rhs
+  | "!!" -> lhs !! rhs
+  | _    -> failure ("[ERROR] Unsupported Expr:evalBinop match\n")
+  esac
+}
+
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var (x)              -> st (x)
+  | Const (c)            -> c
+  | Binop (op, lhs, rhs) -> evalBinop (op, evalExpr (st, lhs), evalExpr (st, rhs))
+  | _                    -> failure ("[ERROR] Unsupported Expr:evalExpr match\n")
+  esac
 }
