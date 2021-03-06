@@ -199,7 +199,7 @@ fun getStackSize (env) {
 
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, 0, emptySet (compare))
+  makeEnv (0, emptySet (compare), emptySet (compare))
 }
 
 -- Codegeneration helper functions
@@ -287,6 +287,48 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+      | CONST (n) -> 
+        case env.allocate of
+          [s, env] -> [env, code <+ Mov (L (n), s)]
+        esac
+      | LD (x) -> 
+        case env.allocate of
+          [s, env] -> [env, code <+> move (env.loc (x), s)]
+        esac
+      | ST (x) -> (
+        var env_ = env.addGlobal (x); 
+        case env_.pop of
+          [value, env] -> [env, code <+> move (value, env.loc (x))]
+        esac
+      )
+      | BINOP (opStr) ->
+        case env.pop2 of 
+          [x, y, env] -> (
+            fun execLogicOp (op, l, r) {
+              code <+ Mov (r, edx) <+ Binop("cmp", edx, l) <+ Mov (L (0), eax) <+ Set (suffix (op), "%al") <+ Mov (eax, r)
+            }
+            fun execBinOp (op, l, r) {
+              fun execOp2 (op, l, r) {
+                case r of
+                  R (_) -> code <+ Binop (op, l, r)
+                | _ -> code <+ Mov (r, eax) <+ Binop(op, l, eax) <+ Mov (eax, r)
+                esac
+              }
+              [env.push (r), execOp2 (op, l, r)]
+            }
+            case opStr of
+              "+" -> execBinOp ("+", x, y)
+            | "-" -> execBinOp ("-", x, y)
+            | "*" -> execBinOp ("*", x, y)
+            | "/" -> [env.push (x), code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+> move (eax, x)]
+            | "%" -> [env.push (x), code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+> move (edx, x)]
+            | "&&" -> execBinOp ("&&", x, y)
+            | "!!" -> execBinOp ("!!", x, y)
+            | cmpOp -> [env.push (x), execLogicOp (cmpOp, y, x)]
+            esac
+
+        )     
+        esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
