@@ -12,7 +12,38 @@ import State;
 -- expr = Var   (string)             |
 --        Const (int)                |
 --        Binop (string, expr, expr)
-
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  -- printf("\n    st = %s, expr = %s\n", st.string, showExpr(expr));
+  case expr of
+      Const(n) -> n
+    | Var(s)   -> st(s)
+    | Binop(s, lhs, rhs) ->
+      var nl = evalExpr(st, lhs)
+      ;var nr = evalExpr(st, rhs)
+      ;if  compare (s, "+")  == 0 then nl + nr
+      elif compare (s, "-")  == 0 then nl - nr
+      elif compare (s, "*")  == 0 then nl * nr
+      elif compare (s, "/")  == 0 then nl / nr
+      elif compare (s, "%")  == 0 then nl % nr
+      elif compare (s, "<")  == 0 then nl < nr
+      elif compare (s, ">")  == 0 then nl > nr
+      elif compare (s, "<=") == 0 then nl <= nr
+      elif compare (s, ">=") == 0 then nl >= nr
+      elif compare (s, "==") == 0 then nl == nr
+      elif compare (s, "!=") == 0 then nl != nr
+      elif compare (s, "&&") == 0 then nl && nr
+      elif compare (s, "!!") == 0 then nl !! nr
+      else failure("evalExpr: bad binop = %s\n", s.string)
+      fi
+    | _ -> failure("evalExpr: bad expr = %s\n", expr.string)
+  esac
+}
+
+public fun showExpr(e) {
+  case e of
+    Const(n) -> n.string
+  | Var(s)   -> s.string
+  | Binop(op, lhs, rhs) -> sprintf("(%s %s %s)", showExpr(lhs), op, showExpr(rhs))
+  | _ -> failure("showExpr: bad expr = %s\n", e.string)
+  esac
 }

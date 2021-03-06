@@ -6,6 +6,7 @@ import State;
 import Expr;
 import Buffer;
 import Fun;
+import Ref;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
@@ -26,8 +27,58 @@ public fun showSM (prg) {
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+-- stack is just list, TODO: use Buffer instead
+fun eval (c@[stack, state, world], program) {
+  -- printf("%s, %s\n", c.string, program.string);
+  case program of
+    inst:restProgram ->
+      case inst of
+        {} -> c
+      | BINOP(op) ->
+        case stack of
+          y:x:restStack ->
+            var v = if   compare (op, "+")  == 0 then x + y
+                    elif compare (op, "-")  == 0 then x - y
+                    elif compare (op, "*")  == 0 then x * y
+                    elif compare (op, "/")  == 0 then x / y
+                    elif compare (op, "%")  == 0 then x % y
+                    elif compare (op, "<")  == 0 then x < y
+                    elif compare (op, ">")  == 0 then x > y
+                    elif compare (op, "<=") == 0 then x <= y
+                    elif compare (op, ">=") == 0 then x >= y
+                    elif compare (op, "==") == 0 then x == y
+                    elif compare (op, "!=") == 0 then x != y
+                    elif compare (op, "&&") == 0 then x && y
+                    elif compare (op, "!!") == 0 then x !! y
+                    else failure("evalSM: bad binop %s\n", op.string)
+                    fi
+            ;eval([v:restStack, state, world], restProgram)
+        | badStack      -> failure("evalSM: not enough elements in stack for BINOP, stack = %s\n", badStack.string)
+        esac
+      | CONST(z) -> eval([z:stack, state, world], restProgram)
+      | READ     -> case readWorld(world) of [z, worldNew] -> eval([z:stack, state, worldNew], restProgram) esac
+      | WRITE    ->
+        case stack of
+          z:restStack ->
+            var worldNew = writeWorld(z, world)
+            ;eval([restStack, state, worldNew], restProgram)
+        | badStack    -> failure("evalSM: not enough elements in stack for WRITE, stack = %s\n", badStack.string)
+        esac
+      | LD(x)    -> eval([state(x):stack, state, world], restProgram)
+      | ST(x)    ->
+        case stack of
+          z:restStack -> eval([restStack, state <- [x, z], world], restProgram)
+        | badStack    -> failure("evalSM: not enough elements in stack for LD, stack = %s\n", badStack.string)
+        esac
+      | badInstr -> failure("evalSM: unknown instruction %s\n", badInstr.string)
+      esac
+  | {} -> c
+  | badProgram -> failure("evalSM: unknown program %s\n", badProgram.string)
+  esac
+}
+
+public fun den_evalSM (c, insns) {
+  eval(c, insns)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -37,13 +88,51 @@ public fun evalSM (input, insns) {
 
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+fun compileExpr(expr) {
+  var buf = ref(emptyBuffer())
+  ;compileBufferExpr(expr, buf)
+  ;getBuffer(deref(buf))
+}
+
+public fun den_compileExp(e) {
+  compileExpr(e)
+}
+
+fun compileBufferExpr(e, buf) {
+  case e of
+      Const(n) -> buf ::= addBuffer(deref(buf), CONST(n))
+    | Var(s)   -> buf ::= addBuffer(deref(buf), LD(s))
+    | Binop(op, lhs, rhs) ->
+      compileBufferExpr(lhs, buf)
+      ;compileBufferExpr(rhs, buf)
+      ;buf ::= addBuffer(deref(buf), BINOP(op))
+    | _ -> failure("evalExpr: bad expr = %s\n", e.string)
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  var buf = ref(emptyBuffer())
+  ;compileBufferSM(stmt, buf)
+  ;getBuffer(deref(buf))
+}
+
+fun compileBufferSM(stmt, buf) {
+  case stmt of
+    Assn(x, e)    ->
+      compileBufferExpr(e, buf)
+      ;buf ::= addBuffer(deref(buf), ST(x))
+  | Read(x)       ->
+      buf ::= addBuffer(deref(buf), READ)
+      ;buf ::= addBuffer(deref(buf), ST(x))
+  | Seq(lhs, rhs) ->
+      compileBufferSM(lhs, buf)
+      ;compileBufferSM(rhs, buf)
+  | Skip          -> buf ::= deref(buf)
+  | Write(e)      ->
+      compileBufferExpr(e, buf)
+      ;buf ::= addBuffer(deref(buf), WRITE)
+  esac
 }
