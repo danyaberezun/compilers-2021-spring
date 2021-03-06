@@ -274,6 +274,24 @@ fun suffix (op) {
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
+fun compileBinop(op, x, y) {
+    case op of
+     "+"  -> singletonBuffer(Binop(op, x, y))
+   | "-"  -> singletonBuffer(Binop(op, x, y))
+   | "*"  -> singletonBuffer(Binop(op, x, y))
+   | "&&" -> singletonBuffer(Binop(op, x, y))
+   | "!!" -> singletonBuffer(Binop(op, x, y))
+   | "/"  -> move (y, eax) <+ Cltd <+ IDiv(x) <+> move(eax, y)
+   | "%"  -> move (y, eax) <+ Cltd <+ IDiv(x) <+> move(edx, y)
+   | ">"  -> singletonBuffer(Binop("cmp", x, y)) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "<"  -> singletonBuffer(Binop("cmp", x, y)) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "<=" -> singletonBuffer(Binop("cmp", x, y)) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | ">=" -> singletonBuffer(Binop("cmp", x, y)) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "==" -> singletonBuffer(Binop("cmp", x, y)) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "!=" -> singletonBuffer(Binop("cmp", x, y)) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   esac
+}
+
 fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
@@ -287,9 +305,25 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+      | CONST(n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (n), s)]
+          esac
+      | LD (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | ST (x) ->
+          case env.addGlobal (x).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [x, y, env] -> [env.push(y), code <+> compileBinop(op, x, y)]
+          esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
-    }, [env, emptyBuffer ()], code)
+    }, [env, emptyBuffer ()], getBuffer(code))
 }
 
 -- A top-level codegeneration function. Takes a stack machine program
