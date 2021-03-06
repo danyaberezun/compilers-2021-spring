@@ -280,13 +280,50 @@ fun compile (env, code) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          case allocate (env) of
+            [s, new_env] -> [new_env, code <+ Call ("Lread") <+ Mov (eax, s)]
           esac
+      | WRITE ->
+          case pop (env) of
+            [s, new_env] -> [new_env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | CONST(value) ->
+          case allocate (env) of
+            [s, new_env] -> [new_env, code <+> move (L (value), s)]
+          esac
+      | LD(name) ->
+          case allocate (env) of
+            [s, new_env] -> [new_env, code <+> move (loc (new_env, name), s)]
+          esac
+      | ST(name) ->
+          case pop (addGlobal (env, name)) of
+            [s, new_env] -> [new_env, code <+> move (s, loc (new_env, name))]
+          esac
+      | BINOP(op) ->
+        case pop2(env) of
+          [second, first, new_env] ->
+            fun binOpImpl (op, l, r) {
+              [push(new_env, r), code <+> move (r, eax) <+ Binop (op, l, eax) <+> move (eax, r)]
+            }
+            fun cmpOpImpl (op, l, r) {
+              [push(new_env, r), code <+ Binop("cmp", l, r) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, r)]
+            }
+            case op of
+              "-"  -> binOpImpl(op, second, first)
+            | "+"  -> binOpImpl(op, second, first)
+            | "*"  -> binOpImpl(op, second, first)
+            | "&&" -> binOpImpl(op, second, first)
+            | "!!" -> binOpImpl(op, second, first)
+            | "/"  -> [push(new_env, first), code <+> move(first, eax) <+ Cltd <+ IDiv(second) <+> move(eax, first)]
+            | "%"  -> [push(new_env, first), code <+> move(first, eax) <+ Cltd <+ IDiv(second) <+> move(edx, first)]
+            | "<"  -> cmpOpImpl(op, second, first)
+            | ">"  -> cmpOpImpl(op, second, first)
+            | "<=" -> cmpOpImpl(op, second, first)
+            | ">=" -> cmpOpImpl(op, second, first)
+            | "==" -> cmpOpImpl(op, second, first)
+            | "!=" -> cmpOpImpl(op, second, first)
+            esac
+        esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
