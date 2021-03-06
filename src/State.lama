@@ -1,4 +1,5 @@
 -- States: partial maps from variables into values
+-- Alhasan Alkhaddour M4138c
 
 -- Empty state (undefined everywhere)
 public fun emptyState (x) {
