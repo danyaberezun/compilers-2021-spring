@@ -66,7 +66,7 @@ fun insnString (insn) {
     case opnd of
       R (i) -> regs [i]
     | S (i) -> sprintf ("-%d(%%ebp)", (i+1) * wordSize)
-    | M (x) -> x
+    | M (x1) -> x1
     | L (i) -> sprintf ("$%d", i)
     esac
   }
@@ -113,19 +113,19 @@ fun makeEnv (stack, stackSlots, globals) {
       | R (n) : _ -> if n < nRegs then [R (n+1), stackSlots] else [S (0), 1] fi
       | _         -> [S (0), 1]
       esac
-    of [x, n] -> [x, makeEnv (x : stack, if n > stackSlots then n else stackSlots fi, globals)]esac
+    of [x1, n] -> [x1, makeEnv (x1 : stack, if n > stackSlots then n else stackSlots fi, globals)]esac
   }
 
   -- Pushes an item on the symbolic state; returns an updated envirtonment
-  fun push (y) {
-    makeEnv (y : stack, stackSlots, globals)
+  fun push (x2) {
+    makeEnv (x2 : stack, stackSlots, globals)
   }
 
   -- Pops one item from the symbolic stack; returns a pair: a popped
   -- item and an updated environment
   fun pop () {
     case stack of
-      x : stack -> [x, makeEnv (stack, stackSlots, globals)]
+      x1 : stack -> [x1, makeEnv (stack, stackSlots, globals)]
     esac
   }
 
@@ -133,7 +133,7 @@ fun makeEnv (stack, stackSlots, globals) {
   -- popped items and an undated environment
   fun pop2 () {
     case stack of
-      x : y : stack -> [x, y, makeEnv (stack, stackSlots, globals)]
+      x1 : x2 : stack -> [x1, x2, makeEnv (stack, stackSlots, globals)]
     esac
   }
 
@@ -169,8 +169,8 @@ fun allocate (env) {
   env [1] ()
 }
 
-fun push (env, x) {
-  env [2] (x)
+fun push (env, x1) {
+  env [2] (x1)
 }
 
 fun pop (env) {
@@ -199,7 +199,7 @@ fun getStackSize (env) {
 
 -- Creates an initial environment
 fun initEnv () {
-  makeEnv (0, 0, emptySet (compare))
+  makeEnv (0, emptySet (compare), emptySet (compare))
 }
 
 -- Codegeneration helper functions
@@ -275,20 +275,46 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
+    foldl (
+      fun ([env, scode], i) {
+        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        case i of
+          READ ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            esac             
+        | WRITE ->
+            case env.pop of
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            esac
+		| CONST (j) ->
+            case env.allocate of 
+              [s, env] -> [env, code <+> move (L (j), s)]
+            esac 
+        | BINOP (j) ->
+            case env.pop2 of 
+              [x1, x2, env] -> (case j of
+				  "<" -> [env.push(x2), code <+ Mov (L (0), eax) <+ Binop("cmp", x1, x2) <+ Set (suffix(j), "%al") <+> move (eax, x2)]
+				  | "<=" -> [env.push(x2), code <+> move (L (0), eax) <+ Binop("cmp", x1, x2) <+ Set (suffix(j), "%al") <+> move (eax, x2)]
+				  | ">" -> [env.push(x2), code <+ Mov (L (0), eax) <+ Binop("cmp", x1, x2) <+ Set (suffix(j), "%al") <+> move (eax, x2)]
+				  | ">=" -> [env.push(x2), code <+> move (L (0), eax) <+ Binop("cmp", x1, x2) <+ Set (suffix(j), "%al") <+> move (eax, x2)]
+				  | "/" -> [env.push(x2), code <+> move (x2, eax) <+ Cltd <+ IDiv (x1) <+> move (eax, x2)]
+				  | "%" -> [env.push(x2), code <+> move (x2, eax) <+ Cltd <+ IDiv (x1) <+> move (edx, x2)]
+				  | "==" -> [env.push(x2), code <+ Mov (L (0), eax) <+ Binop("cmp", x1, x2) <+ Set (suffix(j), "%al") <+> move (eax, x2)]
+				  | "!=" -> [env.push(x2), code <+ Mov (L (0), eax) <+ Binop("cmp", x1, x2) <+ Set (suffix(j), "%al") <+> move (eax, x2)]
+				  | _ -> [env.push(x2), code <+> singletonBuffer(Binop (j, x1, x2))]
+				  esac)
+            esac 
+        | LD (j) -> 
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (j), s) <+ Push (s)] 
+            esac
+        | ST (j) ->
+            case env.addGlobal (j).pop of 
+              [s, env] -> [env, code <+> move (s, env.loc (j))]
+            esac
+        | _ -> failure ("Failure in compile(env,code) - Incorrect instruction\n")
+        esac
     }, [env, emptyBuffer ()], code)
 }
 
