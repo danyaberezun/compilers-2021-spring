@@ -4,6 +4,25 @@ import List;
 import State;
 
 
+public fun applyBinaryOp (stringifiedOp, v1, v2) {
+  case stringifiedOp of
+    "+"  -> v1 +  v2 |
+    "-"  -> v1 -  v2 |
+    "*"  -> v1 *  v2 |
+    "/"  -> v1 /  v2 |
+    "%"  -> v1 %  v2 |
+    "==" -> v1 == v2 |
+    "!=" -> v1 != v2 |
+    "<"  -> v1 <  v2 |
+    "<=" -> v1 <= v2 |
+    ">"  -> v1 >  v2 |
+    ">=" -> v1 >= v2 |
+    "&&" -> v1 && v2 |
+    "!!" -> v1 !! v2 |
+    _ -> failure("Unknown binary operation '" ++ string(stringifiedOp) ++ "'\n")
+  esac
+}
+
 -- The evaluator itself: takes a state and an expression,
 -- returns integer value
 --
@@ -13,6 +32,18 @@ import State;
 --        Const (int)                |
 --        Binop (string, expr, expr)
 
-public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+public fun evalExpr (state, expression) {
+  -- printf("expr %s\n", string(expression));
+  case expression of 
+    Var (variableName) -> 
+      state(variableName) |
+    Const (value) ->
+      value |
+    Binop (operation, expression1, expression2) ->
+      applyBinaryOp(operation, evalExpr(state, expression1), evalExpr(state, expression2)) |
+    _ ->
+      failure("Unknown expression '" ++ string(expression) ++ "'\n")
+  esac
 }
+
+-- printf("%d\n", evalExpr(emptyState, Binop("*", Const (2), Const (4))))

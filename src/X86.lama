@@ -273,24 +273,92 @@ fun suffix (op) {
   esac
 }
 
+-- Returns buffer that contains X86 instructions to apply binary operation to specified arguments
+fun getX86OpBuffer(operation, lhs, rhs) {
+  -- Auxilary functions:
+  -- Makes operation and puts result in rhs. Works for +, *, and, or.
+  fun aux(operation, lhs, rhs) {
+    if memOpnd(lhs) && memOpnd(rhs) then
+      -- Memory-memory operations are not allowed
+      singletonBuffer(Mov(rhs, edx)) <+ Binop(operation, lhs, edx) <+ Mov(edx, rhs)
+    else 
+      singletonBuffer(Binop(operation, lhs, rhs))
+    fi
+  }
+  -- Subtracts rhs from lhs and puts result in rhs
+  fun auxSub(operation, lhs, rhs) {
+    if memOpnd(lhs) && memOpnd(rhs) then
+      singletonBuffer(Mov(lhs, eax)) <+ Binop(operation, rhs, eax) <+ Mov(eax, rhs)
+    else 
+      singletonBuffer(Binop(operation, rhs, lhs)) <+ Mov(lhs, rhs)
+    fi
+  }
+  fun compare(operation, lhs, rhs) {
+    singletonBuffer(Mov(rhs, eax)) <+ Binop("cmp", eax, lhs)
+      <+ Mov(L(0), eax) <+ Set(suffix(operation), "%al") <+ Mov(eax, rhs)
+  }
+  fun logical(operation, lhs, rhs) {
+    singletonBuffer(Mov(L(0), edx)) <+> compare("<", edx, lhs) <+> compare("<", edx, rhs) 
+      <+> aux(operation, lhs, rhs)
+  }
+
+  case operation of 
+    "+"  -> aux(operation, lhs, rhs) |
+    "-"  -> auxSub(operation, lhs, rhs) | -- Subtraction is inverted in AT&T instruction, hence have to make separate function
+    "*"  -> auxSub(operation, lhs, rhs) |
+    "/"  -> singletonBuffer(Mov(lhs, eax)) <+ Cltd <+ IDiv(rhs) <+ Mov(eax, rhs) |
+    "%"  -> singletonBuffer(Mov(lhs, eax)) <+ Cltd <+ IDiv(rhs) <+ Mov(edx, rhs) |
+    "==" -> compare(operation, lhs, rhs) |
+    "!=" -> compare(operation, lhs, rhs) |
+    "<"  -> compare(operation, lhs, rhs) |
+    "<=" -> compare(operation, lhs, rhs) |
+    ">"  -> compare(operation, lhs, rhs) |
+    ">=" -> compare(operation, lhs, rhs) |
+    "&&" -> logical(operation, lhs, rhs) |
+    "!!" -> logical(operation, lhs, rhs) |
+    -- "!!" -> compare("<", L(0), lhs) <+> compare("<", L(0), rhs) <+> aux(operation, lhs, rhs) |
+    _    -> failure("Unknown binary operation '%s'\n", string(operation))
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
-    }, [env, emptyBuffer ()], code)
+  fun compile (env, code) {
+    foldl (
+      fun ([env, scode], i) {
+        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        case i of
+          READ ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            esac             
+        | WRITE ->
+            case env.pop of
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            esac
+        | BINOP(operation) ->
+            case env.pop2 of
+              [rhs, lhs, env] -> [env.push(rhs), code <+> getX86OpBuffer(operation, lhs, rhs)]
+            esac
+        | LD(variableName) -> 
+            case env.allocate of -- .addGlobal(variableName)?
+              [s, env] -> [env, code <+> move(env.loc(variableName), s)] -- Does not work with <+ Mov, because memory-memory move is not allowed
+            esac
+        | ST(variableName) -> 
+            case env.addGlobal(variableName).pop of
+              [s, env] -> [env, code <+> move(s, env.loc(variableName))]
+            esac
+        | CONST(value) -> 
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov(L(value), s)]
+            esac
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        esac
+      }, [env, emptyBuffer ()], code)
+  }
+
+  compile (env, code) 
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,

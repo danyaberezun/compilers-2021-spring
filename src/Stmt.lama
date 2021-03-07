@@ -16,11 +16,47 @@ import World;
 --        Read   (string)           |
 --        Write  (expr)             |
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+fun eval (configuration, statement) {
+  var state = configuration.fst;
+  var world = configuration.snd;
+  -- printf("stmt %s\n", statement.string);
+  
+  case statement of
+    Assn (variableName, expression) -> 
+      state := (state <- [variableName, evalExpr(state, expression)]) |
+    Seq (substatement1, substatement2) -> 
+      configuration := eval(eval(configuration, substatement1), substatement2);
+      state := configuration.fst;
+      world := configuration.snd |
+    -- Skip -> 
+    --   configuration |
+    Read (variableName) -> 
+      var value = readWorld(world);
+      -- world, value := readWorld(world)
+      world := value.snd;
+      value := value.fst;
+      state := (state <- [variableName, value]) |
+    Write (expression) ->
+      world := writeWorld(evalExpr(state, expression), world) |
+    _ ->  
+      failure ("Unknown statement '" ++ string(statement) ++ "' appeared at evaluation\n")
+  esac;
+  
+  [state, world]
 }
 
 -- Evaluates a program with a given input and returns an output
 public fun evalStmt (input, stmt) {
   eval ([emptyState, createWorld (input)], stmt).snd.getOutput
 }
+
+-- printf("---Stmt write check\n");
+-- printf("%s\n", evalStmt(1, Write(Const(45))));
+-- printf("---Stmt skip check\n");
+-- printf("%s\n", evalStmt(1, Skip));
+-- printf("---Stmt seq check\n");
+-- printf("%s\n", evalStmt(1, Seq(Write(Const(45)), Write(Const(45)))));
+-- printf("---Stmt assign variable check\n");
+-- printf("%s\n", evalStmt(1, Seq(Assn("x", Const(45)), Write(Var("x")))));
+-- printf("---Stmt read variable check\n");
+-- printf("%s\n", evalStmt(45, Seq(Read("x"), Write(Var("x"))))) -- Error
