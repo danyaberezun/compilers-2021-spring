@@ -8,9 +8,9 @@ LAMAC=lamac
 
 all: $(ALL)
 
-Expr.o: State.o
+Expr.o: State.o 
 
-Stmt.o: State.o Expr.o World.o
+Stmt.o: State.o Expr.o World.o 
 
 SM.o: State.o World.o
 
