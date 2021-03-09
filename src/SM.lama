@@ -27,7 +27,25 @@ public fun showSM (prg) {
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  foldl(processInsn, c, insns)
+}
+
+fun processInsn ([stack, state, world], insn) {
+  case insn of
+      READ           -> (
+        var readResult = readWorld (world);
+        [readResult.fst:stack, state, readResult.snd]
+      )
+    | CONST (n)      -> [n:stack, state, world]
+    | BINOP (op)     -> binopHelper (op, stack, state, world)
+    | LD (x)         -> [state (x):stack, state, world]
+    | ST (name)      -> [stack.tl, state <- [name, stack.hd], world]
+    | WRITE          -> [stack.tl, state, writeWorld (stack.hd, world)]
+  esac
+}
+
+fun binopHelper (op, r:l:stack, state, world) {
+  [evalBinop (op, l, r):stack, state, world]
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -38,12 +56,22 @@ public fun evalSM (input, insns) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+      Var (x)          -> singletonBuffer (LD (x))
+    | Const (n)        -> singletonBuffer (CONST (n))
+    | Binop (op, l, r) -> addBuffer (l.compileExpr <+> r.compileExpr, BINOP (op))
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (case stmt of
+      Assn (name, expr)  -> expr.compileExpr . addBuffer (ST (name))
+    | Seq (stmt1, stmt2) -> stmt1.compileSM.listBuffer <+> stmt2.compileSM.listBuffer
+    | Skip               -> emptyBuffer()
+    | Read (name)        -> {READ, ST(name)}.listBuffer
+    | Write (e)          -> compileExpr (e) <+ WRITE
+  esac)
 }
