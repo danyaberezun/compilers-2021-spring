@@ -272,6 +272,10 @@ fun suffix (op) {
   esac
 }
 
+fun compileCmp(env, code, op, x, y) {
+  [env.push(y), code <+> singletonBuffer(Binop("cmp", x, y)) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y)]
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -287,7 +291,36 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | CONST (n) -> case env.allocate of [s, env] -> [env, code <+> move (L (n), s)] esac
+      | LD (x) -> 
+        case (env.addGlobal (x)).allocate of 
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+        esac
+      | ST (x) ->
+        case (env.addGlobal (x)).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+        esac
+      | BINOP (op) -> 
+          case env.pop2 of
+              [x, y, env] ->
+                  case op of
+                      "+" -> [env.push(y), code <+> singletonBuffer(Binop(op, x, y))]
+                    | "-" -> [env.push(y), code <+> singletonBuffer(Binop(op, x, y))]
+                    | "*" -> [env.push(y), code <+> singletonBuffer(Binop(op, x, y))]
+                    | "/" -> [env.push(y), code <+> (move (y, eax) <+ Cltd <+ IDiv(x) <+> move(eax, y))]
+                    | "%" -> [env.push(y), code <+> (move (y, eax) <+ Cltd <+ IDiv(x) <+> move(edx, y))]
+                    | "<" -> compileCmp(env, code, op, x, y)
+                    | "<=" -> compileCmp(env, code, op, x, y)
+                    | ">" -> compileCmp(env, code, op, x, y)
+                    | ">=" -> compileCmp(env, code, op, x, y)
+                    | "==" -> compileCmp(env, code, op, x, y)
+                    | "!=" -> compileCmp(env, code, op, x, y)
+                    | "!!" -> [env.push(y), code <+> singletonBuffer(Binop(op, x, y))]
+                    | "&&" -> [env.push(y), code <+> singletonBuffer(Binop(op, x, y))]
+                    | _ -> failure ("codegeneration for binary operation %s is not implemented yet\n", op.string)
+                  esac
+          esac
+     | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
