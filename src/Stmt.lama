@@ -16,8 +16,32 @@ import World;
 --        Read   (string)           |
 --        Write  (expr)             |
 
+fun evalStmtAssn ([st, w], Assn (varName, expr)) {
+  [st <- [varName, evalExpr (st, expr)], w]
+}
+
+fun evalStmtSeq (c, Seq (stmt0, stmt1)) {
+  eval (eval (c, stmt0), stmt1)
+}
+
+fun evalStmtRead ([st, w], Read (varName)) {
+  var readResult = readWorld (w);
+  [st <- [varName, readResult[0]], readResult[1]]
+}
+
+fun evalStmtWrite ([st, w], Write (expr)) {
+  [st, writeWorld (evalExpr (st, expr), w)]
+}
+
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+  case stmt of
+    Assn  (_, _) -> evalStmtAssn  (c, stmt) |
+    Seq   (_, _) -> evalStmtSeq   (c, stmt) |
+    Skip         -> c                       |
+    Read  (_)    -> evalStmtRead  (c, stmt) |
+    Write (_)    -> evalStmtWrite (c, stmt) |
+    _            -> failure ("Stmt eval not implemented\n")
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output
