@@ -272,6 +272,7 @@ fun suffix (op) {
   esac
 }
 
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -287,7 +288,61 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | LD (x) -> 
+          case env.allocate of 
+            [s, env] -> [env, code <+ Mov (env.loc (x), s)]
+          esac
+      | CONST (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+ Mov (L (x), s)]
+          esac
+      | ST (x) -> 
+          case env.addGlobal(x).pop of
+            [s, env] -> [env, code <+ Mov (s, env.loc (x))]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [lhs, rhs, env] -> 
+              case op of 
+                "+" -> 
+                  case env.allocate of
+                    [s, env] -> [env, code <+ Binop (op, rhs, lhs) <+ Mov (lhs, s)]
+                  esac
+              | "-" ->
+                  case env.allocate of
+                    [s, env] -> [env, code <+ Binop (op, lhs, rhs) <+ Mov (rhs, s)]
+                  esac
+              | "*" -> [env.push (rhs), code <+ Binop(op, lhs, rhs)]
+              | "/" -> 
+                  case env.allocate of 
+                    [s, env] -> [env, code <+ 
+                                        Mov (rhs, eax) <+
+                                        Cltd <+
+                                        Push (ebx) <+
+                                        Mov (lhs, ebx) <+
+                                        IDiv (ebx) <+
+                                        Pop (ebx) <+
+                                        Mov (eax, s)]
+                  esac
+              | "%" -> 
+                   case env.allocate of
+                     [s, env] -> [env, code <+
+                                       Mov (rhs, ebx) <+
+                                       Mov (lhs, edx) <+ 
+                                       IDiv (ebx) <+
+                                       Mov (edx, s)]
+                   esac
+              | _ -> 
+                  case env.allocate of 
+                     [s, env] -> [env, code <+
+                                       Binop ("cmp", lhs, rhs) <+
+                                       Push (eax) <+
+                                       Set (suffix (op), "%al") <+
+                                       Mov (eax, s) <+
+                                       Pop (eax)]
+                  esac
+          esac
+      esac
       esac
     }, [env, emptyBuffer ()], code)
 }

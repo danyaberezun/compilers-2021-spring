@@ -15,9 +15,19 @@ import World;
 --        Skip                      |
 --        Read   (string)           |
 --        Write  (expr)             |
-
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+  case c of 
+    [state, world] -> case stmt of
+      Assn (st, expr) -> [state <- [st, evalExpr (state, expr)], world]
+    | Read (st)       -> case readWorld (world) of
+        [r1, r2] -> [state <- [st, r1], r2] 
+        esac
+    | Write (expr)    -> [state, writeWorld (evalExpr (state, expr), world)]
+    | Skip            -> c
+    | Seq (lhs, rhs)  -> eval (eval (c, lhs), rhs)
+    | _               -> failure("[ERROR] Unsupported Stmt:eval match")
+    esac
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output
