@@ -273,24 +273,80 @@ fun suffix (op) {
   esac
 }
 
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
-    }, [env, emptyBuffer ()], code)
+    foldl (
+      fun ([env, scode], i) {
+        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        case i of
+          READ ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            esac             
+        | WRITE ->
+            case env.pop of
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            esac
+        | LD (x) -> 
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s) <+ Push (s)] 
+            esac
+        | ST (x) ->
+            case env.addGlobal (x).pop of 
+              [s, env] -> [env, code <+> move (s, env.loc (x))]
+            esac 
+        | BINOP (op) ->
+            case env.pop2 of 
+              [x, y, env] -> [env.push(y), code <+>  (
+                                                        
+                                                        fun sbinop(op, a, b) {
+                                                          if memOpnd (b)
+                                                          then move (b, edx) <+ Binop (op, a, edx) <+ Mov (edx, b)
+                                                          else singletonBuffer (Binop (op, a, b))
+                                                          fi
+                                                        }
+
+                                                        fun comOp(suff, a, b) {
+                                                          move (L (0), eax) <+> sbinop ("cmp", a, b) <+ Set (suff, "%al") <+> move (eax, b)
+                                                        }
+
+                                                        fun logicOP(op, a, b) {
+                                                          binOp (">", L(0), a) <+> binOp(">", L(0), b) <+> sbinop (op, a, b) <+ Binop ("&&", L (1), b)
+                                                        }
+
+                                                        fun binOp (op, a, b) {
+                                                          case op of 
+                                                          
+                                                            "+" -> sbinop (op, a, b)
+                                                          | "-" -> sbinop (op, a, b)
+                                                          | "*" -> sbinop (op, a, b)
+                                                          |  "/" -> move (b, eax) <+ Cltd <+ IDiv (a) <+> move (eax, b)
+                                                          | "%"  -> move (b, eax) <+ Cltd <+ IDiv (a) <+> move (edx, b)
+                                                          | "==" -> comOp (suffix(op), a, b)
+                                                          | "!=" -> comOp (suffix(op), a, b)
+                                                          | "<"  -> comOp (suffix(op), a, b)
+                                                          | "<=" -> comOp (suffix(op), a, b)
+                                                          | ">"  -> comOp (suffix(op), a, b)
+                                                          | ">=" -> comOp (suffix(op), a, b)
+                                                          | "!!" -> logicOP (op, a, b)
+                                                          | "&&" -> logicOP (op, a, b)
+                                                          | _    -> failure ("codegeneration for instruction %s is'nt implemented\n", i.string)
+                                                          esac
+                                                        }
+
+                                                        binOp (op, x, y)
+                                                    )
+              ]
+            esac 
+        | CONST (v) ->
+            case env.allocate of 
+              [s, env] -> [env, code <+> move (L (v), s)]
+            esac 
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        esac
+      }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
@@ -320,3 +376,5 @@ public fun compileX86 (args, code) {
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
+
+

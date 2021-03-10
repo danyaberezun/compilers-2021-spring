@@ -11,15 +11,34 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+fun binOp (op) {
+  [s(op), fun (l, op, r) {Binop (op, l, r)}]
+}
+
+var ops = {
+           [Left, map(binOp,{"&&", "!!"})],
+           [Nona, map(binOp,{"==", "!=", "<", "<=", ">", ">="})],
+           [Left, map(binOp,{"+", "-"})],
+           [Left, map(binOp,{"*", "/", "%"})]
+          };
+
 -- Primary expression
 var primary = memo $ eta syntax (x=decimal {Const (stringInt (x))} |
                                  x=lident  {Var (x)}               |
-                                 inbr[s("("), exp, s(")")]),
-      exp = memo $ eta (failure ("expression parsing not implemented\n"));
+                                 inbr[s ("("), exp, s (")")]);
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
+var exp = memo $ eta expr (ops, primary);
+
+var st = memo $ eta (kSkip @ lift (Skip) |
+                       kRead |> lift (primary @ fun (Var (x)) {Read (x)}) |
+                       kWrite |> lift (exp @ fun (x) {Write (x)}) |
+                       lident |> fun (x) { s(":=") |> lift (exp @ fun (e) {Assn (x, e)}) });
+
+
+var stmt = memo $ eta (st |
+                         st |> fun (s1) { s(";") |> lift (stmt @ fun (s2) {Seq (s1, s2)}) });   
    
 
 -- Public top-level parser
 public parse = stmt;
-             
+
