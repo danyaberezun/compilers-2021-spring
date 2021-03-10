@@ -19,11 +19,72 @@ import World;
 --        While   (expr, stmt)       |
 --        DoWhile (stmt, expr)
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+fun eval (configuration, statement) {
+  var state = configuration.fst;
+  var world = configuration.snd;
+  -- printf("stmt %s\n", statement.string);
+  
+  case statement of
+    Assn (variableName, expression) -> 
+      -- printf("%s=%s\n", variableName, expression.string);
+      state := (state <- [variableName, evalExpr(state, expression)]) |
+    Seq (substatement1, substatement2) -> 
+      -- printf("Seq %s\n   %s\n", substatement1.string, substatement2.string);
+      configuration := eval(eval(configuration, substatement1), substatement2);
+      state := configuration.fst;
+      world := configuration.snd |
+    Skip -> 
+      configuration |
+    Read (variableName) -> 
+      var value = readWorld(world);
+      -- printf("Read %s\n", variableName);
+      world := value.snd;
+      value := value.fst;
+      state := (state <- [variableName, value]) |
+    Write (expression) ->
+      -- printf("Write %s\n", expression.string);
+      world := writeWorld(evalExpr(state, expression), world) |
+    If (expression, substatement1, substatement2) ->
+      if evalExpr(state, expression) then
+        configuration := eval(configuration, substatement1)
+      else 
+        configuration := eval(configuration, substatement2)
+      fi;
+      state := configuration.fst;
+      world := configuration.snd |
+    While (expression, substatement) ->
+      -- printf("While %s\n   %s\n", expression.string, substatement.string);
+      while evalExpr(state, expression) do
+        configuration := eval(configuration, substatement);
+        state := configuration.fst
+      od;
+      world := configuration.snd |
+    DoWhile (substatement, expression) ->
+      -- printf("DoWhile %s\n   %s\n", substatement.string, expression.string);
+      do 
+        configuration := eval(configuration, substatement);
+        state := configuration.fst
+      while evalExpr(state, expression) od;
+      world := configuration.snd |
+    _ ->  
+      failure ("Unknown statement '" ++ string(statement) ++ "' appeared at evaluation\n")
+  esac;
+  
+  [state, world]
 }
 
 -- Evaluates a program with a given input and returns an output
 public fun evalStmt (input, stmt) {
   eval ([emptyState, createWorld (input)], stmt).snd.getOutput
 }
+
+-- printf("---Stmt write check\n");
+-- printf("%s\n", evalStmt(1, Write(Const(45))));
+-- printf("---Stmt skip check\n");
+-- printf("%s\n", evalStmt(1, Skip));
+-- printf("---Stmt seq check\n");
+-- printf("%s\n", evalStmt(1, Seq(Write(Const(45)), Write(Const(45)))));
+-- printf("---Stmt assign variable check\n");
+-- printf("%s\n", evalStmt(1, Seq(Assn("x", Const(45)), Write(Var("x")))));
+-- printf("---Stmt read variable check\n");
+-- printf("%s\n", evalStmt(45, Seq(Read("x"), Write(Var("x"))))) -- Error

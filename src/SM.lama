@@ -26,8 +26,40 @@ public fun showSM (prg) {
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (configuration, instructions) {
+  foldl(fun([stack, state, world], instruction) {
+    case instruction of
+      READ ->
+        var value = readWorld(world);
+        world := value.snd;
+        value := value.fst;
+        stack := value : stack |
+      WRITE ->
+        case stack of
+          value:tail ->
+            world := writeWorld(value, world);
+            stack := tail
+        esac |
+      BINOP(operation) ->
+        case stack of
+          rhs:lhs:tail ->
+            stack := (applyBinaryOp(operation, lhs, rhs) : tail)
+        esac |
+      LD(variableName) ->
+        stack := state(variableName) : stack |
+      ST(variableName) -> 
+        case stack of
+          value:tail ->
+            state := state <- [variableName, value];
+            stack := tail
+        esac |
+      CONST(value) -> 
+        stack := (value : stack) |
+      _ -> failure("Unknown instruction '" ++ string(instruction) ++ "' at stack unwrapping\n")
+    esac;
+
+    [stack, state, world]
+  }, configuration, instructions)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -35,15 +67,48 @@ public fun evalSM (input, insns) {
   eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
+fun compileExprBuffer(expression) {
+  -- printf("stex %s\n", string(expression));
+
+  case expression of 
+    Const(value) -> 
+      singletonBuffer(CONST(value)) |
+    Var(variableName) ->
+      singletonBuffer(LD(variableName)) |
+    Binop(operation, subexpression1, subexpression2) ->
+      compileExprBuffer(subexpression1)
+        .concatBuffer(compileExprBuffer(subexpression2)).addBuffer(BINOP(operation)) |
+    _ -> failure ("Unknown expression in stack machine '" ++ string(expression) ++ "'\n")
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+fun compileExpr (expression) {
+  getBuffer(compileExprBuffer(expression))
+}
+
+fun compileSMAux(statement) {
+  -- printf("stck %s\n", string(statement));
+
+  case statement of
+    Assn (variableName, expression) -> 
+      compileExprBuffer(expression).addBuffer(ST(variableName)) |
+    Read (variableName) -> 
+      singletonBuffer(READ).addBuffer(ST(variableName)) |
+    Write (expression) ->
+      compileExprBuffer(expression).addBuffer(WRITE) |
+    Seq (substatement1, substatement2) -> 
+      compileSMAux(substatement1).concatBuffer(compileSMAux(substatement2)) |
+    Skip ->
+      emptyBuffer() |
+    _ -> failure("Unknown statement in stack machine '" ++ string(statement) ++ "'\n")
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
-public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+public fun compileSM (statement) {
+  getBuffer(compileSMAux(statement))
 }
