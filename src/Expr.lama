@@ -13,6 +13,38 @@ import State;
 --        Const (int)                |
 --        Binop (string, expr, expr)
 
+fun evalExprVar (st, Var (varName)) {
+  st (varName)
+}
+
+fun evalExprConst (st, Const (value)) {
+  value
+}
+
+fun evalExprBinop (st, Binop (op, expr0, expr1)) {
+  case op of
+    "+"  -> evalExpr (st, expr0) +  evalExpr (st, expr1) |
+    "-"  -> evalExpr (st, expr0) -  evalExpr (st, expr1) |
+    "*"  -> evalExpr (st, expr0) *  evalExpr (st, expr1) |
+    "/"  -> evalExpr (st, expr0) /  evalExpr (st, expr1) |
+    "%"  -> evalExpr (st, expr0) %  evalExpr (st, expr1) |
+    "==" -> evalExpr (st, expr0) == evalExpr (st, expr1) |
+    "!=" -> evalExpr (st, expr0) != evalExpr (st, expr1) |
+    "<"  -> evalExpr (st, expr0) <  evalExpr (st, expr1) |
+    "<=" -> evalExpr (st, expr0) <= evalExpr (st, expr1) |
+    ">"  -> evalExpr (st, expr0) >  evalExpr (st, expr1) |
+    ">=" -> evalExpr (st, expr0) >= evalExpr (st, expr1) |
+    "&&" -> evalExpr (st, expr0) && evalExpr (st, expr1) |
+    "!!" -> evalExpr (st, expr0) !! evalExpr (st, expr1) |
+    _    -> failure  ("eval Binop is not supported\n")
+  esac
+}
+
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var   (_)       -> evalExprVar   (st, expr) |
+    Const (_)       -> evalExprConst (st, expr) |
+    Binop (_, _, _) -> evalExprBinop (st, expr) |
+    _               -> failure       ("evalExpr not implemented\n")
+  esac
 }
