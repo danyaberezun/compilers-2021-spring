@@ -1,0 +1,7 @@
+*.i
+*.o
+*.s
+*.sm
+regression/test???
+regression/test???.log
+regression/test???.run
