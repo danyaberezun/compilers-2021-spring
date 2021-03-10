@@ -273,11 +273,54 @@ fun suffix (op) {
   esac
 }
 
+var regSmals = ["%bl", "%cl", "%sil", "%dil", "%al", "%dl", "%ebp", "%esp"];
+
+fun opndString (opnd) {
+  case opnd of
+    R (i) -> regSmals [i]
+  | S (i) -> sprintf ("-%d(%%ebp)", (i+1))
+  | M (x) -> x
+  | L (i) -> sprintf ("$%d", i)
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
+      fun simpleBinop (env, code, op, x, y) {
+        [env.push (y), code <+> 
+                               if memOpnd (x) && memOpnd (y) 
+                               then listBuffer ({Mov (y, eax), Binop (op, x, eax), Mov (eax, y)})
+                               else singletonBuffer (Binop (op, x, y))
+                               fi]
+      }
+
+      fun boolBinop (env, code, op, x, y) {
+        [env.push (y), code 
+                            <+ Mov (L (0), eax) <+ Binop ("cmp", x, eax) <+ Set (suffix ("!="), opndString (eax))
+                            <+ Mov (L (0), edx) <+ Binop ("cmp", y, edx) <+ Set (suffix ("!="), opndString (edx))
+                            <+ Binop (op, eax, edx) <+ Mov (edx, y)]
+      }
+
+      fun div (env, code, op, x, y) {
+        [env.push (y), code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (case op of 
+                                                                            "/" -> eax
+                                                                          | "%" -> edx
+                                                                          esac, y)]
+      }
+
+      fun compareAsm (env, code, op, x, y) {
+        [env.push (y), code <+>
+                            if memOpnd(x) && memOpnd (y) 
+                            then listBuffer ({Mov (y, edx), Binop ("cmp", x, edx), Mov (L (0), edx), Set (suffix (op), opndString (edx)), 
+                                              Mov (edx, y)})
+                            else singletonBuffer (Binop ("cmp", x, y)) <+ Mov (L (0), edx) <+ Set (suffix (op), opndString (edx)) <+
+                                 Mov (edx, y)         
+                            fi]
+      }
+
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
         READ ->
@@ -285,9 +328,40 @@ fun compile (env, code) {
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
           esac             
       | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
+        case env.pop of
+          [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+        esac
+      | CONST (n) ->
+        case env.allocate of
+          [s, env] -> [env, code <+> move (L (n), s)] 
+        esac
+      | BINOP (op) ->
+        case env.pop2 of
+          [x, y, env] -> 
+            case op of
+              "+"  -> simpleBinop (env, code, op, x, y)
+            | "-"  -> simpleBinop (env, code, op, x, y)
+            | "*"  -> simpleBinop (env, code, op, x, y)
+            | "/"  -> [env.push (y), code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, y)]
+            | "%"  -> [env.push (y), code <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, y)]
+            | "<"  -> compareAsm (env, code, op, x, y)
+            | "<=" -> compareAsm (env, code, op, x, y)
+            | ">"  -> compareAsm (env, code, op, x, y)
+            | ">=" -> compareAsm (env, code, op, x, y)
+            | "==" -> compareAsm (env, code, op, x, y)
+            | "!=" -> compareAsm (env, code, op, x, y)
+            | "&&" -> boolBinop (env, code, op, x, y)
+            | "!!" -> boolBinop (env, code, op, x, y)
+            esac
+        esac
+      | LD (v) ->
+        case env.addGlobal (v).allocate of
+          [s, env] -> [env, code <+> move (env.loc (v), s)]
+        esac
+      | ST (v) ->
+        case env.addGlobal (v).pop of
+          [s, env] -> [env, code <+> move (s, env.loc (v))]
+        esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
