@@ -282,12 +282,59 @@ fun compile (env, code) {
       case i of
         READ ->
           case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            [s, env1] -> [env1, code <+ Call ("Lread") <+ Mov (eax, s)]
           esac             
       | WRITE ->
           case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            [s, env1] -> [env1, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+      | CONST (n) -> 
+        case env.allocate of
+          [s, env1] -> [env1, code <+ Mov (L (n), s)]
+        esac
+      | LD (varName) -> 
+        case env.allocate of
+          [s, env1] -> [env1, code <+> move (env1.loc (varName), s)]
+        esac
+      | ST (varName) -> (
+        var env1 = env.addGlobal (varName); 
+        case env1.pop of
+          [value, env2] -> [env2, code <+> move (value, env2.loc (varName))]
+        esac
+      )
+      | BINOP (opStr) ->
+        case env.pop2 of 
+          [y, x, env1] -> (
+            fun simpleOpCode (op, l, r) {
+              case r of
+                R (_) -> singletonBuffer (Binop (op, l, r))
+              | _ -> listBuffer ({Mov (r, eax), Binop(op, l, eax), Mov (eax, r)})
+              esac
+            }
+            fun simpleOp (op, l, r) {
+              [env1.push (r), code <+> simpleOpCode (op, l, r)]
+            }
+            fun compareOp (op, l, r) {
+              code <+ Mov (r, edx) <+ Binop("cmp", edx, l) <+ Mov (L (0), eax) <+ Set (suffix (op), "%al") <+ Mov (eax, r)
+            }
+            fun convertToBool(x) {
+              listBuffer ({Mov (L (0), eax), Binop("cmp", L (0), x), Set ("ne", "%al"), Mov (eax, x)})
+            }
+            fun boolOp(op, l, r) {
+              [env1.push (r), code <+> convertToBool (l) <+> convertToBool (r) <+> simpleOpCode (op, l, r)]
+            }
+            case opStr of
+              "+" -> simpleOp ("+", x, y)
+            | "-" -> simpleOp ("-", y, x)
+            | "&&" -> boolOp ("&&", x, y)
+            | "!!" -> boolOp ("!!", x, y)
+            | "*" -> simpleOp ("*", x, y)
+            | "/" -> [env1.push (y), code <+ Mov (x, eax) <+ Cltd <+ IDiv (y) <+> move (eax, y)]
+            | "%" -> [env1.push (y), code <+ Mov (x, eax) <+ Cltd <+ IDiv (y) <+> move (edx, y)]
+            | cmpOp -> [env1.push (y), compareOp (cmpOp, x, y)]
+            esac
+        )     
+        esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
