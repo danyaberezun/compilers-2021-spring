@@ -59,6 +59,7 @@ fun insnString (insn) {
     | "!!"  -> "orl" 
     | "^"   -> "xorl"
     | "cmp" -> "cmpl"
+    | x     -> x
     esac
   }
 
@@ -259,6 +260,19 @@ fun move (from, to) {
   fi
 }
 
+-- Generate code with semantic:
+-- l2 = l2 `op` l1
+-- NOTE: not save edx
+fun binop (op, l1, l2) {
+  case [memOpnd (l1), memOpnd (l2)] of
+    [true, true] -> case op of
+        "*" -> listBuffer ({Mov (l2, edx), Binop (op, l1, edx), Mov (edx, l2)})
+      | _   -> listBuffer ({Mov (l1, edx), Binop (op, edx, l2)})
+      esac
+  | _            -> singletonBuffer (Binop (op, l1, l2))
+  esac
+}
+
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -272,6 +286,18 @@ fun suffix (op) {
   esac
 }
 
+fun isCmpOp(op) {
+  case op of
+    "<" -> true
+  | ">" -> true
+  | "<=" -> true
+  | ">=" -> true
+  | "==" -> true
+  | "!=" -> true
+  | _ -> false
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -281,13 +307,57 @@ fun compile (env, code) {
       case i of
         READ ->
           case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            [s, env] -> [env, code <+ Call ("Lread") 
+                                   <+ Mov (eax, s)]
           esac             
       | WRITE ->
           case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            [s, env] -> [env, code <+ Push (s) 
+                                   <+ Call ("Lwrite") 
+                                   <+ Pop (eax)] -- or Binop ("-", "$4", eax) ???
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | BINOP (s) ->
+          case env.pop2 of 
+            [y, x, env] -> 
+            if isCmpOp (s)
+            then [env.push(x), code <+  Binop ("^", eax, eax) 
+                                    <+> binop ("cmp", y, x) 
+                                    <+  Set (suffix (s), "%al")
+                                    <+  Mov (eax, x)]
+            elif compare (s, "/") == 0 -- op1 / op2
+            then [env.push(x), code <+ Mov (x, eax)
+                                    <+ Cltd
+                                    <+ IDiv (y)
+                                    <+ Mov (eax, x)]
+            elif compare (s, "%") == 0
+            then [env.push(x), code <+ Mov (x, eax)
+                                    <+ Cltd
+                                    <+ IDiv (y)
+                                    <+ Mov (edx, x)]
+            elif compare (s, "&&") == 0 !! compare (s, "!!") == 0
+            then [env.push(x), code <+ Binop ("^", eax, eax)
+                                    <+> binop ("test", x, x)
+                                    <+ Set ("nz", "%al")
+                                    <+ Mov (eax, x)
+                                    <+ Binop ("^", eax, eax)
+                                    <+> binop ("test", y, y)
+                                    <+ Set ("nz", "%al")
+                                    <+ Binop (s, eax, x)]
+            else [env.push(x), code <+> binop (s, y, x)] -- op2 `op` op1
+            fi
+          esac
+      | ST (var_name) ->
+          case env.pop of
+            [op1, env] -> [env.addGlobal(var_name), code <+> move (op1, env.loc (var_name))]
+          esac
+      | LD (var_name) ->
+          case env.allocate of
+            [s, env] -> [env.addGlobal(var_name), code <+> move (env.loc (var_name), s)] -- TODO use move
+          esac
+      | CONST (n) -> 
+          case env.allocate of 
+            [s, env] -> [env, code <+ Mov (L (n), s)]
+          esac
       esac
     }, [env, emptyBuffer ()], code)
 }

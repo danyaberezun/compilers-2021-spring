@@ -1,0 +1,12 @@
+# trick for ignore binary
+src/*
+!src/*.*
+!src/*/
+!src/Makefile
+
+*.i
+*.o
+*.s
+*.log
+regression/test*
+regression/tmp.sm
