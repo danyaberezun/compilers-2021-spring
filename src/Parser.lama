@@ -12,13 +12,40 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+fun binop (op) {
+  [s (op), fun (l, o, r) {Binop (op, l, r)}]
+}
+
 -- Primary expression
 var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
                           lident  @ fun (x) {Var (x)} |
                           inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+      exp = memo $ eta (expr ({[Left, map (binop, {"!!"})],
+                               [Left, map (binop, {"&&"})],
+                               [Nona, map (binop, {"==", "!=", "<=", ">=", "<", ">"})],
+                               [Left, map (binop, {"+", "-"})],
+                               [Left, map (binop, {"*", "/", "%"})]}, 
+                        primary));
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
+var singleStmt = memo $ eta syntax (kSkip {Skip}                                               |
+                                    x=lident s[":="] e=exp {Assn (x, e)}                       |
+                                    kRead x=inbr[s("("), lident, s(")")] {Read (x)}            |
+                                    kWrite e=inbr[s("("), exp, s(")")] {Write (e)}             |
+                                    kIf e=exp kThen s1=stmt 
+                                      elifs=(kElif e2=exp kThen s2=stmt {[e2, s2]})* 
+                                      el=(kElse s3=stmt {s3})? kFi 
+                                      {If (e, s1, foldr (fun (acc, [e, s]) {If (e, s, acc)}, 
+                                                         case el of
+                                                           Some (s3) -> s3
+                                                         | None      -> Skip
+                                                         esac,
+                                                         elifs))}                              |
+                                    kWhile e=exp kDo s=stmt kOd {While (e, s)}                 |
+                                    kDo s=stmt kWhile e=exp kOd {DoWhile (s, e)}               |
+                                    kFor s1=stmt s[","] e=exp s[","] s2=stmt 
+                                      kDo s3=stmt kOd {Seq (s1, While (e, Seq (s3, s2)))}),
+    stmt = memo $ eta syntax (singleStmt |
+                              s1=singleStmt s[";"] s2=stmt {Seq (s1, s2)});
    
 
 -- Public top-level parser
