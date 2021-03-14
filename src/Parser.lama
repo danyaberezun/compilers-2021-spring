@@ -12,14 +12,51 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+fun inpar (p) {
+  inbr (s ("("), p, s (")"))
+}
+
 -- Primary expression
 var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
                           lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+                          inbr (s ("("), exp, s (")")));
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
+fun ctrBins (ops) {
+  map (fun (op) {
+    [s (op), fun (l, op, r) { Binop (op, l, r) }]
+  }, ops)
+}
+
+var exp = memo $ eta expr ({
+  [Left, ctrBins ({"!!"})],
+  [Left, ctrBins ({"&&"})],
+  [Nona, ctrBins ({"<", "<=", ">", ">=", "==", "!="})],
+  [Left, ctrBins ({"+", "-"})],
+  [Left, ctrBins ({"*", "/", "%"})]
+}, primary);
+
+var elifs = memo $ eta syntax (
+  kElif cond=exp kThen body=stmts elfs=elifs { If (cond, body, elfs) }
+| kElse body=stmts kFi { body }
+| kFi { Skip }
+);
+
+var stmt = memo $ eta syntax (
+  kSkip { Skip } 
+| kWrite from=inpar[exp] { Write (from) } 
+| kRead to=inpar[lident] { Read (to) } 
+| to=lident s[":="] from=exp { Assn (to, from) }
+| kWhile expr=exp kDo body=stmts kOd { While (expr, body) }
+| kDo body=stmts kWhile expr=exp kOd { DoWhile (body, expr) }
+| kIf cond=exp kThen body=stmts elfs=elifs { If (cond, body, elfs) }
+| kFor init=stmts s[","] cond=exp s[","] inc=stmts kDo body=stmts kOd { Seq (init, While (cond, Seq (body, inc))) }
+);
+
+var stmts = memo $ eta syntax (
+  c=stmt s[";"] r=stmts { Seq (c, r) }
+| stmt
+);
    
 
 -- Public top-level parser
-public parse = stmt;
+public parse = stmts;
