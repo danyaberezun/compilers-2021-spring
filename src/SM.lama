@@ -24,10 +24,61 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
+public fun getStackTop(stack, opName) {
+  case stack of
+    top:rest -> [top, rest]
+    | {} -> failure({"Stack is empty, unexpected ", opName, " operation."}.stringcat)
+  esac
+}
+
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  var curStack = c[0];
+  var curState = c[1];
+  var curWorld = c[2];
+  case insns of
+    instruction : rest -> 
+      case instruction of
+        READ -> (
+          var readRes = readWorld (curWorld);
+          var newVarValue = readRes.fst;
+          var newWorld = readRes.snd;
+
+          eval ([newVarValue : curStack, curState, newWorld], rest)
+          )
+        | WRITE -> (
+          var pair = getStackTop(curStack, "write");
+          var newVarValue = pair.fst;
+          var newStack = pair.snd;
+
+          var newWorld = writeWorld (newVarValue, curWorld);
+          eval ([newStack, curState, newWorld], rest)
+          )  
+        | BINOP (s) -> (
+          var pair = getStackTop (curStack, "bin");
+          var right = pair.fst;
+          var pairNew = getStackTop (pair.snd, "bin");
+          var left = pairNew.fst;
+          var newStack = pairNew.snd;
+
+          var newVarValue = getBinop (s) (left, right);
+          eval ([newVarValue : newStack, curState, curWorld], rest)
+          )
+        | LD (s) -> eval ([curState (s) : curStack, curState, curWorld], rest)
+        | ST (s) -> (
+          var pair = getStackTop (curStack, "store");
+          var newVarValue = pair.fst;
+          var newStack = pair.snd;
+
+          var newState = curState <- [s, newVarValue];
+          eval ([newStack, newState, curWorld], rest)
+          )
+        | CONST (integer) -> eval ([integer : curStack, curState, curWorld], rest)
+        | _ -> failure("No such instruction for stack machine.")
+      esac
+    | {} -> c
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -35,16 +86,46 @@ public fun evalSM (input, insns) {
   eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
+-- expr = Var   (string)             |
+--        Const (int)                |
+--        Binop (string, expr, expr)
+public fun compileExprUsingBuffer (expr) {
+  case expr of
+    Var (s) -> singletonBuffer (LD (s))
+    | Const (integer) -> singletonBuffer (CONST (integer))
+    | Binop (s, exprLeft, exprRight) -> compileExprUsingBuffer (exprLeft) <+> compileExprUsingBuffer (exprRight) <+ BINOP (s)
+    | _ -> failure("No such expression.")
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list 
 -- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  getBuffer (compileExprUsingBuffer (expr))
+}
+
+-- stmt = Assn   (string, expr)     |
+--        Seq    (stmt, stmt)       |
+--        Skip                      |
+--        Read   (string)           |
+--        Write  (expr)             |
+public fun compileSMUsingBuffer(stmt) {
+  case stmt of
+    Assn (s, expr) -> compileExprUsingBuffer (expr) <+ ST (s)
+    | Seq (stmtLeft, stmtRight) -> compileSMUsingBuffer (stmtLeft) <+> compileSMUsingBuffer (stmtRight)
+    | Skip -> emptyBuffer ()
+    | Read (s) -> listBuffer ({READ, ST (s)})
+    | Write (expr) -> compileExprUsingBuffer (expr) <+ WRITE
+    | _ -> failure("No such statement.")
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compileSMUsingBuffer(stmt))
 }
+
+
