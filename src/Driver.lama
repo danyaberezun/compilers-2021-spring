@@ -1,0 +1,84 @@
+-- Driver: a top-level compiler utility
+
+import List;
+import Ref;
+import Array;
+import Fun;
+import Ostap;
+import Parser;
+import Matcher;
+import Lexer;
+import Stmt;
+import SM;
+import X86;
+import Manifest;
+
+-- Parses a command-line arguments, represented as a list, and
+-- returns an environment. The environment's interface is
+-- defined in the unit Manifest
+fun parseArgs (args) {
+  var mode   = ref (Comp),
+      infile = ref ({});
+
+  fun setMode (m) {
+    case deref (mode) of
+      Comp -> mode ::= m
+    | _    -> failure ("mode already set: %s\n", deref (mode).string)
+    esac
+  }
+
+  fun setInFile (fn) {
+    case deref (infile) of
+      #val -> infile ::= fn
+    | _    -> failure ("omitting ""%s"", input file name already set to ""%s""\n", fn, deref (infile))
+    esac
+  }
+  
+  fix (fun (rec) {
+         fun (args) {
+            case args of
+              {}    -> skip
+            | h : t ->
+               case h of
+                 "-i" -> setMode (Int)
+               | "-s" -> setMode (SM)
+               | fn   -> setInFile (fn)
+               esac;
+               rec (t)
+            esac
+         }
+      })(args);
+
+
+  [fun () {deref (mode)},
+   fun () {case deref(infile) of #val -> failure ("input file name not set\n") | fn -> fn esac}
+  ]        
+}
+
+var args = parseArgs (arrayList (sysargs).tl);
+
+-- The main part: parses input file, invokes interpreter/stack machine interpreter/x86
+-- code generator
+case parseString (parse |> bypass (end), fread (args.getInFile)) of
+  Succ (program) ->
+    case args.getMode of
+      Comp -> compileX86 (args, compileSM (program))
+    | mode ->
+       var input =
+          reverse (fix (fun (f) {
+                          fun (acc) {
+                            case readLine () of
+                              #val -> acc
+                            | arg  -> f (stringInt (arg) : acc) esac
+                          }
+                        }) ({}));
+          
+       iter (fun (x) {printf ("%d\n", x)},
+             case mode of
+               Int -> evalStmt (input, program)
+             | SM  -> evalSM (input, compileSM (program))
+             esac)
+    esac
+| x@Fail (err, line, col) ->   
+   failure ("%s at %d:%d\n", err.hd, line, col)
+esac
