@@ -273,6 +273,44 @@ fun suffix (op) {
   esac
 }
 
+fun compileSimpleBinOp (op, x, y, ans) {
+  move (y, ans) <+> case ans of
+    R (regNum) -> singletonBuffer (Binop (op, x, R (regNum)))
+  | _ -> singletonBuffer (Mov (ans, eax)) <+ Binop (op, x, eax) <+ Mov (eax, ans)
+  esac
+}
+
+fun compileDiv (op, x, y, ans) {
+  var resultReg = case op of
+    "/" -> eax
+  | "%" -> edx
+  esac;
+  singletonBuffer (Mov (x, eax)) <+
+  Cltd <+ IDiv (y) <+ 
+  Mov (resultReg, ans)
+}
+
+fun compileComparison (op, x, y, ans) {
+  singletonBuffer (Binop ("^", edx, edx)) <+
+  Mov (y, eax) <+
+  Binop ("cmp", eax, x) <+
+  Set (suffix (op), "%dl") <+
+  Mov (edx, ans)
+}
+
+fun compileBoolConversion (x) {
+  singletonBuffer (Binop ("^", edx, edx)) <+
+  Binop ("cmp", L (0), x) <+
+  Set ("ne", "%dl") <+
+  Mov (edx, x)
+}
+
+fun compileBoolBinOp (op, x, y, ans) {
+  compileBoolConversion (x) <+>
+  compileBoolConversion (y) <+>
+  compileSimpleBinOp (op, x, y, ans)
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -281,14 +319,60 @@ fun compile (env, code) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
+          var allocateResult = env.allocate;
+          var mem = allocateResult.fst;
+          var newEnv = allocateResult.snd;
+          var newCode = code <+ Call ("Lread") <+ Mov (eax, mem);
+          [newEnv, newCode]       
       | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+          var popResult = env.pop;
+          var mem = popResult.fst;
+          var newEnv = popResult.snd;
+          var newCode = code <+ Push (mem) <+ Call ("Lwrite") <+ Pop (eax);
+          [newEnv, newCode]
+      | LD (varName) ->
+          var allocateResult = env.allocate;
+          var mem = allocateResult.fst;
+          var newEnv = allocateResult.snd;
+          var newCode = code <+> move (newEnv.loc (varName), mem);
+          [newEnv, newCode]
+      | ST (varName) ->
+          var envWithNewVar = env.addGlobal (varName); 
+          var popResult = envWithNewVar.pop;
+          var mem = popResult.fst;
+          var newEnv = popResult.snd;
+          var newCode = code <+> move (mem, newEnv.loc (varName));
+          [newEnv, newCode]
+      | CONST (n) -> 
+          var allocateResult = env.allocate;
+          var mem = allocateResult.fst;
+          var newEnv = allocateResult.snd;
+          var newCode = code <+ Mov (L (n), mem);
+          [newEnv, newCode]
+      | BINOP (op) ->
+          var allocateResult = env.allocate;
+          var ansMem = allocateResult.fst;
+          var envWithAns = allocateResult.snd.pop.snd;
+
+          var pop2Result = envWithAns.pop2;
+          var y = pop2Result[0];
+          var x = pop2Result[1];
+          var poppedEnv = pop2Result[2];
+
+          var newEnv = poppedEnv.push (ansMem);
+
+          var newCode = code <+> case op of
+            "+" -> compileSimpleBinOp (op, x, y, ansMem)
+          | "*" -> compileSimpleBinOp (op, x, y, ansMem)
+          | "&&" -> compileBoolBinOp (op, x, y, ansMem)
+          | "!!" -> compileBoolBinOp (op, x, y, ansMem)
+          | "-" -> compileSimpleBinOp (op, y, x, ansMem)
+          | "/" -> compileDiv (op, x, y, ansMem)
+          | "%" -> compileDiv (op, x, y, ansMem)
+          | _ -> compileComparison (op, x, y, ansMem)
+          esac;
+
+          [newEnv, newCode]
       esac
     }, [env, emptyBuffer ()], code)
 }
