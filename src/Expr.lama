@@ -14,5 +14,31 @@ import State;
 --        Binop (string, expr, expr)
 
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var (name) -> st (name)
+  | Const (c) -> c
+  | Binop (op, l, r) -> evalBinop (op, evalExpr (st, l), evalExpr (st, r))
+  esac
+}
+
+public fun evalBinop (op, l, r) {
+  getOp (op) (l, r)
+}
+
+fun getOp (op) {
+  case op of
+    "+"  -> infix +
+  | "-"  -> infix -
+  | "*"  -> infix *
+  | "/"  -> infix /
+  | "%"  -> infix %
+  | "<"  -> infix <
+  | ">"  -> infix >
+  | "<=" -> infix <=
+  | ">=" -> infix >=
+  | "==" -> infix ==
+  | "!=" -> infix !=
+  | "&&" -> infix &&
+  | "!!" -> infix !!
+  esac
 }
