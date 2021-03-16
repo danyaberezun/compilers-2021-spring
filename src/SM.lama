@@ -26,8 +26,27 @@ public fun showSM (prg) {
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval ([stack, state, w], insns) {
+  case insns of
+      READ:insns_tail           ->
+        var res = readWorld (w);
+        eval ([res.fst:stack, state, res.snd], insns_tail)
+    | WRITE:insns_tail          ->
+        case stack of
+          head:stack_tail -> eval ([stack_tail, state, writeWorld (head, w)], insns_tail)
+        esac
+    | BINOP (op):insns_tail     ->
+        case stack of
+          head:next:stack_tail -> eval ([evalOp (op, next, head):stack_tail, state, w], insns_tail)
+        esac
+    | LD (x):insns_tail         -> eval ([state (x):stack, state, w], insns_tail)
+    | ST (x):insns_tail         ->
+        case stack of
+          n:stack_tail -> eval ([stack_tail, state <- [x, n], w], insns_tail)
+        esac
+    | CONST (n):insns_tail      -> eval ([n:stack, state, w], insns_tail)
+    | _                         -> [stack, state, w]
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -36,15 +55,24 @@ public fun evalSM (input, insns) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list 
--- of stack machine instructions
+-- Takes an expression, returns a buffer of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+      Var   (x)                 -> singletonBuffer (LD (x))
+    | Const (n)                 -> singletonBuffer (CONST (n))
+    | Binop (op, left, right)   -> compileExpr (left) <+> compileExpr (right) <+> singletonBuffer (BINOP (op))
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  case stmt of
+      Assn (x, expr)        -> getBuffer (compileExpr (expr) <+> singletonBuffer (ST (x)))
+    | Seq (stmt1, stmt2)    -> getBuffer (listBuffer (compileSM (stmt1)) <+> listBuffer (compileSM (stmt2)))
+    | Skip                  -> {}
+    | Read (x)              -> getBuffer (singletonBuffer (READ) <+> singletonBuffer (ST (x)))
+    | Write (expr)          -> getBuffer (compileExpr (expr) <+> singletonBuffer (WRITE))
+  esac
 }

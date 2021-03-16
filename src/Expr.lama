@@ -1,6 +1,7 @@
 -- Expression evaluator
 
 import List;
+import Collection;
 import State;
 
 
@@ -13,6 +14,33 @@ import State;
 --        Const (int)                |
 --        Binop (string, expr, expr)
 
+var m =
+ foldl (fun (m, [op, fop]) {addMap (m, op, fop)},
+        emptyMap (compare),        
+        {["+" , infix + ],
+         ["-" , infix - ],
+         ["*" , infix * ],
+         ["/" , infix / ],
+         ["%" , infix % ],
+         ["==", infix ==],
+         ["!=", infix !=],
+         ["<" , infix < ],
+         ["<=", infix <=],
+         [">" , infix > ],
+         [">=", infix >=],
+         ["&&", infix &&],
+         ["!!", infix !!]}
+        );
+
+-- public because we use it in the SM interpreter
+public fun evalOp (op, x, y) {
+  case findMap (m, op) of Some (f) -> f (x, y) esac
+}
+
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var   (x)        -> st (x)
+  | Const (n)        -> n
+  | Binop (op, x, y) -> evalOp (op, evalExpr (st, x), evalExpr (st, y))
+  esac
 }
