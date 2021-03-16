@@ -1,5 +1,5 @@
 -- Expression evaluator
-
+-- Alhasan Alkhaddour M4138c
 import List;
 import State;
 
@@ -14,5 +14,28 @@ import State;
 --        Binop (string, expr, expr)
 
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var (v)   -> st (v) 
+  | Const (n) -> n
+  | Binop (op, e1, e2) -> evalBinOp (op, evalExpr (st, e1), evalExpr (st, e2))
+  esac
 }
+
+public fun evalBinOp (op, l, r) {
+  case op of
+    "!!" -> l !! r
+  | "&&" -> l && r
+  | "==" -> l == r
+  | "!=" -> l != r
+  | "<=" -> l <= r
+  | "<"  -> l <  r
+  | ">=" -> l >= r
+  | ">"  -> l >  r 
+  | "+"  -> l +  r
+  | "-"  -> l -  r
+  | "*"  -> l *  r
+  | "/"  -> l /  r
+  | "%"  -> l %  r
+  esac
+}
+

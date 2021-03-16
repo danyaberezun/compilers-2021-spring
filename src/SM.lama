@@ -1,11 +1,12 @@
 -- Stack machine.
-
+-- Alhasan Alkhaddour M4138c
 import List;
 import World;
 import State;
 import Expr;
 import Buffer;
 import Fun;
+
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
@@ -27,7 +28,31 @@ public fun showSM (prg) {
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+	fun func(c, i) {
+		case i of
+	    		READ  -> case c of [stack, st, w] ->
+	    				var rw= readWorld(w);
+			               [rw[0]:stack, st, rw[1]]
+	    			 esac
+
+	  	      | WRITE ->  case c of [a:stack, st, w] ->
+	  	                       [stack, st, writeWorld(a, w)]
+				   esac
+	  	      | BINOP (s) -> case c of [b:a:stack, st, w] -> 
+	  	                            var res = evalBinOp(s,a,b);
+	  	                            [res:stack, st, w]  				
+	    				esac
+	  		
+	  		| LD    (x) -> case c of [stack, st, w] ->
+	  				       [st(x):stack, st, w]	
+	  		               esac  
+	  		| ST    (x) -> case c of [a:stack, st, w] ->
+	  				       [stack, st <- [x, a], w]	
+	  		               esac 
+	  		| CONST (n) -> [n:c[0], c[1], c[2]]
+	  	esac
+	}
+	foldl(func, c, getBuffer(insns))
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -36,14 +61,24 @@ public fun evalSM (input, insns) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+-- Takes an expression, returns a list 
+-- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+	  case expr of
+	    Var   (v)          -> singletonBuffer (LD (v))
+	  | Const (n)          -> singletonBuffer (CONST (n))
+	  | Binop (op, e1, e2) -> compileExpr (e1) <+> compileExpr (e2) <+> singletonBuffer (BINOP (op))
+	  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+    case stmt of
+      Assn  (v, e)   -> addBuffer (compileExpr (e), ST (v))
+    | Seq   (s1, s2) -> compileSM (s1) <+> compileSM (s2)
+    | Read  (v)      -> listBuffer ({READ, ST (v)})
+    | Write (e)      -> addBuffer (compileExpr (e), WRITE)
+    esac
 }
