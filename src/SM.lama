@@ -26,8 +26,45 @@ public fun showSM (prg) {
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (conf@[stack, state, world], insns) {
+  case insns of 
+    READ:restInsns -> (
+      case readWorld(world) of
+        [readValue, newWorld] -> eval(
+          [readValue:stack, state, newWorld],
+          restInsns
+        )
+      esac
+    )
+  | WRITE:restInsns -> (
+      case stack of
+        top:tailStack -> eval(
+          [tailStack, state, writeWorld(top, world)],
+          restInsns
+        )
+      esac
+    )
+  | BINOP (operation):restInsns -> (
+      case stack of 
+        rhs:lhs:tailStack -> (
+          var result = evalBinop(operation, lhs, rhs);
+          eval([result:tailStack, state, world], restInsns)
+        )
+      esac
+    )
+  | LD (variableName):restInsns -> (
+      eval([state (variableName):stack, state, world], restInsns)
+    )
+  | ST (variableName):restInsns -> (
+      case stack of
+        top:tailStack -> eval([tailStack, state <- [variableName, top], world], restInsns)
+      esac
+    )
+  | CONST (value):restInsns -> (
+      eval([value:stack, state, world], restInsns)
+    )
+  | _ -> [stack, state, world]
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -35,16 +72,36 @@ public fun evalSM (input, insns) {
   eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
+fun compileExprBuffer (expr) {
+  case expr of
+    Var   (variableName)        -> singletonBuffer (LD (variableName))
+  | Const (value)               -> singletonBuffer (CONST (value))
+  | Binop (operation, lhs, rhs) -> (
+      compileExprBuffer(lhs) <+> compileExprBuffer(rhs) <+ BINOP (operation)
+    )
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list 
 -- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  getBuffer (compileExprBuffer (expr))
+}
+
+fun compileSMBuffer (stmt) {
+  case stmt of
+    Assn  (variableName, expr)    -> compileExprBuffer (expr) <+ ST (variableName)
+  | Seq   (firstStmt, secondStmt) -> compileSMBuffer (firstStmt) <+> compileSMBuffer (secondStmt)
+  | Skip                          -> emptyBuffer ()
+  | Read  (variableName)          -> singletonBuffer (READ) <+ ST (variableName)
+  | Write (expr)                  -> compileExprBuffer (expr) <+ WRITE
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compileSMBuffer (stmt))
 }
