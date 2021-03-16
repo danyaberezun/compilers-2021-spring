@@ -26,8 +26,23 @@ public fun showSM (prg) {
 
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval ([stack, state, world], insns) {
+  case insns of
+      {} -> [stack, state, world]
+    | insn : other -> eval ((
+        case insn of
+            READ -> (
+              var value_and_world_1 = readWorld (world);
+              [value_and_world_1[0] : stack, state, value_and_world_1[1]]
+            )
+          | WRITE -> case stack of value : stack_1 -> [stack_1, state, writeWorld(value, world)] esac
+          | BINOP (op) -> case stack of b : a : stack_1 -> [evalBinop(op, a, b) : stack_1, state, world] esac
+          | LD (name) -> [state (name) : stack, state, world]
+          | ST (name) -> case stack of value : stack_1 -> [stack_1, state <- [name, value], world] esac
+          | CONST (value) -> [value : stack, state, world]
+        esac
+      ), other)
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -39,12 +54,21 @@ public fun evalSM (input, insns) {
 -- Takes an expression, returns a list 
 -- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+      Var (name) -> singletonBuffer (LD (name))
+    | Const (value) -> singletonBuffer (CONST (value))
+    | Binop (op, a, b) -> compileExpr (a) <+> compileExpr (b) <+ BINOP (op)
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
-}
+  case stmt of
+      Assn (x, e) -> getBuffer (compileExpr (e) <+> singletonBuffer (ST (x)))
+    | Read (x) -> getBuffer (singletonBuffer (READ) <+> singletonBuffer (ST (x)))
+    | Write (e) -> getBuffer (compileExpr (e) <+> singletonBuffer (WRITE))
+    | Seq (s1, s2) -> flatten ({ compileSM (s1), compileSM (s2) })
+  esac
+} 
