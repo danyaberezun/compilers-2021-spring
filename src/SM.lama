@@ -24,10 +24,52 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
+fun matchBinop (s) {
+  case s of
+    "+" -> infix +
+  | "-" -> infix -
+  | "*" -> infix *
+  | "/" -> infix /
+  | "%" -> infix %
+  | "<" -> infix <
+  | ">" -> infix >
+  | "<=" -> infix <=
+  | ">=" -> infix >=
+  | "==" -> infix ==
+  | "!=" -> infix !=
+  | "&&" -> infix &&
+  | "!!" -> infix !!
+  esac
+}
+
 -- Stack machine interpreter. Takes an SM-configuration and a program,
--- returns a final configuration
+-- returns a final configuration ([stack, state, world])
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  -- config -> Insn -> config
+  fun evalInsn ([stack, state, world], insn) {
+    case insn of
+      READ -> case readWorld (world) of
+          [v, w] -> [v : stack, state, w] 
+        esac
+    | WRITE -> case stack of
+          {} -> failure ("one value expected on stack")
+        | v:st -> [st, state, writeWorld (v, world)]
+        esac
+    | BINOP (s) -> case stack of 
+          {}   -> failure ("two value expected on stack")
+        | x:{} -> failure ("two value expected on stack")
+        | x:y:st -> [matchBinop (s) (y, x) : st, state, world]
+        esac
+    | LD (varName) -> [state (varName): stack, state, world]
+    | ST (varName) -> case stack of
+          {} -> failure ("one value expected on stack")
+        | x:st -> [st, state <- [varName, x], world]
+        esac
+    | CONST (c) -> [c:stack, state, world]
+    esac 
+  }
+
+  foldl (evalInsn, c, insns)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -37,13 +79,41 @@ public fun evalSM (input, insns) {
 
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+-- NOTE: aka WriterMonad
+fun compileExprWithWriter (expr, acc) {
+  case expr of
+    Var (s) -> LD (s) : acc
+  | Const (c) -> CONST (c) : acc
+  | Binop (s, le, re) -> 
+      var acc1 = compileExprWithWriter (le, acc);
+      var acc2 = compileExprWithWriter (re, acc1);
+      BINOP (s) : acc2
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  fun withWriter (stmt, acc) {
+    case stmt of
+      Assn (varName, expr) -> 
+        var acc1 = compileExprWithWriter (expr, acc);
+        ST (varName) : acc1
+    | Seq (stmt1, stmt2) -> 
+        var acc1 = withWriter(stmt1, acc);
+        withWriter(stmt2, acc1)
+    | Skip -> acc
+    | Read (varName) ->
+        var acc1 = READ : acc;
+        ST (varName) : acc1
+    | Write (expr) ->
+        var acc1 = compileExprWithWriter (expr, acc);
+        WRITE : acc1
+    esac
+  }
+
+  var buf = withWriter(stmt, {});
+
+  reverse (buf)
 }
