@@ -4,7 +4,6 @@ import Ostap;
 import Lexer;
 import List;
 import Fun;
-import Matcher;
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
@@ -12,14 +11,96 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
--- Primary expression
-var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
-                          lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+fun getInfixParsers (infs) {
+	map (
+		fun (inf) {
+			[
+				s (inf),
+				fun (x, op, y) {
+					case op of
+						inf -> Binop (op, x, y)
+					|	_ -> failure ("op /= inf")
+					esac
+				} 
+			]
+		},
+		infs
+	)
+}
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
-   
+var infixParsers = {
+	[
+		Left, getInfixParsers ({"!!"})
+	],
+    [
+    	Left, getInfixParsers ({"&&"})
+    ],
+    [
+    	Nona, getInfixParsers ({"==", "!=", "<", ">", "<=", ">="})
+    ],
+    [
+    	Left, getInfixParsers ({"+", "-"})
+    ],
+    [
+    	Left, getInfixParsers ({"*", "/", "%"})
+    ]
+};
+
+fun inOrdinaryBracketsParser (argParser) {
+	inbr (s("("), argParser, s(")"))
+}
+
+var expressionBase = memo $ eta syntax (
+	constValue=decimal {
+		Const (stringInt (constValue))
+	} |
+	varName=lident {
+		Var (varName)
+	} |
+	inOrdinaryBracketsParser[expression]
+), expression = memo $ eta expr (infixParsers, expressionBase);
+
+var elseParser = memo $ eta syntax (
+	kElif cond=expression kThen body=stmt curElse=elseParser { 
+		If (cond, body, curElse) 
+	} |
+	-kElse stmt -kFi |
+	kFi {
+		Skip
+	}
+), singleStatement = memo $ eta syntax (
+	varName=lident s[":="] exp=expression {
+		Assn (varName, exp)
+	} |
+	kSkip {
+		Skip
+	} |
+	kRead varName=inOrdinaryBracketsParser[lident] {
+		Read (varName)
+	} |
+	kWrite exp=inOrdinaryBracketsParser[expression] {
+		Write (exp)
+	} |
+	kWhile cond=expression kDo body=stmt kOd {
+		While (cond, body) 
+	} |
+	kDo body=stmt kWhile cond=expression kOd { 
+		DoWhile (body, cond) 
+	} |
+	kFor init=stmt s[","] cond=expression s[","] step=stmt kDo body=stmt kOd {
+		var curWhileBody = Seq (body, step);
+		var curWhile = While (cond, curWhileBody);
+		Seq (init, curWhile) 
+	} |
+	kIf cond=expression kThen body=stmt curElse=elseParser { 
+		If (cond, body, curElse) 
+	}
+), stmt = memo $ eta syntax (
+	singleStatement |
+	headStatement=singleStatement s[";"] tailStatements=stmt {
+		Seq (headStatement, tailStatements)
+	}
+);
 
 -- Public top-level parser
 public parse = stmt;

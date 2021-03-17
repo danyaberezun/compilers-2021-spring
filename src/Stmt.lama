@@ -4,6 +4,17 @@ import State;
 import Expr;
 import World;
 
+fun executeWhile (state, world, cond, body) {
+	if evalExpr (state, cond) then
+		var newContext = eval ([state, world], body);
+		var newState = newContext.fst;
+		var newWorld = newContext.snd;
+		executeWhile (newState, newWorld, cond, body)
+	else
+		[state, world]
+	fi
+}
+
 -- Evaluates a statement "stmt" in a configuration "c".
 -- A configuration is a pair of a state "s" and a world "w".
 -- Returns a final configuration (if any)
@@ -20,7 +31,43 @@ import World;
 --        DoWhile (stmt, expr)
 
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+	var state = c.fst;
+	var world = c.snd;
+	case stmt of
+		Assn (varName, expr) ->
+			var result = evalExpr (state, expr);
+			var newState = state <- [varName, result];
+			[newState, world]
+	|	Seq (a, b) ->
+			var newC = eval (c, a);
+			eval (newC, b)
+	| 	Skip -> c
+	| 	Read (varName) ->
+			var readResult = readWorld (world);
+			var value = readResult.fst;
+			var newWorld = readResult.snd;
+			var newState = state <- [varName, value];
+			[newState, newWorld]
+	|	Write (expr) ->
+			var exprRes = evalExpr (state, expr);
+			var newWorld = writeWorld (exprRes, world);
+			[state, newWorld]
+	|	If (cond, ifBody, elseBody) ->
+			var condResult = evalExpr (state, cond);
+			var body = if condResult then
+				ifBody
+			else
+				elseBody
+			fi;
+			eval (c, body)
+	|	While (cond, body) ->
+			executeWhile (state, world, cond, body)
+	|	DoWhile (body, cond) ->
+			var newContext = eval ([state, world], body);
+			var newState = newContext.fst;
+			var newWorld = newContext.snd;
+			executeWhile (newState, newWorld, cond, body)
+	esac
 }
 
 -- Evaluates a program with a given input and returns an output
