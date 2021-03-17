@@ -1,0 +1,10 @@
+*
+!*.*
+!*/
+*.log
+*.s
+*.run
+*.i
+*.sm
+*.o
+src/lama-impl
