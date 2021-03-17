@@ -278,6 +278,21 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+
+      fun baseBinop (op, x, y) {
+        emptyBuffer () <+ Mov (y, eax) <+ Binop (op, x, eax) <+ Mov (eax, y)
+      }
+
+      fun cmpBinop (op, x, y) {
+        baseBinop ("cmp", x, y) <+ Mov (L (0), eax) <+ Set (suffix (op), "%al") <+ Mov (eax, y)
+      }
+
+      fun boolBinop (op, x, y) {
+        cmpBinop (">", L (0), x)
+        <+> cmpBinop (">", L (0), y)
+        <+> baseBinop (op, x, y)
+      }
+
       case i of
         READ ->
           case env.allocate of
@@ -286,6 +301,46 @@ fun compile (env, code) {
       | WRITE ->
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | CONST (n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (n), s)]
+          esac
+      | LD (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | ST (x) ->
+          case env.addGlobal (x).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [x, y, env] ->
+            [env.push(y), code <+>
+              case op of
+
+                "+"  -> baseBinop (op, x, y)
+              | "-"  -> baseBinop (op, x, y)
+              | "*"  -> baseBinop (op, x, y)
+
+              | "/"  -> emptyBuffer () <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (eax, y)
+              | "%"  -> emptyBuffer () <+ Mov (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (edx, y)
+
+              | "==" -> cmpBinop (op, x, y)
+              | "!=" -> cmpBinop (op, x, y)
+              | "<"  -> cmpBinop (op, x, y)
+              | "<=" -> cmpBinop (op, x, y)
+              | ">"  -> cmpBinop (op, x, y)
+              | ">=" -> cmpBinop (op, x, y)
+
+              | "&&" -> boolBinop (op, x, y)
+              | "!!" -> boolBinop (op, x, y)
+
+              | _ -> failure ("codegeneration for BINOP %s is not yet implemented\n", op.string)
+
+              esac 
+            ]
           esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
