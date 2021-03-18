@@ -54,8 +54,79 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (environment, configuration, instructions) {
+  fun applyInstruction([stack, state, world], instruction) {
+
+    case instruction of
+      READ ->
+        var value = readWorld(world);
+        world := value.snd;
+        value := value.fst;
+        stack := value : stack |
+      WRITE ->
+        case stack of
+          value:tail ->
+            world := writeWorld(value, world);
+            stack := tail
+        esac |
+      BINOP(operation) ->
+        case stack of
+          rhs:lhs:tail ->
+            stack := (applyBinaryOp(operation, lhs, rhs) : tail)
+        esac |
+      LD(variableName) ->
+        stack := state(variableName) : stack |
+      ST(variableName) -> 
+        case stack of
+          value:tail ->
+            state := state <- [variableName, value];
+            stack := tail
+        esac |
+      CONST(value) -> 
+        stack := (value : stack) |
+      LABEL(_) -> skip |
+      JMP(_) -> skip |
+      CJMP(_, _) -> skip |
+      _ -> failure("Unknown instruction '" ++ string(instruction) ++ "' at stack unwrapping\n")
+    esac;
+
+    [stack, state, world]
+  }
+
+  fun applyLabelJumps([stack, state, world], instruction : instructions) {
+      case instruction of
+        JMP(labelName) ->
+          instructions := environment.fromLabel(labelName) |
+        CJMP(condition, labelName) ->
+          case stack of conditionValue : stackTail ->
+            stack := stackTail;
+            if (compare(condition, "nz") == 0 && conditionValue != 0) 
+            !! (compare(condition, "z") == 0 && conditionValue == 0) then
+              instructions := environment.fromLabel(labelName)
+            fi
+          esac |
+        _ -> skip        
+      esac;
+      
+      [[stack, state, world], instructions]
+  }
+
+  while size(instructions) > 0 do
+    case instructions of instruction : _ ->
+      var tmp;
+      -- printf("stckeval %s\n", string(instruction));
+      configuration := applyInstruction(configuration, instruction);
+      -- Change remaining instructions if jmp to label occured or just get remaining ones
+      tmp := applyLabelJumps(configuration, instructions);
+      configuration := tmp[0];
+      -- printf("%s\n", instructions.string);
+      instructions  := tmp[1]
+      -- printf("%s\n", instructions.string);
+      -- printf("-stckeval\n")
+    esac
+  od;
+
+  configuration
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -93,15 +164,126 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+fun compileExprBuffer(expression) {
+  -- printf("stex %s\n", string(expression));
+
+  case expression of 
+    Const(value) -> 
+      singletonBuffer(CONST(value)) |
+    Var(variableName) ->
+      singletonBuffer(LD(variableName)) |
+    Binop(operation, subexpression1, subexpression2) ->
+      compileExprBuffer(subexpression1)
+        .concatBuffer(compileExprBuffer(subexpression2)).addBuffer(BINOP(operation)) |
+    _ -> failure ("Unknown expression in stack machine '" ++ string(expression) ++ "'\n")
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+fun compileExpr (expression) {
+  getBuffer(compileExprBuffer(expression))
+}
+
+fun compileSMAux(statement, environment) {
+  var instructions;
+
+  -- fun compileSMAuxAndUpdateEnv(statement) {
+  --   var result = compileSMAux(statement, environment);
+  --   -- printf("     in %s\n", string(environment));
+  --   environment := result[1]; -- Does not change env in outer scope
+  --   -- printf("     out %s\n", string(environment));
+  --   result[0] : result[1]
+  -- }
+
+  case statement of
+    Assn (variableName, expression) -> 
+      instructions := compileExprBuffer(expression).addBuffer(ST(variableName)) |
+    Read (variableName) -> 
+      instructions := singletonBuffer(READ).addBuffer(ST(variableName)) |
+    Write (expression) ->
+      instructions := compileExprBuffer(expression).addBuffer(WRITE) |
+    Seq (substatement1, substatement2) -> 
+      -- instructions := compileSMAuxAndUpdateEnv(substatement1); -- New environment is not passed here
+      -- printf("    Seqmiddle %s\n", environment.string); 
+      -- instructions := instructions.concatBuffer(
+      --   compileSMAuxAndUpdateEnv(substatement2)
+      -- ) |
+      var tmp;
+      tmp := compileSMAux(substatement1, environment);
+      environment := tmp[1];
+      instructions := tmp[0];
+      tmp := compileSMAux(substatement2, environment);
+      environment := tmp[1];
+      instructions := instructions.concatBuffer(tmp[0]) |
+    While (condition, bodyStatement) ->
+      case environment.genLabels(2) of [labelStart, labelBody, newEnv] ->
+        var tmp;
+
+        environment := newEnv;
+        -- instructions := singletonBuffer(JMP(labelStart)) <+ LABEL(labelBody) 
+        --   <+> compileSMAuxAndUpdateEnv(bodyStatement) <+ LABEL(labelStart)
+        --   <+> compileExprBuffer(condition) <+ CJMP("nz", labelBody)
+
+        tmp := compileSMAux(bodyStatement, environment);
+        environment := tmp[1];
+        instructions := singletonBuffer(JMP(labelStart)) <+ LABEL(labelBody)
+          <+> tmp[0] <+ LABEL(labelStart)
+          <+> compileExprBuffer(condition) <+ CJMP("nz", labelBody)
+      esac |
+    DoWhile(bodyStatement, condition) ->
+      case environment.genLabels(1) of [labelBody, newEnv] ->
+        var tmp;
+
+        environment := newEnv;
+        -- instructions := singletonBuffer(LABEL(labelBody))
+        --   <+> compileSMAuxAndUpdateEnv(bodyStatement)
+        --   <+> compileExprBuffer(condition) <+ CJMP("nz", labelBody)
+
+        tmp := compileSMAux(bodyStatement, environment);
+        environment := tmp[1];
+        instructions := singletonBuffer(LABEL(labelBody))
+          <+> tmp[0]
+          <+> compileExprBuffer(condition) <+ CJMP("nz", labelBody)
+      esac |
+    If (condition, consequentStatement, alternativeStatement) ->
+      case environment.genLabels(2) of [labelAlternative, labelEnd, newEnv] -> 
+        var tmp;
+
+        environment := newEnv;
+        -- instructions := compileExprBuffer(condition)
+        --   <+ CJMP("z", labelAlternative)
+        --   <+> compileSMAuxAndUpdateEnv(consequentStatement);
+        -- instructions := instructions
+        --   <+ JMP(labelEnd) <+ LABEL(labelAlternative)
+        --   <+> compileSMAuxAndUpdateEnv(alternativeStatement)
+        --   <+ LABEL(labelEnd)
+
+
+        tmp := compileSMAux(consequentStatement, environment);
+        environment := tmp[1];
+        instructions := compileExprBuffer(condition)
+          <+ CJMP("z", labelAlternative)
+          <+> tmp[0];
+        tmp := compileSMAux(alternativeStatement, environment);
+        environment := tmp[1];
+        instructions := instructions
+          <+ JMP(labelEnd) <+ LABEL(labelAlternative)
+          <+> tmp[0]
+          <+ LABEL(labelEnd)
+      esac |
+    Skip ->
+      instructions := emptyBuffer() |
+    _ -> failure("Unknown statement in stack machine '" ++ string(statement) ++ "'\n")
+  esac;
+
+
+  [instructions, environment]
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
-public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+public fun compileSM (statement) {
+  getBuffer(compileSMAux(statement, initCompEnv())[0])
 }
