@@ -20,7 +20,71 @@ import World;
 --        DoWhile (stmt, expr)
 
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+  case stmt of
+    Assn (s, expr) -> (
+      var curState = c.fst;
+      var curWorld = c.snd;
+
+      var expRes = evalExpr(curState, expr);
+      var nextState = curState <- [s, expRes];
+      [nextState, curWorld] 
+    ) 
+  | Seq (stmtLeft, stmtRight) -> (
+    var cLeft = eval(c, stmtLeft);
+    eval(cLeft, stmtRight)
+    )
+  | Skip -> c
+  | Read (s) -> (
+      var curState = c.fst;
+      var curWorld = c.snd;
+      
+      var readResult = readWorld(curWorld);
+      var newVarValue = readResult.fst;
+      var newWorld = readResult.snd;
+
+      var newState = curState <- [s, newVarValue];
+      [newState, newWorld]
+    )
+  | Write (expr) ->  (
+      var curState = c.fst;
+      var curWorld = c.snd;
+
+      var expRes = evalExpr(curState, expr);
+      var newWorld = writeWorld(expRes, curWorld);
+      [curState, newWorld]
+    )
+  | While (eCondition, inner) -> (
+      var curState = c.fst;
+      var curWorld = c.snd;
+
+      while (evalExpr (curState, eCondition)) do 
+        var res = eval ([curState, curWorld], inner);
+        curState := res.fst;
+        curWorld := res.snd
+      od;
+      [curState, curWorld]
+    )
+  | DoWhile (inner, eCondition) -> (
+      var curState = c.fst;
+      var curWorld = c.snd;
+
+      do
+        var res = eval ([curState, curWorld], inner);
+        curState := res.fst;
+        curWorld := res.snd
+      while evalExpr (curState, eCondition) od;
+      [curState, curWorld]
+    )
+  | If (eCondition, ifInner, elseInner) -> (
+      var curState = c.fst;
+      var curWorld = c.snd;
+      
+      var condRes = evalExpr (curState, eCondition);
+      var inner = if condRes then ifInner else elseInner fi;
+      eval (c, inner)
+    )
+  | _ -> failure("No such statement.")
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output

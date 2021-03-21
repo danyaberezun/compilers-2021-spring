@@ -1,10 +1,10 @@
--- Parser 
+-- Parser
 
 import Ostap;
 import Lexer;
 import List;
 import Fun;
-import Matcher;
+import Std;
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
@@ -12,14 +12,62 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
--- Primary expression
-var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
-                          lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+fun binopAbstract(op) {
+  [s (op), fun (l, _, r) {Binop (op, l, r)}]
+}
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
+fun singleOp(op) {
+  {binopAbstract(op)}
+}
+
+fun listOp(opList) {
+  map (binopAbstract, opList)
+}
+
+fun leftFullOp(fullOp) {
+  [Left, fullOp]
+}
+
+fun nonaFullOp(fullOp) {
+  [Nona, fullOp]
+}
+
+fun log (fileName, msg) {
+  var file = fopen (fileName, "a");
+  fprintf (file, msg);
+  fclose (file)
+}
+
+-- Primary expression
+var primary = memo $ eta syntax (x=decimal {Const (stringInt (x))} |
+                                 x=lident  {Var (x)}               |
+                                 inbr[s("("), exp, s(")")]),
+      exp = memo $ eta (expr ({leftFullOp (singleOp ("!!")),
+                               leftFullOp (singleOp ("&&")),
+                               nonaFullOp (listOp ({"==", "!=", ">", "<", ">=", "<="})),
+                               leftFullOp (listOp ({"+", "-"})),
+                               leftFullOp (listOp ({"*", "/", "%"}))
+                              }, primary));
+
+var stmtSingle = memo $ eta syntax (v=lident s[":="] e=exp {Assn (v, e)}               |
+                                    -kSkip {Skip}                                      |
+                                    -kRead v=inbr[s ("("), lident, s (")")] {Read (v)} |
+                                    -kWrite e=inbr[s ("("), exp, s (")")] {Write (e)}  |
+                                    ifStmtParse                                        |
+                                    loopStmtParse
+                                    ),
+    ifStmtParse = memo $ eta syntax (-kIf e=exp -kThen st=stmt elseCond=elseStmtParse {If (e, st, elseCond)}),
+    elseStmtParse = memo $ eta syntax (-kFi {Skip}                                                              |
+                                       -kElse stmt -kFi                                                         |
+                                       -kElif e=exp -kThen st=stmt elseCond=elseStmtParse {If (e, st, elseCond)}
+                                      ),
+    loopStmtParse = memo $ eta syntax (-kFor forSt=stmt s[","] condition=exp s[","] increm=stmt                       
+                                       -kDo innerSt=stmt -kOd {Seq (forSt, While (condition, Seq (innerSt, increm)))} |
+                                       -kWhile eCondition=exp -kDo innerSt=stmt -kOd {While (eCondition, innerSt)}    |
+                                       -kDo innerSt=stmt -kWhile eCondition=exp -kOd {DoWhile (innerSt, eCondition)});
    
+var stmt = memo $ eta syntax (stmtSingle | sFirst=stmtSingle s[";"] sSecond=stmt {Seq (sFirst, sSecond)});
 
 -- Public top-level parser
 public parse = stmt;
+             
