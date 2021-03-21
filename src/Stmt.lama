@@ -16,8 +16,44 @@ import World;
 --        Read   (string)           |
 --        Write  (expr)             |
 
+fun readVar (c, varName) {
+	var st, state;
+  	st := readWorld (c[1]); 
+
+  	state := c[0];
+  	state := (state <- [varName, st[0]]);
+  	c[0] := state;
+  	c[1] := st[1]; 
+  	c 
+}
+
+fun assign(c, varName, expr) {
+
+	var exprValue = evalExpr (c[0], expr);
+	var state = c[0];
+
+	state := (state <- [varName, exprValue]);
+	c[0] := state;
+	c
+}
+
+fun putOut (c, expr) {
+	var exprValue = evalExpr (c[0], expr);
+	var newWorld = writeWorld ( exprValue, c[1] );
+	
+	c[1] := newWorld;
+	c
+}
+
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+
+  case stmt of
+  Assn (s@#str, e@#sexp) -> assign (c, s, e)
+  | Seq (s12@#sexp, s22@#sexp) -> ( c := eval (c, s12); c := eval (c, s22); c )
+  | Read (varName@#str) -> readVar (c, varName)
+  | Write (expr@#sexp) -> putOut (c, expr)
+  | Skip -> skip
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output
