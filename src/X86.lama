@@ -272,6 +272,20 @@ fun suffix (op) {
   esac
 }
 
+fun compileSimpleBinop (code, op, x, y) {
+  code <+> singletonBuffer (Binop(op, x, y))
+}
+
+fun compileDiv (code, op, x, y, reg) {
+  code <+> (move (y, eax) <+ Cltd <+ IDiv(x) <+> move(reg, y))
+}
+
+
+fun compileComp (code, op, x, y) {
+  code <+> singletonBuffer (Binop ("cmp", x, y)) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y)
+}
+
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -286,6 +300,42 @@ fun compile (env, code) {
       | WRITE ->
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [x, y, envPop] -> (
+              var envNew = envPop.push (y);
+              case op of
+                "+" -> [envNew, compileSimpleBinop (code, op, x, y)]
+                | "-" -> [envNew, compileSimpleBinop (code, op, x, y)]
+                | "*" -> [envNew, compileSimpleBinop (code, op, x, y)]
+                | "/" -> [envNew,  compileDiv (code, op, x, y, eax)]
+                | "%" -> [envNew,  compileDiv (code, op, x, y, edx)]
+                | "&&" -> [envNew, compileSimpleBinop (code, op, x, y)]
+                | "!!" -> [envNew, compileSimpleBinop (code, op, x, y)]
+                | "==" -> [envNew, compileComp (code, op, x, y)]
+                | "!=" -> [envNew, compileComp (code, op, x, y)]
+                | ">" -> [envNew, compileComp (code, op, x, y)]
+                | "<" -> [envNew, compileComp (code, op, x, y)]
+                | ">=" -> [envNew, compileComp (code, op, x, y)]
+                | "<=" -> [envNew, compileComp (code, op, x, y)]
+              esac
+           )
+          esac
+      | LD (varName) -> (
+          case env.allocate of
+            [s, envNew] -> [envNew, code <+> move (envNew.loc(varName), s)]
+          esac
+        )
+      | ST (varName) -> ( 
+          var envWithVar = env.addGlobal (varName);   
+          case envWithVar.pop of 
+            [varValue, envNew] -> [envNew, code <+> move (varValue, envNew.loc (varName))]
+          esac
+        )
+      | CONST (n) ->
+          case env.allocate of
+            [s, envNew] -> [envNew, code <+> move (L(n), s)]
           esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
