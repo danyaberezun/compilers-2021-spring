@@ -15,12 +15,25 @@ import World;
 --        Skip                      |
 --        Read   (string)           |
 --        Write  (expr)             |
-
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+-- 
+fun eval ([state, world], stmt) {
+  case stmt of
+    Skip -> [state, world]
+    | Assn (v, e) -> [state <- [v, evalExpr (state, e)], world]
+    | Read (v) -> 
+        case readWorld (world) of
+          [n, w_new] -> [state <- [v, n], w_new]
+        esac
+    | Write (e) -> [state, writeWorld (evalExpr (state, e), world)]
+    | Seq (s1, s2) ->
+        case eval ([state, world], s1) of
+          [s_tmp, w_tmp] -> eval ([s_tmp, w_tmp], s2)
+        esac
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output
 public fun evalStmt (input, stmt) {
   eval ([emptyState, createWorld (input)], stmt).snd.getOutput
 }
+
