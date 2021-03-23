@@ -24,7 +24,6 @@ public fun showSMInsn (i) {
   | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
   esac
 }
-
 public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
@@ -55,7 +54,35 @@ fun fromLabel (env, lab) {
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    READ : ins         -> case readWorld (c[2]) of
+        [n, w] -> eval(env, [n : c[0], c[1], w], ins)
+      esac
+  | WRITE : ins        -> case c[0] of
+        n : s -> eval (env, [s, c[1], writeWorld (n, c[2])], ins)
+      esac
+  | BINOP (s) : ins    -> case c[0] of
+        y : x : xs -> eval (env, [evalOp (s, x, y) : xs, c[1], c[2]], ins)
+      esac
+  | LD    (v) : ins    -> case c[1] (v) of
+        x -> eval (env, [x : c[0], c[1], c[2]], ins)
+      esac
+  | ST    (v) : ins    -> case c[0] of
+        x : xs -> eval (env, [xs, c[1] <- [v, x], c[2]], ins)
+      esac
+  | CONST (n) : ins    -> eval (env, [n : c[0], c[1], c[2]], ins)
+  | LABEL (l) : ins    -> eval (env, c, ins)
+  | JMP   (l) : ins    -> eval (env, c, fromLabel (env, l))
+  | CJMP  ("nz", l) : ins -> case c[0] of
+                               0 : xs -> eval (env, [xs, c[1], c[2]], ins)
+                             | _ : xs -> eval (env, [xs, c[1], c[2]], fromLabel (env, l))  
+                             esac
+  | CJMP  ("z", l) : ins -> case c[0] of
+                              0 : xs -> eval (env, [xs, c[1], c[2]], fromLabel (env, l))
+                            | _ : xs -> eval (env, [xs, c[1], c[2]], ins) 
+                            esac
+  | _ -> c
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -96,12 +123,50 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  compileExprReq (expr) . getBuffer
+}
+
+fun compileExprReq (expr) {
+  case expr of
+    Var   (v)          -> singletonBuffer (LD (v))
+  | Const (n)          -> singletonBuffer (CONST (n))
+  | Binop (op, e1, e2) -> compileExprReq (e1) <+> compileExprReq (e2) <+> singletonBuffer (BINOP (op))
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  fun compileSMReq (env, stmt) {
+    case stmt of
+      Skip -> [emptyBuffer (), env]
+    | Assn  (v, e)   -> [compileExprReq (e) <+ ST (v), env]
+    | Seq   (s1, s2) -> case compileSMReq (env, s1) of [b1, env1] -> case compileSMReq (env1, s2) of [b2, env2] -> [b1 <+> b2, env2] esac esac         
+    | Read  (v)      -> [listBuffer ({READ, ST (v)}), env]
+    | Write (e)      -> [addBuffer (compileExprReq (e), WRITE), env]
+    | While (e, s)   -> case genLabels (env, 2) of 
+                          [l1, l2, env1] -> case compileSMReq (env1, s) of 
+                                              [b, env2] -> [{JMP (l1), LABEL (l2), b . getBuffer, LABEL (l1), compileExpr (e), 
+                                              CJMP ("nz", l2)} . deepFlatten . listBuffer, env2]
+                                            esac
+                        esac
+    | If (e, s1, s2) -> 
+            case genLabels(env, 2) of [ls2, lexit, env1] ->
+              case compileSMReq(env1, s1) of [cs1, env2] ->
+                case compileSMReq(env2, s2) of [cs2, env3] ->
+                  [{compileExpr(e), CJMP("z", ls2), cs1 . getBuffer, JMP(lexit), LABEL(ls2), cs2 . getBuffer, LABEL(lexit)} .deepFlatten . listBuffer, env3]
+                esac
+              esac 
+            esac
+    | DoWhile (s, e)   -> case env . genLabel of 
+                          [l, env1] -> case compileSMReq (env1, s) of 
+                                              [b, env2] -> [{LABEL (l), b . getBuffer, compileExpr (e), 
+                                              CJMP ("nz", l)} . deepFlatten . listBuffer, env2]
+                                            esac
+                        esac
+    esac
+  }
+
+  compileSMReq (initCompEnv (), stmt)[0] . getBuffer
 }
