@@ -282,21 +282,96 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+  fun compileNotDivArithmeticBinop (op, [x, y, env]) {
+    Mov (y, edx).singletonBuffer <+ Binop (op, x, edx) <+ Mov (edx, y)
+  }
+
+  fun compileDiv ([x, y, env]) {
+    Mov (y, eax).singletonBuffer <+ Cltd <+ IDiv (x) <+ Mov (eax, y)
+  }
+
+  fun compileMod ([x, y, env]) {
+    Mov (y, eax).singletonBuffer <+ Cltd <+ IDiv (x) <+ Mov (edx, y)
+  }
+
+  fun compileCmp (op, [x, y, env]) {
+    compileNotDivArithmeticBinop ("cmp", [x, y, env]) <+ Mov (L (0), eax)
+                                                      <+ Set(suffix (op), "%al")
+                                                      <+ Mov (eax, y)
+  }
+
+  fun compileLogic (op, [x, y, env]) {
+    compileCmp ("!=", [L (0), x, env]) <+> compileCmp ("!=", [L (0), y, env])
+                                       <+> compileNotDivArithmeticBinop (op, [x, y, env])
+  }
+
+  fun compileBinop (op, [x, y, env]) {
+    case op of
+      "+" -> compileNotDivArithmeticBinop (op, [x, y, env])
+    | "-" -> compileNotDivArithmeticBinop (op, [x, y, env])
+    | "*" -> compileNotDivArithmeticBinop (op, [x, y, env])
+    | "^" -> compileNotDivArithmeticBinop (op, [x, y, env])
+    | "/" -> compileDiv ([x, y, env])
+    | "%" -> compileMod ([x, y, env])
+    | "<" -> compileCmp (op, [x, y, env])
+    | ">" -> compileCmp (op, [x, y, env])
+    | "<=" -> compileCmp (op, [x, y, env])
+    | ">=" -> compileCmp (op, [x, y, env])
+    | "==" -> compileCmp (op, [x, y, env])
+    | "!=" -> compileCmp (op, [x, y, env])
+    | "&&" -> compileLogic (op, [x, y, env])
+    | "!!" -> compileLogic (op, [x, y, env])
+    |  _ -> failure ("Unsupported binop %s\n", op)
+    esac
+  }
+
+  fun compile (env, code) {
+    foldl (
+      fun ([env, scode], i) {
+        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        case i of
+          READ ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            esac             
+        | WRITE ->
+            case env.pop of
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            esac
+        | CONST (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s)]
+            esac
+        | LD (x) ->
+            case env.addGlobal (x).allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac
+        | ST (x)  ->
+            case env.addGlobal (x).pop of
+              [s, env] -> [env, code <+> move (s, env.loc (x))]
+            esac
+        | BINOP (op) ->
+            case env.pop2 of
+              [x, y, env] -> [env.push (y), code <+> compileBinop (op, [x, y, env])]
+            esac
+        | LABEL (label) ->
+            [env, code <+ Label (label)]
+        | JMP (label) ->
+            [env, code <+ Jmp (label)]
+        | CJMP  (condition, label) ->
+            case env.pop of [s, env] ->
+              [env, code 
+                    <+ Mov (L (0), eax)
+                    <+ Binop ("cmp", eax, s)
+                    <+ CJmp (condition, label)]
+            esac
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
-    }, [env, emptyBuffer ()], code)}
+      }, [env, emptyBuffer ()], code)
+  }
+
+  compile (env, code) 
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable

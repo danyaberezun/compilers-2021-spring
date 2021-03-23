@@ -19,8 +19,37 @@ import World;
 --        While   (expr, stmt)       |
 --        DoWhile (stmt, expr)
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+fun eval (configuration@[state, world], stmt) {
+  case stmt of
+    Assn  (variableName, expr)    -> [
+      state <- [variableName, evalExpr (state, expr)], 
+      world
+    ]
+  | Seq   (firstStmt, secondStmt) -> eval (eval ([state, world], firstStmt), secondStmt)
+  | Skip                          -> configuration
+  | Read  (variableName)          ->
+      case readWorld (world) of 
+        [readValue, newWorld] -> [state <- [variableName, readValue], newWorld]
+      esac
+  | Write (expr)                  -> [state, writeWorld (evalExpr (state, expr), world)]
+  | While (condition, body)       ->
+      case evalExpr (state, condition) of
+          0 -> [state, world] 
+        | _ -> (
+          var evaluatedBodyConf = eval ([state, world], body);
+          eval (evaluatedBodyConf, While (condition, body))
+        )
+      esac
+  | If (condition, trueBranch, elseBranch) ->
+      case evalExpr (state, condition) of
+        0 -> eval ([state, world], elseBranch)
+      | _ -> eval ([state, world], trueBranch)
+      esac
+  | DoWhile (body, condition)     -> (
+      var evaluatedPreConditionConf = eval ([state, world], body);
+      eval (evaluatedPreConditionConf, While (condition, body))
+  )
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output

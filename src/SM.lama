@@ -52,10 +52,83 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun evalConditionalJump (env, conf@[stack, state, world], insns, cjmp@[condition, label]) {
+  case stack of
+    head:restStack -> (
+      var takeJump = case condition of
+        "nz" -> head != 0
+      | "z"  -> head == 0
+      | _    -> failure ("Unreachable")
+      esac;
+      if takeJump then
+        eval (env, [restStack, state, world], fromLabel (env, label))
+      else
+        eval (env, [restStack, state, world], insns)
+      fi
+    )
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, conf@[stack, state, world], insns) {
+  case insns of 
+    READ:restInsns -> (
+      case readWorld (world) of
+        [readValue, newWorld] -> eval (
+          env,
+          [readValue:stack, state, newWorld],
+          restInsns
+        )
+      esac
+    )
+  | WRITE:restInsns -> (
+      case stack of
+        top:tailStack -> eval (
+          env,
+          [tailStack, state, writeWorld (top, world)],
+          restInsns
+        )
+      esac
+    )
+  | BINOP (operation):restInsns -> (
+      case stack of 
+        rhs:lhs:tailStack -> (
+          var result = evalBinop (operation, lhs, rhs);
+          eval (env, [result:tailStack, state, world], restInsns)
+        )
+      esac
+    )
+  | LD (variableName):restInsns -> (
+      eval (env, [state (variableName):stack, state, world], restInsns)
+    )
+  | ST (variableName):restInsns -> (
+      case stack of
+        top:tailStack -> eval (env, [tailStack, state <- [variableName, top], world], restInsns)
+      esac
+    )
+  | CONST (value):restInsns -> (
+      eval (env, [value:stack, state, world], restInsns)
+    )
+  | LABEL (label):restInsns -> eval (env, conf, restInsns)
+  | JMP (label):restInsns -> eval (env, conf, fromLabel (env, label))
+  | CJMP (condition, label):restInsns ->
+      case stack of
+        top:tailStack -> (
+          var takeJump = case condition of
+            "nz" -> top != 0
+          | "z"  -> top == 0
+          | _    -> failure ("Unreachable")
+          esac;
+          if takeJump then
+            eval (env, [tailStack, state, world], fromLabel (env, label))
+          else
+            eval (env, [tailStack, state, world], restInsns)
+          fi
+        )
+      esac
+  | _ -> [stack, state, world]
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -93,15 +166,76 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+fun compileExprBuffer (expr) {
+  case expr of
+    Var   (variableName)        -> singletonBuffer (LD (variableName))
+  | Const (value)               -> singletonBuffer (CONST (value))
+  | Binop (operation, lhs, rhs) -> (
+      compileExprBuffer(lhs) <+> compileExprBuffer(rhs) <+ BINOP (operation)
+    )
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  getBuffer (compileExprBuffer (expr))
+}
+
+fun compileSMBuffer (env, stmt) {
+  case stmt of
+    Assn  (variableName, expr)    -> [env, compileExprBuffer (expr) <+ ST (variableName)]
+  | Seq   (firstStmt, secondStmt) -> 
+      case compileSMBuffer (env, firstStmt) of [firstEnv, firstCode] ->
+        case compileSMBuffer (firstEnv, secondStmt) of [secondEnv, secondCode] ->
+          [secondEnv, firstCode <+> secondCode]
+        esac
+      esac
+  | Skip                          -> [env, emptyBuffer ()]
+  | Read  (variableName)          -> [env, singletonBuffer (READ) <+ ST (variableName)]
+  | Write (expr)                  -> [env, compileExprBuffer (expr) <+ WRITE]
+  | While (condition, body)       ->
+      case env.genLabels (2) of [condLabel, bodyLabel, tmpEnv] ->
+        case compileSMBuffer (tmpEnv, body) of [newEnv, bodyCode] ->
+          [newEnv, singletonBuffer (JMP (condLabel))
+                   <+ LABEL (bodyLabel) 
+                   <+> bodyCode
+                   <+ LABEL (condLabel)
+                   <+> compileExprBuffer (condition)
+                   <+ CJMP ("nz", bodyLabel)]
+        esac
+      esac
+  | If (condition, trueBranch, elseBranch) ->
+      case env.genLabels (2) of [elseLabel, endLabel, tmpEnv] ->
+        case compileSMBuffer (tmpEnv, trueBranch) of [tmpEnv2, trueCode] ->
+          case compileSMBuffer (tmpEnv2, elseBranch) of [newEnv, elseCode] ->
+            [newEnv, compileExprBuffer (condition)
+                     <+ CJMP ("z", elseLabel)
+                     <+> trueCode
+                     <+ JMP (endLabel)
+                     <+ LABEL (elseLabel)
+                     <+> elseCode
+                     <+ LABEL (endLabel)]
+          esac
+        esac
+      esac
+  | DoWhile (body, condition) ->
+      case env.genLabel of [bodyLabel, tmpEnv] ->
+        case compileSMBuffer (tmpEnv, body) of [newEnv, bodyCode] ->
+          [newEnv, singletonBuffer (LABEL (bodyLabel))
+                   <+> bodyCode
+                   <+> compileExprBuffer (condition)
+                   <+ CJMP ("nz", bodyLabel)]
+        esac
+      esac
+  | _ -> failure ("Unimplemented %s\n", stmt.string)
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  var program = getBuffer (compileSMBuffer (initCompEnv(), stmt).snd);
+  program
 }
