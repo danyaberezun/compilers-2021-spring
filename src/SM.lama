@@ -24,10 +24,37 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
+fun evalOneInstr ([stack, state, world], insn) {
+  case insn of
+    CONST (n) -> [n:stack , state, world]
+  | READ -> 
+      case readWorld (world) of
+        [n, new_world] -> [n:stack, state, new_world]
+      esac
+  | WRITE ->
+      case stack of
+        z:zs -> [zs, state, writeWorld (z, world)]
+      esac
+  | LD (x) -> [(state (x)):stack, state, world]
+  | ST (x) -> 
+      case stack of
+        z:zs -> [zs, state <- [x, z], world]
+      esac
+  | BINOP (op) -> 
+      case stack of
+        y:x:s ->
+          [countOp(op, x, y):s, state, world] 
+      esac
+  esac
+}
+
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {} -> c
+  | i:is -> eval (evalOneInstr (c, i), is)
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -39,12 +66,26 @@ public fun evalSM (input, insns) {
 -- Takes an expression, returns a list 
 -- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var (x) -> singletonBuffer (LD (x))
+  | Const (x) -> singletonBuffer (CONST (x))
+  | Binop (op, x, y) -> (compileExpr (x) <+> compileExpr (y)) <+ BINOP (op)
+  esac
+}
+
+fun compileSMrec (stmt) {
+  case stmt of
+    Skip -> emptyBuffer ()
+  | Assn (x, e) -> compileExpr (e) <+ ST (x)
+  | Read (x) -> emptyBuffer () <+ READ <+ ST (x)
+  | Write (e) -> compileExpr (e) <+ WRITE
+  | Seq (s1, s2) -> compileSMrec (s1) <+> compileSMrec (s2)
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  compileSMrec (stmt) . getBuffer
 }

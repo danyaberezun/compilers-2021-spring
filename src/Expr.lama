@@ -4,6 +4,24 @@ import List;
 import State;
 
 
+public fun countOp (op, x, y) {
+  case op of
+    "+" -> x + y
+  | "-" -> x - y
+  | "*" -> x * y
+  | "/" -> x / y
+  | "%" -> x % y
+  | "<" -> x < y
+  | ">" -> x > y
+  | "<=" -> x <= y
+  | ">=" -> x >= y
+  | "==" -> x == y
+  | "!=" -> x != y
+  | "&&" -> x && y
+  | "!!" -> x !! y
+  esac   
+}
+
 -- The evaluator itself: takes a state and an expression,
 -- returns integer value
 --
@@ -12,7 +30,10 @@ import State;
 -- expr = Var   (string)             |
 --        Const (int)                |
 --        Binop (string, expr, expr)
-
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var (v) -> st (v)
+  | Const (x) -> x
+  | Binop (op, x, y) -> countOp (op, evalExpr (st, x), evalExpr (st, y))
+  esac
 }
