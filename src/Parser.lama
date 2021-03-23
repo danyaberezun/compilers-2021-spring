@@ -11,13 +11,28 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+fun binop (op) {
+  [s (op), fun (l, _, r) {Binop (op, l, r)}]
+}
+
 -- Primary expression
 var primary = memo $ eta syntax (x=decimal {Const (stringInt (x))} |
                                  x=lident  {Var (x)}               |
                                  inbr[s("("), exp, s(")")]),
-      exp = memo $ eta (failure ("expression parsing not implemented\n"));
+      exp = memo $ eta (expr (
+        {
+          [Left, map (binop, {"!!"})],
+          [Left, map (binop, {"&&"})],
+          [Nona, map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+          [Left, map (binop, {"+", "-"})],          
+          [Left, map (binop, {"*", "/", "%"})]
+      }, primary));
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
+var oneStmt = memo $ eta syntax (kSkip {Skip}
+  | x=lident s[":="] e=exp {Assn (x, e)}
+  | kWrite e=inbr[s("("), exp, s(")")] {Write (e)}
+  | kRead x=inbr[s("("), lident, s(")")] {Read (x)});
+var stmt = memo $ eta syntax (oneStmt | s1=oneStmt s[";"] s2=stmt {Seq (s1, s2)});
    
 
 -- Public top-level parser
