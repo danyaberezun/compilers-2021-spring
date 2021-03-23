@@ -12,14 +12,51 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
--- Primary expression
-var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
-                          lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+fun binop(op) {
+  [s (op), fun (l, _, r) { Binop (op, l ,r) }]
+}
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
-   
+-- Primary expression
+var primary = memo $ eta syntax (x=decimal {Const (stringInt (x))} |
+                                 x=lident  {Var (x)}               |
+                                 inbr[s("("), exp, s(")")]),
+      exp = memo $ eta (expr ({
+        [Left, {binop ("!!")}],
+        [Left, {binop ("&&")}],
+        [Nona, map(binop, {"==", "!=", ">", ">=", "<", "<="})],
+        [Left, map(binop, {"+", "-"})],
+        [Left, map(binop, {"*", "/", "%"})]
+        }, primary));
+
+var elsePart = memo $ eta syntax (
+  kElif cond=exp kThen body=stmt elseTail=elsePart {If (cond, body, elseTail)} |
+  kElse body=stmt kFi {body}                                                   |
+  kFi {Skip}
+), 
+ifStmt = memo $ eta syntax (
+  kIf cond=exp kThen body=stmt elseTail=elsePart {If (cond, body, elseTail)}
+),
+loopStmt = memo $ eta syntax (
+  kWhile cond=exp kDo body=stmt kOd {While (cond, body)}              |
+  kDo body=stmt kWhile cond=exp kOd {DoWhile (body, cond)}             |
+  kFor init=stmt s[","] cond=exp s[","] step=stmt kDo body=stmt kOd {
+    var fullBody = Seq (body, step);
+    var whilePart = While (cond, fullBody);
+    Seq (init, whilePart)
+  }
+),
+singleStmt = memo $ eta syntax (
+  x=lident s[":="] e=exp {Assn (x, e)}            |
+  kSkip {Skip}                                    |
+  kRead x=inbr[s("("), lident, s(")")] {Read (x)} |
+  kWrite e=inbr[s("("), exp, s(")")] {Write (e)}  |
+  ifStmt                                          |
+  loopStmt
+),
+stmt = memo $ eta syntax (
+  singleStmt                                 |
+  s1=singleStmt s[";"] s2=stmt {Seq(s1, s2)}
+);
 
 -- Public top-level parser
 public parse = stmt;
