@@ -52,10 +52,84 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
--- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
+-- Return pair ot new context and poiner to next command
+-- nextCommant = SHORT | LONG (label)
+public fun evalCommand (c, command) {
+  var stack = c[0];
+  var state = c[1];
+  var world = c[2];
+  case command of 
+    READ -> (
+      var tmp = readWorld (world);
+      var value = tmp.fst;
+      var newWorld = tmp.snd;
+      [[value:stack, state, newWorld], SHORT]
+  )
+  | WRITE -> (
+      case stack of 
+        value:newStack -> (
+          var newWorld = writeWorld (value, world);
+          [[newStack, state, newWorld], SHORT]
+      )
+      | _ -> failure ("Got empty stack to WRITE")
+      esac
+  )
+  | BINOP (opStr) -> (
+      case stack of
+        snd:fst:rest -> (
+          var value = calcBinop (opStr, fst, snd);
+          [[value:rest, state, world], SHORT]
+      )
+      | _ -> failure ("Less than 2 elements on stack for BINOP")
+      esac
+  )
+  | LD (varName) -> (
+      var varValue = state (varName);
+      [[varValue:stack, state, world], SHORT]
+  )
+  | ST (varName) -> (
+    case stack of
+      varValue:newStack -> (
+        var newState = state <- [varName, varValue];
+        [[newStack, newState, world], SHORT]
+    )
+    | _ -> failure ("Got empty stack for ST")
+    esac
+  )
+  | CONST (value) -> [[value:stack, state, world], SHORT]
+  | JMP (label) -> [c, LONG (label)]
+  | LABEL (_) -> [c, SHORT]
+  | CJMP (type, label) -> (
+    case stack of
+      head:tail -> (
+        var nextCommand = if (compare (type, "z") == 0 && head == 0)
+                          !! (compare (type, "nz") == 0 && head != 0) then
+                            LONG (label)
+                          else
+                            SHORT
+                          fi;
+        [[tail, state, world], nextCommand]
+    )
+    | _ -> failure ("Got empty stack for CJMP")
+    esac
+  )
+  esac
+}
+
+-- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of 
+    {} -> c
+  | head:tail -> (
+    var evalRes = evalCommand (c, head);
+    var newC = evalRes.fst;
+    case evalRes.snd of
+      SHORT -> eval (env, newC, tail)
+    | LONG (label) -> eval (env, newC, fromLabel (env, label))
+    esac
+  )
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -94,14 +168,113 @@ fun genLabels (env, n) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+-- Takes an expression, returns a buffer of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of 
+    Var (varName) -> singletonBuffer (LD (varName))
+  | Const (c) -> singletonBuffer (CONST (c))
+  | Binop (opStr, l, r) -> (
+    var lBuff = compileExpr (l);
+    var rBuff = compileExpr (r);
+    (lBuff <+> rBuff) <+ (BINOP (opStr))
+  )
+  esac
+}
+
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a buffer
+-- of stack machine instructions and enviroment
+fun compileSMBuff (env, stmt) {
+  case stmt of
+    Assn (varName, expr) -> (
+      var exprBuff = compileExpr (expr);
+      [exprBuff <+ (ST (varName)), env]
+  ) 
+  | Read (varName) -> [listBuffer ({READ, (ST (varName))}), env]
+  | Write (expr) -> (
+    var exprBuff = compileExpr (expr);
+    [exprBuff <+ WRITE, env]
+  )
+  | Skip -> [emptyBuffer (), env]
+  | Seq (x, y) -> (
+    var xRes = compileSMBuff (env, x);
+    var xBuff = xRes.fst;
+    var env1 = xRes.snd;
+
+    var yRes = compileSMBuff (env1, y);
+    var yBuff = yRes.fst;
+    var env2 = yRes.snd;
+
+    [xBuff <+> yBuff, env2]
+  )
+  | If (cond, trueStmt, falseStmt) -> (
+    var newLabels = genLabels (env, 2);
+    var falseLabel = newLabels[0];
+    var exitLabel = newLabels[1];
+    var env1 = newLabels[2];
+    
+    var condCode = compileExpr (cond);
+    
+    var trueStmtCompiled = compileSMBuff (env1, trueStmt);
+    var trueStmtCode = trueStmtCompiled.fst;
+    var env2 = trueStmtCompiled.snd;
+
+    var falseStmtCompiled = compileSMBuff (env2, falseStmt);
+    var falseStmtCode = falseStmtCompiled.fst;
+    var env3 = falseStmtCompiled.snd;
+
+    var newCode = condCode
+                  <+ CJMP ("z", falseLabel) 
+                  <+> trueStmtCode
+                  <+ JMP (exitLabel)
+                  <+ LABEL (falseLabel)
+                  <+> falseStmtCode
+                  <+ LABEL (exitLabel);
+    [newCode, env3]
+  )
+  | While (cond, body) -> (
+    var newLabels = genLabels (env, 2);
+    var condLabel = newLabels[0];
+    var exitLabel = newLabels[1];
+    var env1 = newLabels[2];
+
+    var condCode = compileExpr (cond);
+
+    var bodyCompiled = compileSMBuff (env1, body);
+    var bodyCode = bodyCompiled.fst;
+    var env2 = bodyCompiled.snd;
+
+    var newCode = singletonBuffer (LABEL (condLabel))
+                  <+> condCode
+                  <+ CJMP ("z", exitLabel)
+                  <+> bodyCode
+                  <+ JMP (condLabel)
+                  <+ LABEL (exitLabel);
+    [newCode, env2]
+  )
+  | DoWhile (body, cond) -> (
+    var newLabel = genLabel (env);
+    var bodyLabel = newLabel.fst;
+    var env1 = newLabel.snd;
+
+    var condCode = compileExpr (cond);
+
+    var bodyCompiled = compileSMBuff (env1, body);
+    var bodyCode = bodyCompiled.fst;
+    var env2 = bodyCompiled.snd;
+    
+    var newCode = singletonBuffer (LABEL (bodyLabel))
+                  <+> bodyCode
+                  <+> condCode
+                  <+ CJMP ("nz", bodyLabel);
+    [newCode, env2]
+  )
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer ((compileSMBuff (initCompEnv (), stmt)).fst)
 }
