@@ -51,12 +51,53 @@ fun initEvalEnv (insns) {
 fun fromLabel (env, lab) {
   env [0] (lab)
 }
+public fun evalInst ([stk, st, w], inst) {
+  case inst of
+    READ -> case readWorld (w) of
+      			[v,w2] -> [v:stk, st, w2]
+  			esac
+	  | WRITE ->
+	      	case stk of
+	        	v:r ->  [r, st, writeWorld (v, w)]
+	  		esac
+	  | BINOP (opr) ->  case stk of
+	        				snd:fst:r ->  [ evalBinOp (opr, fst, snd):r, st, w]
+	  					esac
+	  | LD (x) -> [st (x):stk, st, w]
+	  | ST (x) -> case stk of
+	          v:r -> [r, st <- [x, v], w]
+	  esac
+	  | CONST (v) -> [v:stk, st, w]
+	  
+	  esac
+}
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stk, st, w], insns) {
+  case insns of 
+    {} -> c
+    | JMP (l) : insns     -> eval (env, c, fromLabel (env, l)) 
+  | LABEL (l) : insns   -> eval (env, c, insns)
+  | CJMP (condition, label):rest ->
+        case stk of
+          top:tail -> (
+            var tJ = case condition of
+                  "nz" -> top != 0
+                | "z"  -> top == 0
+                | _    -> failure ("failure")
+                esac;
+            if tJ then
+              eval (env, [tail, st, w], fromLabel (env, label))
+            else
+              eval (env, [tail, st, w], rest)
+            fi
+          )
+        esac
+    | inst:others -> eval (env, evalInst (c, inst), others)    
+  esac
 }
+
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
@@ -96,12 +137,73 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var (x) -> singletonBuffer (LD (x))
+  | Const (c) -> singletonBuffer (CONST (c))
+  | Binop (opStr, l, r) -> (compileExpr (l) <+> compileExpr (r)) <+ (BINOP (opStr))
+  esac
 }
 
+fun compileIf(env, expr, ifT, ifF) {
+  case genLabels (env, 3) of
+          [ifTL, ifFL, fiLabel, env1] -> 
+            case compile(env1, ifT) of
+              [env2, ifTC] -> 
+                case compile(env2, ifF) of 
+                  [nenv, ifFC] -> [nenv, compileExpr(expr) <+ CJMP ("z", ifFL) <+ 
+                                                    LABEL (ifTL) <+> ifTC <+ JMP (fiLabel) <+ 
+                                                    LABEL (ifFL) <+> ifFC <+ LABEL (fiLabel)]
+                esac
+            esac  
+        esac
+}
+
+fun compileWhile(env, expr, body) {
+        case genLabels (env, 2) of
+            [conL, odLabel, env1] -> 
+              case compile(env1, body) of
+                [nenv, bC] -> [nenv, singletonBuffer (LABEL (conL)) <+> compileExpr(expr) <+ 
+                                               CJMP ("z", odLabel) <+> bC <+ JMP (conL) <+ LABEL (odLabel)]
+              esac
+        esac
+}
+
+fun compileDoWhile(env, body, expr) {
+      case genLabel (env) of
+              [bL, env1] -> 
+                case compile(env1, body) of
+                  [nenv, bC] -> [nenv, singletonBuffer (LABEL (bL)) <+> bC <+> 
+                                                 compileExpr(expr) <+ CJMP ("nz", bL)]
+                esac
+      esac
+}
+
+fun compileSeq(env, x, y) {
+          case compile(env, x) of
+                  [env1, stC] ->
+                    case compile (env1, y) of
+                      [nenv, stm2Code] -> [nenv, stC <+> stm2Code]
+                    esac
+          esac
+}
+
+fun compile(env, stmt) {
+    
+    case stmt of
+      Skip              -> [env, emptyBuffer ()]
+    | Assn (x, expr)    -> [env, compileExpr (expr) <+ (ST (x))]
+    | Read (x)          -> [env, listBuffer ({READ, (ST (x))})]
+    | Write (expr)      -> [env, compileExpr (expr) <+ WRITE]
+    | Seq (x, y)        -> compileSeq(env, x, y)
+    | If (expr, ifT, ifF) ->  compileIf(env, expr, ifT, ifF) 
+    | While (expr, body) -> compileWhile(env, expr, body)
+    | DoWhile (body, expr) -> compileDoWhile(env, body, expr)
+    esac
+}
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compile(initCompEnv (), stmt)[1])
 }
+
