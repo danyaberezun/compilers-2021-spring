@@ -52,10 +52,77 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun evalSingleCommand (env, c, insn) {
+  var stack = c[0];
+  var state = c[1];
+  var world = c[2];
+  case insn of
+    READ ->
+      var readResult = readWorld (world);
+      var value = readResult.fst;
+      var newWorld = readResult.snd;
+      var newC = [value : stack, state, newWorld];
+      [newC, NEXT]
+  | WRITE -> case stack of 
+              top : newStack ->
+                var newWorld = writeWorld (top, world);
+                var newC = [newStack, state, newWorld];
+                [newC, NEXT]
+            esac
+  | BINOP (s) -> case stack of
+                  b : a : newStack ->
+                    var result = evalBinop (s, a, b);
+                    var newC = [result : newStack, state, world];
+                    [newC, NEXT]
+                esac
+  | LD (varName) ->
+      var varValue = state (varName);
+      var newStack = varValue : stack;
+      var newC = [newStack, state, world];
+      [newC, NEXT]
+  | ST (varName) -> case stack of
+                      top : newStack ->
+                        var newState = state <- [varName, top];
+                        var newC = [newStack, newState, world];
+                        [newC, NEXT]
+                    esac
+  | CONST (n) ->
+      var newStack = n : stack;
+      var newC = [newStack, state, world];
+      [newC, NEXT]
+  | LABEL (_) -> [c, NEXT]
+  | JMP (label) ->
+      var jump = fromLabel (env, label);
+      [c, JUMP (jump)]
+  | CJMP (type, label) -> case stack of
+                            top : newStack ->
+                              var newC = [newStack, state, world];
+                              var jump = if compare (type, "nz") == 0 && top != 0 !!
+                                            compare (type, "z") == 0 && top == 0 then
+
+                                            var to = fromLabel (env, label);
+                                            JUMP (to)
+                                          else
+                                            NEXT
+                                          fi;
+                              [newC, jump]
+                          esac
+  esac
+}
+ 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {} -> c
+  | insn : other ->
+      var evalResult = evalSingleCommand (env, c, insn);
+      var newC = evalResult.fst;
+      case evalResult.snd of
+        NEXT -> eval (env, newC, other)
+      | JUMP (to) -> eval (env, newC, to)
+      esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -93,15 +160,110 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
-fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+fun compileExprBuf (expr) {
+  case expr of
+    Var (varName) -> singletonBuffer (LD (varName))
+  | Const (n) -> singletonBuffer (CONST (n))
+  | Binop (op, a, b) ->
+      var aCode = compileExprBuf (a);
+      var bCode = compileExprBuf (b);
+      aCode <+> bCode <+ BINOP (op)
+  esac
+}
+
+fun compileSMBuf (env, stmt) {
+  case stmt of
+      Assn (varName, expr) ->
+        var exprCode = compileExprBuf (expr);
+        var newCode = exprCode <+ 
+                      ST (varName);
+        [newCode, env]
+    | Seq (a, b) ->
+        var aCompileResult = compileSMBuf (env, a);
+        var aCode = aCompileResult.fst;
+        var newEnv = aCompileResult.snd;
+
+        var bCompileResult = compileSMBuf (newEnv, b);
+        var bCode = bCompileResult.fst;
+        var finalEnv = bCompileResult.snd;
+
+        var newCode = aCode <+> 
+                      bCode;
+        [newCode, finalEnv]
+    | Skip -> [emptyBuffer (), env]
+    | Read (varName) ->
+        var code = listBuffer ({READ, ST (varName)});
+        [code, env]
+    | Write (expr) ->
+        var exprCode = compileExprBuf (expr);
+        var newCode = exprCode <+ 
+                      WRITE;
+        [newCode, env]
+    | DoWhile (body, cond) ->
+        var genResult = genLabel (env);
+        var bodyLabel = genResult.fst;
+        var newEnv = genResult.snd;
+
+        var bodyCompileResult = compileSMBuf (newEnv, body);
+        var bodyCode = bodyCompileResult.fst;
+        var finalEnv = bodyCompileResult.snd;
+
+        var condCode = compileExprBuf (cond);
+
+        var newCode = singletonBuffer (LABEL (bodyLabel)) <+>
+                      bodyCode <+>
+                      condCode <+
+                      CJMP ("nz", bodyLabel);
+        [newCode, finalEnv]
+    | While (cond, body) ->
+        var genResult = genLabels (env, 2);
+        var checkCondLabel = genResult[0];
+        var bodyLabel = genResult[1];
+        var newEnv = genResult[2];
+
+        var bodyCompileResult = compileSMBuf (newEnv, body);
+        var bodyCode = bodyCompileResult.fst;
+        var finalEnv = bodyCompileResult.snd;
+
+        var condCode = compileExprBuf (cond);
+
+        var newCode = singletonBuffer (JMP (checkCondLabel)) <+
+                      LABEL (bodyLabel) <+>
+                      bodyCode <+
+                      LABEL (checkCondLabel) <+>
+                      condCode <+
+                      CJMP ("nz", bodyLabel);
+        [newCode, finalEnv]
+    | If (cond, body, elseBody) ->
+        var genResult = genLabels (env, 2);
+        var elseLabel = genResult[0];
+        var exitLabel = genResult[1];
+        var newEnv = genResult[2];
+
+        var condCode = compileExprBuf (cond);
+
+        var bodyCompileResult = compileSMBuf (newEnv, body);
+        var bodyCode = bodyCompileResult.fst;
+        var newerEnv = bodyCompileResult.snd;
+
+        var elseCompileResult = compileSMBuf (newerEnv, elseBody);
+        var elseCode = elseCompileResult.fst;
+        var finalEnv = elseCompileResult.snd;
+
+        var newCode = condCode <+
+                      CJMP ("z", elseLabel) <+>
+                      bodyCode <+
+                      JMP (exitLabel) <+
+                      LABEL (elseLabel) <+>
+                      elseCode <+
+                      LABEL (exitLabel);
+        [newCode, finalEnv]
+    esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  compileSMBuf (initCompEnv (), stmt).fst.getBuffer
 }
