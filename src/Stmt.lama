@@ -19,8 +19,28 @@ import World;
 --        While   (expr, stmt)       |
 --        DoWhile (stmt, expr)
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+fun eval ([st, wd], stmt) {
+  case stmt of
+    Skip             -> [st, wd]
+  | Assn  (vn, expr) -> [st <- [vn, st.evalExpr (expr)], wd]
+  | Read  (vn)       ->
+      var read = readWorld (wd);
+      [st <- [vn, read.fst], read.snd]
+  | Write (expr)     -> [st, writeWorld (st.evalExpr (expr), wd)]
+  | Seq   (l, r)     -> [st, wd].eval (l).eval (r)
+
+  | If      (expr, ts, es) ->
+      if st.evalExpr (expr) != 0 then [st, wd].eval (ts)
+      else [st, wd].eval (es) fi
+  | While   (expr, stmt)   ->
+      if st.evalExpr (expr) != 0 then
+        [st, wd].eval (stmt).eval (While (expr, stmt))
+      else [st, wd] fi
+  | DoWhile (stmt, expr)   ->
+      [st, wd].eval (stmt).eval (While (expr, stmt))
+
+  | _  -> failure ("Invalid statement: " ++ stmt.string ++ "\n")
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output

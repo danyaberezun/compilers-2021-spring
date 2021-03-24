@@ -12,14 +12,65 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+-- _(p)_ -> p
+fun par (p) {
+  inbr (s ("("), p, s (")"))
+}
+
+fun binop (op) {
+  [s (op), fun (l, op, r) {Binop (op, l, r)}]
+}
+
 -- Primary expression
 var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
                           lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+                          inbr (s ("("), exp, s (")")));
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
-   
+--failure ("expression parsing not implemented\n")
+var exp = memo $ eta (expr (
+  {
+    [Left, map (binop, {"!!"})],
+    [Left, map (binop, {"&&"})],
+    [Nona, map (binop, {"==", "!=", "<=", "<", ">=", ">"})],
+    [Left, map (binop, {"+", "-"})],
+    [Left, map (binop, {"*", "/", "%"})]
+  },
+  primary
+));
+
+var stmt_if = memo $ eta syntax (
+  e=exp kThen s1=stmt s2=((-kElse stmt)? -kFi |
+                          -kElif stmt_if) {
+    If (e, s1, case s2 of
+                 None -> Skip
+               | Some (x) -> x
+               | _ -> s2 esac)
+  }
+);
+
+var stmt_while = memo $ eta syntax (
+  kWhile e=exp kDo s=stmt kOd {While (e, s)} |
+  kFor s1=stmt s[","] e=exp s[","] s2=stmt kDo s3=stmt kOd {
+    Seq (s1, While (e, Seq (s3, s2)))
+  }
+);
+
+var stmt_sin = memo $ eta syntax (
+    kSkip {Skip}
+  | x=lident s[":="] e=exp {Assn (x, e)}
+  | kRead x=par[lident] {Read (x)}
+  | kWrite e=par[exp] {Write (e)}
+  | -kIf stmt_if
+  | stmt_while
+  | kDo s=stmt kWhile e=exp kOd {DoWhile (s, e)}
+);
+
+var stmt_seq = memo $ eta syntax (
+  s1=stmt_sin s[";"] s2=(stmt_sin | stmt_seq) {Seq (s1, s2)}
+);
+
+--failure ("statement parsing not implemented\n")
+var stmt = memo $ eta syntax (stmt_sin | stmt_seq);
 
 -- Public top-level parser
-public parse = stmt;
+public parse = memo $ eta syntax (stmt -end);
