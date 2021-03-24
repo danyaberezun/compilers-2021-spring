@@ -8,13 +8,13 @@ import Fun;
 import Manifest;
 
 -- Assembler language interface
--- The registers: 
+-- The registers:
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
 
 -- We can not freely operate with all register; only with 4 by now
 var nRegs = regs.length - 5;
 
--- For convenience we define the following synonyms for the registers: 
+-- For convenience we define the following synonyms for the registers:
 var ebx = R (0),
     ecx = R (1),
     esi = R (2),
@@ -27,19 +27,19 @@ var ebx = R (0),
 -- We need to know the word size to calculate offsets correctly
 var wordSize = 4;
 
--- We need to distinguish the following operand types: 
---    R (int)    -- hard register                    
---    S (int)    -- a position on the hardware stack 
---    M (string) -- a named memory location          
---    L (int)    -- an immediate operand             
+-- We need to distinguish the following operand types:
+--    R (int)    -- hard register
+--    S (int)    -- a position on the hardware stack
+--    M (string) -- a named memory location
+--    L (int)    -- an immediate operand
 
 -- Some x86 instruction (we do not need all of them):
---   Mov   (opnd, opnd)         -- copies a value from the first to the second operand  
---   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
+--   Mov   (opnd, opnd)         -- copies a value from the first to the second operand
+--   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand
 --                                 designates x86 operator, not the source language one
---   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
---   Cltd                       -- see instruction set reference           
---   Set   (string, string)     -- sets a value from flags; the first operand is the   
+--   IDiv  (opnd)               -- x86 integer division, see instruction set reference
+--   Cltd                       -- see instruction set reference
+--   Set   (string, string)     -- sets a value from flags; the first operand is the
 --                                 suffix, which determines the value being set, the
 --                                 the second --- (sub)register name
 --   Jmp   (string)             -- unconditional jump to a label
@@ -47,20 +47,20 @@ var wordSize = 4;
 --   Label (string)             -- a label
 --   Push  (opnd)               -- pushes the operand on the hardware stack
 --   Pop   (opnd)               -- pops from the hardware stack to the operand
---   Call  (string)             -- calls a function by its name 
+--   Call  (string)             -- calls a function by its name
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
-                                                               
+
 -- Machine instruction printer
 fun insnString (insn) {
-  
+
   fun binopString (op) {
     case op of
       "+"   -> "addl"
     | "-"   -> "subl"
     | "*"   -> "imull"
     | "&&"  -> "andl"
-    | "!!"  -> "orl" 
+    | "!!"  -> "orl"
     | "^"   -> "xorl"
     | "cmp" -> "cmpl"
     esac
@@ -74,7 +74,7 @@ fun insnString (insn) {
     | L (i) -> sprintf ("$%d", i)
     esac
   }
-  
+
   case insn of
     Cltd               -> "\tcltd\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
@@ -108,12 +108,12 @@ fun makeEnv (stack, stackSlots, globals) {
   fun envString () {
     sprintf ("Stack     : %s\nStackSlots: %d\nGlobals   : %s\n", stack.string, stackSlots, elements (globals).string)
   }
-  
+
   -- Allocates a new position on the symbolic stack;
   -- returns a pair: a location for allocated item and
   -- an updated environment
   fun allocate () {
-    case 
+    case
       case stack of
         {}        -> [ebx, 0]
       | S (n) : _ -> [S (n+1), n+2]
@@ -153,7 +153,7 @@ fun makeEnv (stack, stackSlots, globals) {
   fun loc (name) {
     M (globalName (name))
   }
-  
+
   -- Gets a list of global variables from the environment
   fun getGlobals () {
     globals.elements
@@ -245,7 +245,7 @@ fun stackOpnd (opnd) {
   case opnd of
     S (_) -> true
   | _     -> false
-  esac      
+  esac
 }
 
 -- Checks if an operand resides in memory
@@ -279,6 +279,34 @@ fun suffix (op) {
   esac
 }
 
+fun binopCompile (op, e1, e2) {
+   case op of
+     "+" -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, eax, e2)) |
+     "-" -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, e2, eax)) <+> move (eax, e2) |
+     "*" -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, e2, eax)) <+> move (eax, e2)|
+     "/" -> move (e1, eax) <+ Cltd <+ IDiv(e2) <+> move (eax, e2) |
+     "%" -> move (e1, eax) <+ Cltd <+ IDiv(e2) <+> move (edx, e2) |
+     "<" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     ">" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     "<=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     ">=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     "==" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     "!=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     "&&" -> move (L(0), edx) <+> binopCompile ("<", edx, e1) <+> binopCompile ("<", edx, e2)
+       <+> binopCompile ("+", e1, e2) <+>  move (L(1), edx) <+> binopCompile ("<", edx, e2) |
+     "!!" -> move (L(0), edx) <+> binopCompile ("<", edx, e1) <+> binopCompile ("<", edx, e2)
+       <+> binopCompile ("+", e1, e2) <+> binopCompile ("<", edx, e2)
+   esac
+ }
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -286,14 +314,36 @@ fun compile (env, code) {
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-        READ ->
+        Read ->
           case env.allocate of
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+      | Write ->
+        case env.pop of
+          [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+        esac
+      | Const (n) ->
+        case env.allocate of
+          [s, env] -> [env, code <+> move (L (n), s)]
+        esac
+      | LD (x) ->
+        case env.addGlobal (x).allocate of
+          [s, env] -> [env, code <+> move (env.loc (x), s)]
+        esac
+      | ST (x) ->
+        case env.addGlobal (x).pop of
+          [s, env] -> [env, code <+> move (s, env.loc (x))]
+        esac
+      | Binop (op) ->
+        case env.pop2 of
+          [e2, e1, env] -> [env.push(e2), code <+> binopCompile(op, e1, e2)]
+        esac
+      | LABEL (l) -> [env, code <+ Label (l)]
+      | JMP (l) -> [env, code <+ Jmp(l)]
+      | CJMP (c, l) ->
+        case env.pop of [value, env] ->
+          [env, code <+> move (L(0), eax) <+ Binop ("cmp", eax, value) <+ CJmp (c, l)]
+        esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
     }, [env, emptyBuffer ()], code)}
@@ -308,9 +358,9 @@ public fun compileX86 (args, code) {
                        #val -> "../runtime/"
                      | path     -> path
                      esac ++ "/runtime.o";
-       
+
        fwrite (asmFile,
-               map (insnString, 
+               map (insnString,
                     getBuffer $
                       singletonBuffer (Meta ("\t.global\tmain\n")) <+>
                       dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
@@ -321,7 +371,6 @@ public fun compileX86 (args, code) {
                         epilogue ()
                     )
                    ).stringcat);
-                    
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
