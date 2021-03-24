@@ -20,7 +20,27 @@ import World;
 --        DoWhile (stmt, expr)
 
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+  case stmt of
+    Assn (s, e) -> [c.fst <- [s, evalExpr (c.fst, e)], c.snd]    |
+    Seq (st1, st2) -> eval (eval (c, st1), st2)                  |
+    Skip -> c                                                    |
+    Read (s) -> (
+      var newWorld = readWorld (c.snd);
+      [c.fst <- [s, newWorld[0]], newWorld[1]]
+    )                                                            |
+    Write (e) -> [c.fst, writeWorld (evalExpr(c.fst, e), c.snd)] |
+    If (e, st1, st2) ->
+      case evalExpr (c.fst, e) of
+        0 -> eval (c, st2) |
+        _ -> eval (c, st1)
+      esac                                                       |
+    While (e, st) ->
+      case evalExpr (c.fst, e) of
+        0 -> c |
+        _ -> eval (eval (c, st), While (e, st))
+      esac                                                       |
+    DoWhile (st, e) -> eval (eval (c, st), While (e, st))
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output
