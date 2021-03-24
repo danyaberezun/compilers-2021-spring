@@ -12,13 +12,47 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+fun binop (op) {
+  [s(op), fun (x, _, y) {Binop (op, x, y)}]
+}
+
+
 -- Primary expression
 var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
                           lident  @ fun (x) {Var (x)} |
                           inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+    exp = memo $ eta (expr ({
+      [Left, map (binop, {"!!"})],
+      [Left, map (binop, {"&&"})],
+      [Nona, map (binop, {"==", "!=", ">", "<", ">=", "<="})],
+      [Left, map (binop, {"+", "-"})],
+      [Left, map (binop, {"*", "/", "%"})]
+    }, primary
+));
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
+var elsestmt = memo $ eta syntax (
+     kElif ifCond=exp kThen thenExpr=stmt elseExpr=elsestmt {If (ifCond, thenExpr, elseExpr)}
+  |  kElse expr=stmt kFi {expr}
+  |  kFi {Skip}
+);
+
+var onestmt = memo $ eta syntax (
+     varName=lident s[":="] expr=exp {Assn (varName, expr)}
+  |  kSkip {Skip} 
+  |  kRead varName=inbr [s ("("), lident, s (")")] {Read (varName)}
+  |  kWrite expr=inbr [s ("("), exp, s (")")] {Write (expr)}
+  |  kIf ifCond=exp kThen thenExpr=stmt elseExpr=elsestmt {If (ifCond, thenExpr, elseExpr)}  
+  |  kWhile whileCond=exp kDo  whileExpr=stmt kOd {While (whileCond, whileExpr)}
+  |  kDo whileExpr=stmt kWhile whileCond=exp kOd {DoWhile(whileExpr, whileCond)}
+  |  kFor initVar=stmt s[","] forCond=exp s[","] forStep=stmt kDo forExpr=stmt kOd {Seq (initVar, While(forCond, Seq(forExpr, forStep)))}
+);
+
+ 
+
+var stmt = memo $ eta syntax (
+    onestmt 
+  | one=onestmt s [";"] others=stmt {Seq (one, others)}
+);
    
 
 -- Public top-level parser
