@@ -1,5 +1,7 @@
 -- X86 codegeneration interface
 -- We use stack machine programs as intermediate representation
+-- Alhasan Alkhaddour M4138c
+
 import SM;
 import Collection;
 import List;
@@ -284,17 +286,54 @@ fun suffix (op) {
 fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+	  var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+		  case i of
+				READ ->
+				  case env.allocate of
+				    [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+				  esac             
+			  | WRITE ->
+				  case env.pop of
+				    [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+				  esac
+			  | CONST (n) ->
+				  case env.allocate of 
+				    [s, env] -> [env, code <+> move(L(n), s)]
+				  esac
+			  | LD (x) ->
+				  case env.addGlobal(x).allocate of
+				    [s, env] -> [env, code <+> move(env.loc(x), s)]
+				  esac
+			  | ST (x) ->
+				  case env.addGlobal(x).pop of
+				    [s, env] -> [env, code <+> move(s, env.loc(x))]
+				  esac
+			  | BINOP (op) ->
+				  	case env.pop2 of
+							[a, b, env] -> 
+							   [env.push(b), code <+> (
+									  case op of
+										"+" -> move(a, eax) <+ Binop(op, eax, b) 
+										| "-" -> move(a, eax) <+ Binop(op, eax, b) 
+										| "*" -> move(a, eax) <+ Binop(op, b, eax) <+> move(eax, b) 
+										| "/" -> move(b, eax) <+ Cltd <+ IDiv(a) <+> move(eax, b) 
+										| "%" -> move(b, eax) <+ Cltd <+ IDiv(a) <+> move(edx, b) 
+										| "<" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+										| ">" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+										| "<=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+										| ">=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+										| "==" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+										| "!=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+										| "&&" -> move(L(0), eax) <+ Binop("cmp", a, eax) <+ Set(suffix("!="), "%al") <+> move(eax, a) <+> move(L(0), eax) <+ Binop("cmp", b, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, a, eax) <+> move(eax, b) 
+										| "!!" -> move(L(0), eax) <+ Binop("cmp", a, eax) <+ Set(suffix("!="), "%al") <+> move(eax, a) <+> move(L(0), eax) <+ Binop("cmp", b, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, a, eax) <+> move(eax, b)
+									  esac
+								 )]
+					esac
+			  | LABEL (l) -> [env, code <+ Label (l)]
+			  | JMP   (l) -> [env, code <+ Jmp (l)]
+			  | CJMP  (x, l) -> case env.pop of
+				     				 [s, env] -> [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (x, l)]
+				    			esac
         esac
     }, [env, emptyBuffer ()], code)}
 

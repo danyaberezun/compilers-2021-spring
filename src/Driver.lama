@@ -18,15 +18,8 @@ import Manifest;
 -- defined in the unit Manifest
 fun parseArgs (args) {
   var mode   = ref (Comp),
-      infile = ref ({}),
-      smDump = ref (false);
+      infile = ref ({});
 
-  fun setDump (m) {
-    case m of
-      SM -> smDump ::= true
-    esac
-  }
-  
   fun setMode (m) {
     case deref (mode) of
       Comp -> mode ::= m
@@ -47,26 +40,19 @@ fun parseArgs (args) {
               {}    -> skip
             | h : t ->
                case h of
-                 "-i"  -> setMode (Int)
-               | "-s"  -> setMode (SM)
-               | "-ds" -> setDump (SM)
-               | fn    -> setInFile (fn)
+                 "-i" -> setMode (Int)
+               | "-s" -> setMode (SM)
+               | fn   -> setInFile (fn)
                esac;
                rec (t)
             esac
          }
       })(args);
 
-  [fun () {deref (mode)},
-   fun () {case deref(infile) of #val -> failure ("input file name not set\n") | fn -> fn esac},
-   fun () {deref (smDump)}
-  ]        
-}
 
--- Utility function to peeping to SM code
-fun peepSM (args, smCode) {
-  dumpSM (args, lazy (showSM (smCode)));
-  smCode
+  [fun () {deref (mode)},
+   fun () {case deref(infile) of #val -> failure ("input file name not set\n") | fn -> fn esac}
+  ]        
 }
 
 var args = parseArgs (arrayList (sysargs).tl);
@@ -76,7 +62,7 @@ var args = parseArgs (arrayList (sysargs).tl);
 case parseString (parse |> bypass (end), fread (args.getInFile)) of
   Succ (program) ->
     case args.getMode of
-      Comp -> compileX86 (args, peepSM (args, compileSM (program)))
+      Comp -> compileX86 (args, compileSM (program))
     | mode ->
        var input =
           reverse (fix (fun (f) {
@@ -90,7 +76,7 @@ case parseString (parse |> bypass (end), fread (args.getInFile)) of
        iter (fun (x) {printf ("%d\n", x)},
              case mode of
                Int -> evalStmt (input, program)
-             | SM  -> evalSM   (input, peepSM (args, compileSM (program)))
+             | SM  -> evalSM (input, compileSM (program))
              esac)
     esac
 | x@Fail (err, line, col) ->   
