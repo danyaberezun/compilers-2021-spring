@@ -54,8 +54,33 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, world], insns) {
+  case insns of
+    {} -> c
+  | JMP (l) : _                -> eval (env, c, fromLabel (env, l))
+  | CJMP (cond, l) : insnsTail -> 
+      case stack of 
+        z:s -> if (compare(cond, "nz") == 0 && z != 0) !! (compare(cond, "z") == 0 && z == 0) 
+               then eval (env, [s, state, world], fromLabel (env, l))
+               else eval (env, [s, state, world], insnsTail)
+               fi
+      esac
+  | i : insnsTail -> 
+      var newConfiguration = 
+        case i of
+          READ      -> case readWorld(world) of [n, w] -> [n:stack, state, w] esac
+        | WRITE     -> case stack of n:tail  -> [tail, state, writeWorld(n, world)] esac
+        | BINOP (s) -> 
+            case stack of 
+              y:x:tail  -> [evalExpr(state, Binop(s, Const(x), Const(y))):tail, state, world]
+            esac
+        | LD    (x) -> [state(x):stack, state, world]
+        | ST    (x) -> case stack of n:tail  -> [tail, state <- [x, n], world] esac
+        | CONST (n) -> [n:stack, state, world]
+        | LABEL (_) -> c
+        esac;
+      eval(env, newConfiguration, insnsTail)
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -96,12 +121,60 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var (x) -> singletonBuffer (LD (x))
+  | Const (value) -> singletonBuffer (CONST (value))
+  | Binop (op, left, right) -> compileExpr(left) <+> compileExpr(right) <+ BINOP (op)
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  fun compile(env, stmt) {
+    case stmt of
+      Skip              -> [env, emptyBuffer ()]
+    | Assn (x, expr)    -> [env, compileExpr(expr) <+ ST (x)]
+    | Read (x)          -> [env, singletonBuffer (READ) <+ ST (x)]
+    | Write (expr)      -> [env, compileExpr(expr) <+ WRITE]
+    | Seq (stm1, stm2)  -> 
+        case compile(env, stm1) of
+          [env1, stm1Code] ->
+            case compile (env1, stm2) of
+              [newEnv, stm2Code] -> [newEnv, stm1Code <+> stm2Code]
+            esac
+        esac
+    | If (expr, ifTrue, ifFalse) -> 
+        case genLabels (env, 3) of
+          [ifTrueLabel, ifFalseLabel, fiLabel, env1] -> 
+            case compile(env1, ifTrue) of
+              [env2, ifTrueCode] -> 
+                case compile(env2, ifFalse) of 
+                  [newEnv, ifFalseCode] -> [newEnv, compileExpr(expr) <+ CJMP ("z", ifFalseLabel) <+ 
+                                                    LABEL (ifTrueLabel) <+> ifTrueCode <+ JMP (fiLabel) <+ 
+                                                    LABEL (ifFalseLabel) <+> ifFalseCode <+ LABEL (fiLabel)]
+                esac
+            esac  
+        esac
+    | While (expr, body) -> 
+        case genLabels (env, 2) of
+          [condLabel, odLabel, env1] -> 
+            case compile(env1, body) of
+              [newEnv, bodyCode] -> [newEnv, singletonBuffer (LABEL (condLabel)) <+> compileExpr(expr) <+ 
+                                             CJMP ("z", odLabel) <+> bodyCode <+ JMP (condLabel) <+ LABEL (odLabel)]
+            esac
+        esac
+    | DoWhile (body, expr) -> 
+        case genLabel (env) of
+          [bodyLabel, env1] -> 
+            case compile(env1, body) of
+              [newEnv, bodyCode] -> [newEnv, singletonBuffer (LABEL (bodyLabel)) <+> bodyCode <+> 
+                                             compileExpr(expr) <+ CJMP ("nz", bodyLabel)]
+            esac
+        esac
+    esac
+  }
+
+  getBuffer (compile(initCompEnv (), stmt)[1])
 }
