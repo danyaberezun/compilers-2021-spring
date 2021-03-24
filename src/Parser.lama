@@ -12,13 +12,55 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+
+
+fun binop(op){
+  [s(op), fun (l, _, r) {Binop (op, l, r)}]
+}
+
 -- Primary expression
 var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
                           lident  @ fun (x) {Var (x)} |
                           inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+  exp = memo $ eta expr({
+    [Left, {binop("!!")}],
+	[Left, {binop("&&")}],
+	[Nona, {binop("!="), binop("==")}],
+	[Nona, {binop(">="), binop(">"), binop("<="), binop("<")}],
+	[Left, {binop("-"), binop("+")}],
+	[Left, {binop("%"), binop("/"), binop("*")}]
+  }, primary);
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
+var elseStmt = memo $ eta syntax (
+    kFi {Skip} |
+    kElse s2=stmt kFi { s2 } |
+    kElif e=exp kThen s1=stmt s2=elseStmt {If (e, s1, s2)}
+  ),
+
+  controlFlowStmt = memo $ eta syntax (
+	  kWhile e=exp kDo s=stmt kOd {While (e,s)} |
+	  kIf e=exp kThen s1=stmt s2=elseStmt {If (e, s1, s2)} |
+
+    kDo s=stmt kWhile e=exp kOd {Seq (s, While (e, s))} |
+
+    kFor s1=baseStmt s[","] e=exp s[","] s2=baseStmt kDo s3=stmt kOd {Seq (s1, While (e, Seq (s3, s2)))} 
+  );
+
+
+var baseStmt = memo $ eta syntax (
+  kSkip {Skip} |
+  kRead x=inbr[s("("), lident, s(")")] {Read (x)} |
+  kWrite e=inbr[s("("), exp, s(")")] {Write (e)}  |
+  x=lident s[":="] e=exp {Assn (x,e)} |
+
+  controlFlowStmt
+);
+
+
+var stmt = memo $ eta syntax(
+  s1=baseStmt s[";"] s2=stmt {Seq (s1, s2)} |
+  baseStmt 
+);
    
 
 -- Public top-level parser

@@ -294,9 +294,51 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+	    | CONST (n) ->
+	        case env.allocate of
+		        [s, env] -> [env, code <+> move (L (n), s) ]
+		      esac
+	    | LD (x) ->
+	        case env.addGlobal (x).allocate of
+		        [s, env] -> [env, code <+> move (env.loc (x), s)]
+		      esac
+	    | ST (x) ->
+	        case env.addGlobal (x).pop of
+		        [s, env] -> [env, code <+> move (s, env.loc (x)) ]
+		      esac
+	    | BINOP (op) ->
+	      case env.pop2 of
+		      [x, y, env] -> case env.allocate of [s, env] -> 
+			  case op of
+				    "+"  -> [env, if memOpnd(x) then code <+ Mov (x, edx) <+ Binop (op, edx, y)                 else code <+ Binop (op, x, y) fi]
+          | "-"  -> [env, if memOpnd(x) then code <+ Mov (x, edx) <+ Binop (op, edx, y)                 else code <+ Binop (op, x, y) fi]
+          | "*"  -> [env, if memOpnd(y) then code <+ Mov (y, edx) <+ Binop (op, x, edx) <+ Mov (edx, y) else code <+ Binop (op, x, y) fi]
+          | "*"  -> [env, code <+> move (y, edx) <+ Binop (op, x, edx) <+> move (edx, y)]
+          | "/"  -> [env, code <+> move (y, eax) <+ Cltd <+ IDiv (x) <+> move (eax, s)] 
+          | "%"  -> [env, code <+> move (y, eax) <+ Cltd <+ IDiv (x) <+> move (edx, s)]
+          | "==" -> [env, code <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)]
+          | "!=" -> [env, code <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)]
+          | "<"  -> [env, code <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)]
+          | "<=" -> [env, code <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)]
+          | ">"  -> [env, code <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)]
+          | ">=" -> [env, code <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)]
+          | "&&" -> [env, code <+ Mov (L (0), eax) <+ Mov (eax, edx) <+ Binop ("cmp", eax, x) <+ Set (suffix("!="), "%al") <+ Binop ("cmp", edx, y) <+ Set (suffix ("!="), "%dl") <+ Binop (op, edx, eax) <+> move (eax,s)]
+          | "!!" -> [env, code <+ Mov (L (0), eax) <+ Mov (eax, edx) <+ Binop ("cmp", eax, x) <+ Set (suffix("!="), "%al") <+ Binop ("cmp", edx, y) <+ Set (suffix ("!="), "%dl") <+ Binop (op, edx, eax) <+> move (eax,s)]
+			  esac
+		    esac esac
+
+
+      | LABEL (l) -> [env, code <+ Label (l)]
+      | JMP (l) -> [env, code <+ Jmp (l)]
+      | CJMP (c, l) -> 
+          case env.pop of
+            [s, env] -> [env, code <+ Mov (L (0), eax) <+ Binop ("cmp", s, eax) <+ CJmp (c, l)]
+          esac
+
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-    }, [env, emptyBuffer ()], code)}
+      esac
+    }, [env, emptyBuffer ()], code)
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable

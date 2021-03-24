@@ -55,7 +55,41 @@ fun fromLabel (env, lab) {
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    BINOP (bp):tl -> 
+	    case c[0] of
+        y:x:s -> eval (env, [ binop(bp, x,y):s, c[1], c[2]], tl)
+      esac
+  | CONST (n):tl -> 
+      eval(env, [ n:c[0], c[1], c[2]], tl)
+  | READ:tl  ->  
+      var n;
+      n := readWorld (c[2]);
+      eval (env, [n[0]:c[0], c[1], n[1]], tl)
+  | WRITE:tl -> 
+      case c[0] of
+        z:s -> eval(env, [s, c[1], writeWorld(z, c[2])], tl)
+      esac
+  | LD (x):tl -> 
+     eval (env, [c[1](x):c[0], c[1], c[2]], tl)
+  | ST (x):tl -> 
+      case c[0] of
+        z:s -> eval (env, [ s, c[1] <- [x, z], c[2]], tl)
+      esac
+  | 0 -> c
+  
+
+  | LABEL (s) :tl ->
+      eval (env, c, tl)
+  | JMP (l) :tl -> 
+      eval (env, c, fromLabel (env, l) )
+  
+  | CJMP (cond, l) :tl ->
+      case c[0] of
+        0:tail -> eval (env, [tail, c[1], c[2]], if compare (cond, "z")==0 then fromLabel (env, l) else tl fi)
+      | _:tail -> eval (env, [tail, c[1], c[2]], if compare (cond,"nz")==0 then fromLabel (env, l) else tl fi)
+      esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -96,12 +130,72 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+ case expr of
+    Var   (x)         -> singletonBuffer(LD (x))
+  | Const (n)         -> singletonBuffer(CONST (n))
+  | Binop (s, e1, e2) -> compileExpr(e1) <+> compileExpr(e2) <+ BINOP (s)
+ esac 
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (cmpSM (initCompEnv(), stmt)[1])
+}
+
+fun compileIf(env, expr, s1, s2){
+  case s2 of
+    Skip ->
+      var ls = genLabels(env, 1);
+      var p = cmpSM (ls[1], s1);
+
+      [p[0], compileExpr (expr)
+        <+  CJMP ("z", ls[0])
+        <+> p[1]
+        <+  LABEL (ls[0])
+      ]
+  | _ ->
+      var ls = genLabels(env, 2);
+      var p2 = cmpSM(ls[2], s2);
+      var p1 = cmpSM(p2[0], s1);
+
+      [p1[0], compileExpr (expr)
+        <+  CJMP ("nz", ls[0])
+        <+> p2[1]
+        <+  JMP (ls[1])
+        <+  LABEL (ls[0])
+        <+> p1[1]
+        <+  LABEL (ls[1])
+      ]
+  esac
+}
+
+fun cmpSM(env, stmt){
+  case stmt of
+    Assn  (s, expr) -> [env, compileExpr(expr) <+ ST (s)]
+  | Read  (x)       -> [env, listBuffer ( {READ, ST (x)} )]
+  | Write (expr)    -> [env, compileExpr(expr) <+ WRITE]
+  | Seq   (s1, s2)  -> 
+      var p1 = cmpSM(env, s1);
+      var p2 = cmpSM(p1[0], s2);
+
+      [p2[0], p1[1] <+> p2[1] ]
+
+  | Skip            -> [env, emptyBuffer() ]
+  | While (expr, s) ->
+      var ls = genLabels(env, 2);
+      var p = cmpSM (ls[2], s);
+
+      [p[0], emptyBuffer() 
+        <+  JMP (ls[0]) 
+        <+  LABEL (ls[1]) 
+        <+> p[1]
+        <+  LABEL (ls[0])
+        <+> compileExpr(expr)
+        <+  CJMP ("nz", ls[1])
+      ] 
+  | If (expr, s1, s2) -> compileIf (env, expr, s1, s2)
+
+  esac
 }
