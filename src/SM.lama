@@ -27,7 +27,22 @@ public fun showSM (prg) {
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  foldl(
+    fun ([stack, state, world], insn) {
+      case insn of 
+        CONST (c)  -> [c:stack, state, world]
+      | READ       -> case readWorld (world) of
+          [r1, r2] -> [r1:stack, state, r2] 
+          esac
+      | WRITE      -> [stack.tl, state, writeWorld (stack.hd, world)] 
+      | BINOP (op) -> case stack of 
+          right:left:stack -> [(evalBinop (op, left, right)):stack, state, world]
+          esac
+      | LD (x)     -> [state (x):stack, state, world]
+      | ST (x)     -> [stack.tl, state <- [x, stack.hd], world]
+      esac
+  },
+  c, insns)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -36,15 +51,25 @@ public fun evalSM (input, insns) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list 
--- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var (x)              -> {LD (x)}
+  | Const (c)            -> {CONST (c)}
+  | Binop (op, lhs, rhs) -> compileExpr (lhs) +++ compileExpr (rhs)  +++ {BINOP (op)}
+  | _                    -> failure ("\n[ERROR] Unsupported compileExpr input\n")
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  case stmt of
+    Assn (st, expr) -> compileExpr (expr) +++ {ST (st)}
+  | Read (st)       -> {READ, ST (st)}
+  | Write (expr)    -> compileExpr (expr) +++ {WRITE}
+  | Seq (lhs, rhs)  -> compileSM (lhs) +++ compileSM (rhs)
+  | Skip            -> []
+  | _               -> failure("\n[ERROR] Unsupported SM:compileSM match")
+  esac
 }
