@@ -45,38 +45,97 @@ fun inbr (l, p, r) {
 
 fun binop (op) {
   [syntax (pos -s[op]), fun (l, loc, r) {
-                          fun (a) {
-                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
-                          }
-                        }
-  ]
+    fun (a) {
+      assertValue (a, Binop (op, l (Val), r (Val)), loc)
+    }
+  }]
 }
 
-var primary  = memo $ eta syntax (
-                                  -- decimal constant
-                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+fun assertVoidFun(token, loc) {
+  fun (attr) { assertVoid(attr, token, loc) }
+}
 
-                                  -- identifier
-                                  x=lident                                          {fun (a) {
-                                                                                       case a of
-                                                                                         Ref  -> Ref (x)
-                                                                                       | Void -> Ignore (Var (x))
-                                                                                       | _    -> Var (x)
-                                                                                       esac
-                                                                                    }} |
-                                  $(failure ("the rest of primary parsing in not implemented\n"))),
-    basic    = memo $ eta (expr ({[Right, {[s (":="),
-                                            fun (l, loc, r) {
-                                              fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                            }]}],
-                                  [Left , map (binop, {"!!"})],
-                                  [Left , map (binop, {"&&"})],
-                                  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                  [Left , map (binop, {"+", "-"})],
-                                  [Left , map (binop, {"*", "/", "%"})]
-                                 },
-                                 primary)),
-    exp      = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+fun assertValueFun(token, loc) {
+  fun (attr) { assertValue(attr, token, loc) }
+}
+
+var ifParser = memo $ eta syntax(
+      loc=pos kIf cond=exprParser kThen body=exprParser tail=ifTailParser { 
+        fun (attr) {
+          If(cond(Val), body(attr), tail(attr)) 
+        }
+      }
+    ),
+    ifTailParser = memo $ eta syntax(
+      kElif cond=exprParser kThen body=exprParser tail=ifTailParser { 
+        fun (attr) {
+          If(cond(Val), body(attr), tail(attr)) 
+        }
+      } |
+      -kElse exprParser -kFi |
+      kFi { fun (attr) { Skip } }
+    );
+
+var primaryParser = memo $ eta syntax (
+      -- decimal constant
+      loc=pos x=decimal {
+        -- fun (attr) {assertValue (attr, Const (stringInt (x)), loc)}
+        assertValueFun(Const(stringInt (x)), loc)
+      } |
+      -- identifier
+      x=lident {
+        fun (attr) {
+          case attr of
+            Ref  -> Ref (x)
+          | Void -> Ignore (Var (x))
+          | _    -> Var (x)
+          esac
+      }} |
+      -- Brackets
+      inbr[s("("), exprParser, s(")")] |
+      -- Skip
+      loc=pos kSkip { 
+        assertVoidFun(Skip, loc)
+      } |
+      -- Read
+      loc=pos kRead x=inbr[s("("), lident, s(")")] {
+        assertVoidFun(Read(x), loc)
+      } |
+      -- Write
+      loc=pos kWrite e=inbr[s("("), exprParser, s(")")] { 
+        assertVoidFun(Write(e(Val)), loc)
+      } |
+      -- While
+      loc=pos kWhile cond=exprParser kDo body=exprParser kOd { 
+        assertVoidFun(While(cond(Val), body(Void)), loc)
+      } |
+      -- Do
+      loc=pos kDo body=exprParser kWhile cond=exprParser kOd { 
+        assertVoidFun(DoWhile(body(Void), cond(Val)), loc)
+      } |
+      -- For
+      loc=pos kFor init=exprParser s[","] cond=exprParser s[","] incr=exprParser kDo body=exprParser kOd { 
+        assertVoidFun(Seq(init(Void), While(cond(Val), Seq(body(Void), incr(Void)))))
+      } |
+      -- If
+      ifParser
+    ),
+    basicParser = memo $ eta (expr ({
+      [Right, {[s (":="), fun (l, loc, r) {
+        -- fun (attr) {assertValue (attr, Assn (l (Ref), r (Val)), loc)}
+        assertValueFun(Assn (l (Ref), r (Val)), loc)
+      }]}],
+      [Left , map (binop, {"!!"})],
+      [Left , map (binop, {"&&"})],
+      [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+      [Left , map (binop, {"+", "-"})],
+      [Left , map (binop, {"*", "/", "%"})]
+    }, primaryParser)),
+    exprParser = memo $ eta syntax (
+      basicParser | 
+      s1=basicParser s[";"] s2=exprParser {
+        fun (attr) {Seq (s1 (Void), s2 (attr))}
+    });
 
 -- Public top-level parser
-public parse = syntax (s=exp {s (Void)});
+public parse = syntax (s=exprParser {s (Void)});

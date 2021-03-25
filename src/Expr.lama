@@ -63,8 +63,62 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (configuration@[state, world], expression) {
+  -- printf("evalexpr %s\n", expression.string);
+
+  case expression of
+    Const (value) ->
+      [configuration, value] |
+    Var (variableName) -> 
+      [configuration, state(variableName)] |
+    Ref (x) ->
+      [configuration, Ref(x)] |
+    Binop (operation, subexpression1, subexpression2) ->
+      case evalList(configuration, {subexpression1, subexpression2}) of 
+        [configuration, {lhs, rhs}] ->
+          [configuration, evalOp(operation, lhs, rhs)]
+      esac |
+    Assn (subexpression1, subexpression2) -> 
+      case evalList(configuration, {subexpression1, subexpression2}) of
+        [[state, world], {Ref(varName), value}] ->
+          [[state <- [varName, value], world], value]
+      esac |
+    Seq (subexpression1, subexpression2) -> 
+      case eval(configuration, subexpression1) of
+        [configuration, _] ->
+          eval(configuration, subexpression2)
+      esac |
+    Read (variableName) -> 
+      var result = readWorld(world);
+      [[(state <- [variableName, result.fst]), result.snd], Bottom] |
+    Write (subexpression) ->
+      case eval(configuration, subexpression) of
+        [[state, world], value] ->
+          [[state, writeWorld(value, world)], Bottom]
+      esac |
+    If (condition, consequentBody, alternativeBody) ->
+      case eval(configuration, condition) of
+        [configuration, 0] -> eval(configuration, alternativeBody) |
+        [configuration, _] -> eval(configuration, consequentBody)
+      esac |
+    While (condition, body) ->
+      case eval(configuration, condition) of 
+        [configuration, 0] -> [configuration, Bottom] |
+        _ ->
+          eval(eval(configuration, body)[0], expression)
+      esac |
+    DoWhile (body, condition) ->
+      case eval(eval(configuration, body)[0], condition) of
+        [configuration, 0] -> [configuration, Bottom] |
+        [configuration, _] -> eval(configuration, expression)
+      esac |
+    Ignore (subexpression) ->
+      [eval(configuration, subexpression)[0], Bottom] |
+    Skip ->
+      [configuration, Bottom] |
+    _ ->
+      failure ("Unknown expression '" ++ string(expression) ++ "' appeared at evaluation\n")
+  esac
 }
 
 
