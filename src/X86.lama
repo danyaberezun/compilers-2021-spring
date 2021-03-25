@@ -285,18 +285,77 @@ fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+
       case i of
         READ ->
           case env.allocate of
             [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
+          esac
       | WRITE ->
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-    }, [env, emptyBuffer ()], code)}
+      | CONST (n) -> fun ([s, env]) {
+            [env, code <+> move (L (n), s)]
+          } (env.allocate)
+      | LD (x) -> fun ([s, env]) {
+            [env, code <+> move (env.loc (x), s)]
+          } (env.addGlobal (x).allocate)
+      | ST (x) -> fun ([s, env]) {
+            [env, code <+> move (s, env.loc (x))]
+          } (env.addGlobal (x).pop)
+      | BINOP (op) -> fun ([r, l, env]) {
+            fun trivial () {
+              move (l, eax) <+ Binop (op, r, eax) <+> move (eax, l)
+            }
+
+            fun cmp (op, l, r) {
+              -- r -> eax      l - eax -> flags
+              move (r, eax) <+ Binop ("cmp", eax, l)
+              --  eax = 0              flags -> al
+              <+> move (L (0), eax) <+ Set (suffix (op), "%al")
+              <+> move (eax, l)
+            }
+
+            fun div (rem) {
+              move (l, eax) <+ Cltd <+ IDiv (r)
+              <+> move (if rem then edx else eax fi, l)
+            }
+
+            -- This operations is logical
+            fun andor (op) {
+              cmp (">", l, L (0)) <+> cmp (">", r, L (0))
+              <+> trivial ()
+            }
+
+            [env.push (l), code <+> case op of
+              "+"  -> trivial ()
+            | "-"  -> trivial ()
+            | "*"  -> trivial ()
+            | "/"  -> div     (false)
+            | "%"  -> div     (true)
+            | "<"  -> cmp     (op, l, r)
+            | ">"  -> cmp     (op, l, r)
+            | "<=" -> cmp     (op, l, r)
+            | ">=" -> cmp     (op, l, r)
+            | "==" -> cmp     (op, l, r)
+            | "!=" -> cmp     (op, l, r)
+            | "&&" -> andor   (op)
+            | "!!" -> andor   (op)
+            | _    -> failure ("Invalid boperation: %s\n", op.string)
+            esac]
+          } (env.pop2)
+      -- A05
+      | LABEL (l) -> [env, code <+ Label (l)]
+      | JMP (l) -> [env, code <+ Jmp (l)]
+      | CJMP (c, l) -> fun ([s, env]) {
+            [env, code <+ Binop ("cmp", L (0), s) <+ CJmp (c, l)]
+          } (env.pop)
+      -- END A05
+      | _ -> failure ("Invalid instruction: %s\n", i.string)
+      esac
+    }, [env, emptyBuffer ()], code)
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable

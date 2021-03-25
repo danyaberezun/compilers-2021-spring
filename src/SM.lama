@@ -54,8 +54,33 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, [stk, st, wd], insns) {
+  var insn = hd $ insns;
+
+  var cfg = case insn of
+    BINOP (op) -> [fun (r:l:stk) {evalBinop (op, l, r):stk} (stk), st, wd]
+  | CONST (n)  -> [n:stk, st, wd]
+  | READ       ->
+      var read = readWorld $ wd;
+      [read[0]:stk, st, read[1]]
+  | WRITE      -> [tl (stk), st, writeWorld (hd (stk), wd)]
+  | LD    (x)  -> [st (x):stk, st, wd]
+  | ST    (x)  -> [tl (stk), st <- [x, hd (stk)], wd]
+  -- A05
+  | LABEL (_)    -> [stk, st, wd]
+  | JMP   (l)    -> insns := fromLabel (env, l); [stk, st, wd]
+  | CJMP  (c, l) -> case c of
+        "z"  -> if hd (stk) == 0 then insns := fromLabel (env, l) fi
+      | "nz" -> if hd (stk)      then insns := fromLabel (env, l) fi
+      esac;
+      [tl (stk), st, wd]
+  -- END A05
+  | _ -> failure ("Invalid instruction: %s\n", string (insn))
+  esac;
+
+  if tl $ insns
+  then eval (env, cfg, tl (insns))
+  else cfg fi
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -93,15 +118,65 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+fun compileExprBuf (expr) {
+  case expr of
+    Var   (vn)       -> singletonBuffer $ LD (vn)
+  | Const (n)        -> singletonBuffer $ CONST (n)
+  | Binop (op, l, r) -> compileExprBuf (l) <+> compileExprBuf (r) <+ BINOP (op)
+  | _                -> failure ("Invalid expression: %s\n", string (expr))
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  compileExprBuf (expr).getBuffer
 }
+
+fun compileSMBuf (stmt) {
+  case stmt of
+    Assn  (vn, expr) -> compileExprBuf (expr) <+ ST (vn)
+  | Read  (vn)       -> singletonBuffer (READ) <+ ST (vn)
+  | Write (expr)     -> compileExprBuf (expr) <+ WRITE
+  | Seq   (l, r)     -> compileSMBuf (l) <+> compileSMBuf (r)
+  | Skip             -> emptyBuffer ()
+  -- A05
+  | If (c, t, f) -> fun ([tl, fl, nenv]) {
+        env := nenv;
+            compileExprBuf (c)
+        <+  CJMP ("z", fl)
+        <+> compileSMBuf (t)
+        <+  JMP (tl)
+        <+  LABEL (fl)
+        <+> compileSMBuf (f)
+        <+  LABEL (tl)
+      } (genLabels (env, 2))
+  | While (c, stmt) -> fun ([cl, bl, nenv]) {
+        env := nenv;
+            singletonBuffer (JMP (cl))
+        <+  LABEL (bl)
+        <+> compileSMBuf (stmt)
+        <+  LABEL (cl)
+        <+> compileExprBuf (c)
+        <+  CJMP ("nz", bl)
+      } (genLabels (env, 2))
+  | DoWhile (stmt, c) -> fun ([bl, nenv]) {
+        env := nenv;
+            singletonBuffer (LABEL (bl))
+        <+> compileSMBuf (stmt)
+        <+> compileExprBuf (c)
+        <+  CJMP ("nz", bl)
+      } (genLabel (env))
+  -- END A05
+  | _ -> failure ("Invalid statement: %s\n", string (stmt))
+  esac
+}
+
+var env = initCompEnv();
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  compileSMBuf (stmt).getBuffer
 }

@@ -3,6 +3,7 @@
 import State;
 import Expr;
 import World;
+import List;
 
 -- Evaluates a statement "stmt" in a configuration "c".
 -- A configuration is a pair of a state "s" and a world "w".
@@ -19,8 +20,27 @@ import World;
 --        While   (expr, stmt)       |
 --        DoWhile (stmt, expr)
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+fun eval ([st, wd], stmt) {
+  -- Do not use dot notation, as it will complicate parsing
+
+  case stmt of
+    Skip             -> [st, wd]
+  | Assn  (vn, expr) -> [st <- [vn, evalExpr (st, expr)], wd]
+  | Read  (vn)       ->
+      var read = readWorld (wd);
+      [st <- [vn, read[0]], read[1]]
+  | Write (expr)     -> [st, writeWorld (evalExpr (st, expr), wd)]
+  | Seq   (l, r)     -> foldl (eval, [st, wd], {l, r})
+  -- A04
+  | If (c, t, f) -> eval ([st, wd], if evalExpr (st, c) then t else f fi)
+  | While (c, stmt) ->
+      if evalExpr (st, c)
+      then foldl (eval, [st, wd], {stmt, While (c, stmt)})
+      else [st, wd] fi
+  | DoWhile (stmt, c) -> foldl (eval, [st, wd], {stmt, While (c, stmt)})
+  -- END A04
+  | _  -> failure ("Invalid statement: %s\n", string (stmt))
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output
