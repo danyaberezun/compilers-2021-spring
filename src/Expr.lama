@@ -63,14 +63,72 @@ fun evalList (c, exprs) {
   esac
 }
 
+public fun binop (s, l, r) {
+  case s of
+    "+"  -> l +  r
+  | "-"  -> l -  r
+  | "*"  -> l *  r
+  | "/"  -> l /  r
+  | "%"  -> l %  r
+  | "==" -> l == r
+  | "!=" -> l != r
+  | "<"  -> l <  r
+  | "<=" -> l <= r
+  | ">"  -> l >  r
+  | ">=" -> l >= r
+  | "&&" -> l && r
+  | "!!" -> l !! r
+  esac
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var     (n)                  -> [c, s (n)]
+  | Ref     (n)                  -> [c, n]
+  | Const   (n)                  -> [c, n]
+  | Skip                         -> [c, Void]
+  | Ignore  (body)               -> case eval (c, body) of [c@[s, w], v0] ->
+                                      [c, Void]
+                                    esac
+  | Binop   (opcode, e0, e1)     -> case eval (c, e0) of [c@[s, w], v0] -> 
+                                    case eval (c, e1) of [c@[s, w], v1] -> 
+                                      [c, binop (opcode, v0, v1)]
+                                    esac esac
+  | Assn    (to, from)           -> case eval (c,   to) of [c@[s, w], v0] ->
+                                    case eval (c, from) of [c@[s, w], v1] ->
+                                      [[s <- [v0, v1], w], v1]
+                                    esac esac
+  | Read    (to)                 -> case eval (c, to) of [c@[s, w], v0] ->
+                                    case readWorld (w) of [n, w] -> 
+                                      [[s <- [v0, n], w], Void]
+                                    esac esac
+  | Write   (from)               -> case eval (c, from) of [c@[s, w], v0] ->
+                                      [[s, writeWorld (v0, w)], Void]
+                                    esac
+  | Seq     (body0, body1)       -> case eval (c, body0) of [c@[s, w], Void] -> 
+                                      eval (c, body1)
+                                    esac
+  | If      (cond, body0, body1) -> case eval (c, cond) of 
+                                      [c, 0] -> eval (c, body1)
+                                    | [c, _] -> eval (c, body0)
+                                    esac
+  | While   (cond, body)         -> case eval (c, cond) of 
+                                      [c, 0] -> [c, Void]
+                                    | [c, n] -> case eval (c, body) of [c@[s, w], Void] -> 
+                                                  eval (c, expr) 
+                                                esac
+                                    esac
+  | DoWhile (body, cond)         -> case eval (c, body) of [c@[s, w], Void] -> 
+                                      eval (c, While (cond, body)) 
+                                    esac
+  esac
 }
 
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
   case eval ([emptyState, createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
+    [c, Void] -> c.snd.getOutput
+  | _         -> failure ("programme must be Void")
   esac
 }

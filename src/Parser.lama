@@ -19,8 +19,6 @@ fun error (msg, loc) {
 --   Ref  --- a reference to a mutable cell (aka "lvalue")
 --   Void --- no value (aka "void"/"unit")
 
--- Checks if a plain value "val" can be used in the context described by
--- the attribute "atr".
 fun assertValue (atr, v, loc) {
   case atr of
     Ref  -> error ("reference expected", loc)
@@ -37,10 +35,18 @@ fun assertVoid (atr, v, loc) {
   esac
 }
 
--- A parser of "something" in brackets; l, r are left and right
--- brackets as parsers, p --- a parser of "something"
-fun inbr (l, p, r) {
-  syntax (-l p -r)
+fun assertRef (atr, v, loc) {
+  case atr of
+    Ref  -> Ref (v)
+  | Void -> Skip
+  | _    -> Var (v)
+  esac
+}
+
+fun assertF (f, v, loc) {
+  fun (a) {
+    f (a, v, loc)
+  }
 }
 
 fun binop (op) {
@@ -52,19 +58,29 @@ fun binop (op) {
   ]
 }
 
-var primary  = memo $ eta syntax (
-                                  -- decimal constant
-                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+fun inbr (l, p, r) {
+  syntax (-l p -r)
+}
 
-                                  -- identifier
-                                  x=lident                                          {fun (a) {
-                                                                                       case a of
-                                                                                         Ref  -> Ref (x)
-                                                                                       | Void -> Ignore (Var (x))
-                                                                                       | _    -> Var (x)
-                                                                                       esac
-                                                                                    }} |
-                                  $(failure ("the rest of primary parsing in not implemented\n"))),
+fun inpar (p) {
+  inbr (s ("("), p, s (")"))
+}
+
+var primary  = memo $ eta syntax (
+                                  loc=pos x=decimal { assertF (assertValue, Const (stringInt (x)), loc) } |
+                                  loc=pos x=lident { assertF (assertRef, x, loc) } |
+                                  inpar[exp] |
+                                  loc=pos kSkip { assertF (assertVoid, Skip, loc) } |
+                                  loc=pos kWrite from=inpar[exp] { assertF (assertVoid, Write (from (Val)), loc) } |
+                                  loc=pos kRead to=inpar[exp] { assertF (assertVoid, Read (to (Ref)), loc) } |
+                                  kWhile expr=exp kDo loc=pos body=exp kOd { assertF (assertVoid, While (expr (Val), body (Void)), loc) } |
+                                  kDo loc=pos body=exp kWhile expr=exp kOd { assertF (assertVoid, DoWhile (body (Void), expr (Val)), loc) } |
+                                  kIf cond=exp kThen body=exp elfs=elifs { fun (a) { If (cond (Val), body (a), elfs (a)) } } |
+                                  kFor init=exp s[","] cond=exp s[","] inc=exp kDo loc=pos body=exp kOd { assertF (assertVoid, Seq (init (Void), While (cond (Val), Seq (body (Void), inc (Void)))), loc) }),
+    elifs = memo $ eta syntax (
+                                kElif cond=exp kThen body=exp elfs=elifs { fun (a) { If (cond (Val), body (a), elfs (a)) } } |
+                                -kElse exp -kFi |
+                                loc=pos kFi { assertF (assertVoid, Skip, loc) }),
     basic    = memo $ eta (expr ({[Right, {[s (":="),
                                             fun (l, loc, r) {
                                               fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
