@@ -4,7 +4,6 @@ import Ostap;
 import Lexer;
 import List;
 import Fun;
-import Matcher;
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
@@ -13,13 +12,60 @@ fun inbr (l, p, r) {
 }
 
 -- Primary expression
-var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
-                          lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+var primary = memo $ eta syntax (x=decimal {Const (stringInt (x))} |
+                                 x=lident  {Var (x)}               |
+                                 inbr[s("("), exp, s(")")]),
+      exp = memo $ eta ( expr(
+      				{
+      				
+      				[Left, { [s("!!"), fun (l,op,r) {Binop(op,l,r)}] }],
+      				 
+      				[Left, { [s("&&"), fun (l,op,r) {Binop(op,l,r)}] }],
+      				  	   
+      				[Nona, { [s("=="), fun (l,op,r) {Binop(op,l,r)}],
+      				  	   [s(">"), fun (l,op,r) {Binop(op,l,r)}],
+      				  	   [s("<"), fun (l,op,r) {Binop(op,l,r)}],
+      				  	   [s("<="), fun (l,op,r) {Binop(op,l,r)}],
+      				  	   [s(">="), fun (l,op,r) {Binop(op,l,r)}],
+      				  	   [s("!="), fun (l,op,r) {Binop(op,l,r)}] }],
+      				  	   
+      				  	   
+      				[Left, { [s("+"), fun (l,op,r) {Binop(op,l,r)}],
+      				  	   [s("-"), fun (l,op,r) {Binop(op,l,r)}]
+      				  	   }],
+      				  	   
+      				[Left, { [s("*"), fun (l,op,r) {Binop(op,l,r)}],
+      				  	   [s("/"), fun (l,op,r) {Binop(op,l,r)}],
+      				  	   [s("%"), fun (l,op,r) {Binop(op,l,r)}] }]
+      				  
+      				},
+      				primary
+      			      ));
+      			      
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
-   
-
+var stmt = memo $ eta syntax ( x=lident s[":="] e=exp {Assn(x,e) } |
+				kRead x=inbr[s("("), lident, s(")")] {Read (x) } |
+				kWrite e=inbr[s("("), exp, s(")")] {Write (e) } |
+				kSkip {Skip} |
+				kWhile e=exp kDo s=stmtSeq kOd { While (e, s) } |
+				kDo s=stmtSeq kWhile e=exp kOd { DoWhile(s, e) } |
+				kFor init=stmt s[","] condition=exp s[","] step=stmt kDo body=stmtSeq kOd { For(init, condition, step, body) } |
+				ifPart 
+				),
+				
+		ifPart = memo $ eta syntax (
+			kIf e=exp kThen s1=stmtSeq kFi { If (e, s1) } |
+			kIf e=exp kThen s1=stmtSeq kElse s2=stmtSeq kFi { If (e, s1, s2) } |
+			kIf e=exp kThen s1=stmtSeq kElif s2=elifPart { If (e, s1, s2) } 
+		),
+		elifPart = memo $ eta syntax (
+			e=exp kThen s1=stmtSeq kElse s2=stmtSeq kFi { If (e, s1, s2) } |
+			e=exp kThen s1=stmtSeq kElif s2=elifPart { If (e, s1, s2) }
+			 
+		), 
+		stmtSeq = memo $ eta syntax ( stmt |
+				   s1 = stmt s[";"] s2 = stmtSeq  { Seq(s1,s2) });
+				
 -- Public top-level parser
-public parse = stmt;
+public parse = stmtSeq;
+             

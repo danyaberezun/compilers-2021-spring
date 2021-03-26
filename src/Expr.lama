@@ -3,7 +3,6 @@
 import List;
 import State;
 
-
 -- The evaluator itself: takes a state and an expression,
 -- returns integer value
 --
@@ -12,7 +11,35 @@ import State;
 -- expr = Var   (string)             |
 --        Const (int)                |
 --        Binop (string, expr, expr)
-
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+
+  case expr of
+  Var (s@#str) -> st(s)
+  | Const (i@#val) -> i
+  | Binop (op@#str, e1@#sexp, e2@#sexp) -> binop (st, op, e1, e2)
+  | _ -> 0
+  esac
+}
+
+fun binop (st, op, firstExpression, secondExpression) {
+	
+	var ex1, ex2;
+	ex1 := evalExpr (st, firstExpression); 
+  	ex2 := evalExpr (st, secondExpression);
+  	case op of 
+  		"+" -> ex1 + ex2 
+  		| "*" -> ex1 * ex2
+  		| "/" -> ex1 / ex2
+  		| "-" -> ex1 - ex2
+  		| "%" -> ex1 % ex2
+  		| "==" -> ex1 == ex2
+  		| "!=" -> ex1 != ex2
+  		| ">=" -> ex1 >= ex2
+  		| "<=" -> ex1 <= ex2
+  		| "<" -> ex1 < ex2
+  		| ">" -> ex1 > ex2
+  		| "&&" -> ex1 && ex2
+  		| "!!" -> ex1 !! ex2
+  		| _ -> 0
+  	esac 
 }

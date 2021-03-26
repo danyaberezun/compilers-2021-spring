@@ -276,21 +276,105 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-      esac
-    }, [env, emptyBuffer ()], code)
+  fun compile (env, code) {
+    foldl (
+      fun ([env, scode], i) {
+        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        case i of
+          READ ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+              | _ -> failure ("allocation failed\n")
+            esac             
+        | WRITE ->
+            case env.pop of
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+              | _ -> failure ("write failed\n")
+            esac
+        | ST (x) ->
+            case env.addGlobal(x).pop of
+              [value, env] -> [env, code <+ Mov (value, env.loc (x))]
+              | _ -> failure ("st failed\n")
+            esac
+        | LD (x) ->
+            case env.addGlobal(x).allocate of
+              [s, env] -> [env, code <+ Mov ( env.loc(x), eax ) <+ Mov (eax, s)]
+              | _ -> failure ("ld failed\n")
+            esac
+        | CONST (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Mov (L (x), s)]
+              | _ -> failure ("const failed\n")
+            esac
+        | BINOP (op) ->
+            case env.pop2 of
+              [x, y, env] -> 
+              case env.allocate of
+              [s, env] ->
+                 case op of
+                    "*" -> [env, code <+ Mov (x, eax) <+ Binop(op, y, eax) <+ Mov (eax, s)]
+                    
+                    |"+" -> [env, code <+
+                    			Mov (x, eax) <+ 
+                    			Binop(op, eax, y) <+
+                    			Mov (y, eax) <+ 
+                    			Mov (eax, s)]
+                    
+                    |"-" -> [env, code <+
+                    			Mov (x, eax) <+ 
+                    			Binop(op, eax, y) <+
+                    			Mov (y, eax) <+
+                    			Mov (eax, s)] 
+                    
+                    | "/" -> [env, code <+ Mov (y, eax) <+ Cltd <+ Push (ebx) <+ Mov (x, ebx) <+ IDiv (ebx) <+ Pop (ebx) <+ Mov(eax, s)] 
+                    
+                    | "&&" -> [env, code <+
+                    
+                    			Mov (x, eax) <+
+  					Binop("*", y, eax) <+
+  					
+  					Binop("cmp", L(0), eax ) <+
+  					
+                    			Mov(L(0), eax) <+
+                    			Set("ne", "%AL") <+
+                    			
+  					Mov(eax, s)  
+                    			]
+                     
+                    | "!!" -> [env, code <+ 
+                    			Mov (y, eax) <+
+                    			Binop(op, x, eax) <+
+                    			Mov(L(0), eax) <+ 
+                    			Set("z", "%AL") <+ 
+                    			Mov(eax, s) <+ 
+                    			Binop("^", L (1), s)] 
+                    
+                    | "%" -> [env, code <+
+                           		              Mov (y, eax) <+ 
+                           		              Cltd <+ 
+                           		              Push (ebx) <+ 
+                           		              Mov (x, ebx) <+ 
+                           		              IDiv (ebx) <+
+                           		              Pop (ebx) <+
+                           		              Mov(edx, s)
+                           		              ]
+                    
+                     | _ -> [env, code <+ 
+                     			Mov (y, eax) <+
+                     			Binop("cmp", x, eax) <+ 
+                     			Mov(L (0), eax) <+ 
+                     			Set(suffix(op), "%AL") <+ 
+                     			Mov(eax, s)]
+                 esac
+               esac
+             esac
+           
+        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        esac
+      }, [env, emptyBuffer ()], code)
+  }
+
+  compile (env, code) 
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
@@ -315,7 +399,7 @@ public fun compileX86 (args, code) {
                         code <+>
                         epilogue ()
                       )
-                   ).stringcat);
+                    ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac

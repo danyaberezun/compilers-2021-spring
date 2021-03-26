@@ -10,17 +10,117 @@ import World;
 --
 -- A statement is represented by a data structure of the following shape:
 --
--- stmt = Assn    (string, expr)     |
---        Seq     (stmt, stmt)       |
---        Skip                       |
---        Read    (string)           |
---        Write   (expr)             |
---        If      (expr, stmt, stmt) |
---        While   (expr, stmt)       |
---        DoWhile (stmt, expr)
+-- stmt = Assn   (string, expr)     |
+--        Seq    (stmt, stmt)       |
+--        Skip                      |
+--        Read   (string)           |
+--        Write  (expr)             |
+
+fun readVar (c, varName) {
+	var st, state;
+  	st := readWorld (c[1]); 
+
+  	state := c[0];
+  	state := (state <- [varName, st[0]]);
+  	c[0] := state;
+  	c[1] := st[1]; 
+  	c 
+}
+
+fun assign(c, varName, expr) {
+
+	var exprValue = evalExpr (c[0], expr);
+	var state = c[0];
+
+	state := (state <- [varName, exprValue]);
+	c[0] := state;
+	c
+}
+
+fun putOut (c, expr) {
+	var exprValue = evalExpr (c[0], expr);
+	var newWorld = writeWorld ( exprValue, c[1] );
+	
+	c[1] := newWorld;
+	c
+}
+
+fun processWhile (c, expr, stmt) {
+
+	var exprValue = evalExpr (c[0], expr);
+	var env = c;
+	
+	while exprValue != 0 do
+		env := eval(env, stmt);
+		exprValue := evalExpr (env[0], expr)
+	od;
+	env
+}
+
+
+fun processDoWhile (c, stmt, expr) {
+	
+	var env = eval(c, stmt);
+	var exprValue = evalExpr (env[0], expr);
+	
+	while exprValue != 0 do
+		env := eval(env, stmt);
+		exprValue := evalExpr (env[0], expr)
+	od;
+	env
+}
+
+fun processIfElse (c, e, sThen, sElse) {
+	
+	var exprValue = evalExpr(c[0], e);
+	var newState;
+	if exprValue != 0 then 
+		newState := eval (c, sThen)
+	else 
+		newState := eval (c, sElse)
+	fi
+}
+
+
+fun processIf (c, e, sThen) {
+	
+	var exprValue = evalExpr(c[0], e);
+	var newState = c;
+	
+	if exprValue != 0 then 
+		newState := eval (c, sThen)
+	fi;
+	newState
+}
+
+fun processFor (env, init, condition, step, body) {
+	
+	var localEnv = eval(env, init);
+	var exprValue = evalExpr (localEnv[0], condition);
+	
+	while exprValue != 0 do
+		localEnv := eval(localEnv, body);
+		localEnv := eval (localEnv, step);
+		exprValue := evalExpr (localEnv[0], condition)
+	od;
+	localEnv
+	
+}
 
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+
+  case stmt of
+  Assn (s@#str, e@#sexp) -> assign (c, s, e)
+  | Seq (s12@#sexp, s22@#sexp) -> ( c := eval (c, s12); c := eval (c, s22); c )
+  | Read (varName@#str) -> readVar (c, varName)
+  | Write (expr@#sexp) -> putOut (c, expr)
+  | While (e@#sexp, s@#sexp) -> processWhile (c, e, s)
+  | DoWhile (s@#sexp, e@#sexp) -> processDoWhile (c, s, e) 
+  | For(init, condition, step, body) -> processFor(c, init, condition, step, body)
+  | If (e@#sexp, sThen@#sexp, sElse@#sexp) -> processIfElse (c, e, sThen, sElse)
+  | If (e@#sexp, sThen@#sexp) -> processIf (c, e, sThen)
+  | Skip -> c
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output

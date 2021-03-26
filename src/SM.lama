@@ -6,6 +6,7 @@ import State;
 import Expr;
 import Buffer;
 import Fun;
+import Array;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
@@ -27,7 +28,91 @@ public fun showSM (prg) {
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+
+	var instructions = listArray(insns);
+	for var i; i := 0, i < instructions.length, i := i + 1 do
+		evalSMInstruction(c, instructions[i])
+	od;
+	c
+}
+
+fun evalSMInstruction (c, ins) {
+	case ins of
+	CONST (i@#val) -> evalConst(c, i)
+	| READ -> evalRead(c)
+	| WRITE -> evalWrite(c)
+	| LD (varName@#str) -> evalLD(c, varName)
+	| ST (varName@#str) -> evalST(c, varName)
+	| BINOP (op@#str) -> evalBinop(c, op)
+	esac
+} 
+
+fun evalConst(c, value) {
+	var stack = c[0];
+	stack := value:stack;
+	c[0] := stack;
+	c
+}
+
+fun evalRead(c) {
+	var st = readWorld(c[2]);
+	c[2] := st[1];
+	evalConst(c, st[0]);
+	c
+}
+
+fun evalWrite(c) {
+	var stack = c[0];
+	var value = popStack(stack);
+	var newWorld = writeWorld(value[0], c[2]);
+	c[2] := newWorld;
+	c[0] := value[1];
+	c
+}
+
+fun evalLD(c, varName) {
+	var state = c[1];
+	var value = state(varName);
+	evalConst(c, value);
+	c
+}
+
+fun evalST(c, varName) {
+	var state = c[1];
+	var stack = popStack(c[0]);
+	state := state <- [varName, stack[0]];
+	c[0] := stack[1];
+	c[1] := state;
+	c
+}
+
+fun evalBinop(c, op) {
+
+	var var2State = popStack(c[0]);
+	var var1State = popStack(var2State[1]);
+	var var1 = var1State[0];
+	var var2 = var2State[0];
+	c[0] := var1State[1];
+	case op of 
+	"*" -> evalConst(c, var1 * var2)
+	| "+" -> evalConst(c, var1 + var2)
+	| "-" -> evalConst(c, var1 - var2)
+	| "/" -> evalConst(c, var1 / var2)
+	| "%" -> evalConst(c, var1 % var2)
+	| "==" -> evalConst(c, var1 == var2)
+	| ">=" -> evalConst(c, var1 >= var2)
+	| "<=" -> evalConst(c, var1 <= var2)
+	| "!=" -> evalConst(c, var1 != var2)
+	| "<" -> evalConst(c, var1 < var2)
+	| ">" -> evalConst(c, var1 > var2)
+	| "&&" -> evalConst(c, var1 && var2)
+	| "!!" -> evalConst(c, var1 !! var2)
+	esac;
+	c
+}
+
+fun popStack(n:tail) {
+	[n, tail]
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -36,14 +121,59 @@ public fun evalSM (input, insns) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+-- Takes an expression, returns a list (of, possibly, lists)
+-- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+
+  case expr of
+  Var (varName@#str) -> { LD (varName) }
+  | Const (i@#val) -> { CONST (i) }
+  | Binop (op@#str, e1@#sexp, e2@#sexp) -> compileBinop (op, e1, e2)
+  | _ -> printf ("some unknown2 %s\n", expr); {}
+  esac
+}
+
+public fun compileBinop (op, firstExpression, secondExpression) {
+	
+	var buffer = emptyBuffer();
+	var cexp1 = compileExpr (firstExpression);
+	var cexp2 = compileExpr (secondExpression);
+	
+	buffer := buffer <+> listBuffer ( cexp1 );
+	buffer := buffer <+> listBuffer ( cexp2 );
+	
+	buffer := buffer <+ BINOP (op);
+	getBuffer (buffer)
+}
+
+-- Statements compilation
+
+fun compileAssign(varName, expr) {
+
+	var buffer = listBuffer( compileExpr (expr) );
+	buffer := buffer <+ (ST (varName));
+	buffer
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+
+  var buffer = emptyBuffer();
+
+  case stmt of
+  Assn (varName@#str, expr@#sexp) -> buffer := buffer <+> compileAssign (varName, expr)
+  | Seq (firstExpr@#sexp, secondExpr@#sexp) -> ( buffer := buffer <+> listBuffer( compileSM(firstExpr) ); buffer := buffer <+> listBuffer( compileSM(secondExpr) ) )
+  | Read (varName@#str) -> buffer := buffer <+> listBuffer({ READ, ST (varName) })
+  | Write (expr@#sexp) -> ( buffer := buffer <+> listBuffer(compileExpr(expr)); buffer := buffer <+ (WRITE))
+  | Skip -> printf("skip\n"); skip
+  esac;
+  
+  getBuffer(buffer)
+  
 }
+
+
+
+
