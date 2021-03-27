@@ -12,14 +12,39 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+fun listBinop (ops) {
+  map (fun (op) {
+    [s (op), fun (l, op, r) { Binop (op, l, r) }]
+  }, ops)
+}
+
 -- Primary expression
 var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
                           lident  @ fun (x) {Var (x)} |
                           inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+    exp = memo $ eta expr ({[Left, listBinop ({"!!"})],
+                              [Left, listBinop ({"&&"})],
+                              [Nona, listBinop ({"<", ">", "<=", ">=", "==", "!="})],
+                              [Left, listBinop ({"+", "-"})],
+                              [Left, listBinop ({"*", "/", "%"})]
+                             }, primary);
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
-   
+var ifTail = memo $ eta syntax (kElif e=exp kThen seq1=stmts seq2=ifTail {If (e, seq1, seq2)} |
+                                kElse seq=stmts kFi                      {seq}                |
+                                kFi                                      {Skip});
+
+var stmt = memo $ eta syntax (kSkip {Skip}                                                |
+                              kRead x=inbr[s("("), lident, s(")")] {Read (x)}             |
+                              kWrite e=inbr[s("("), exp, s(")")] {Write (e)}              |
+                              x=lident s[":="] e=exp {Assn (x, e)}                        |
+                              kDo s1=stmts kWhile e=exp kOd {DoWhile (s1, e)}             |
+                              kWhile e=exp kDo body=stmts kOd {While (e, body)}             |
+                              kIf e=exp kThen seq1=stmts seq2=ifTail {If (e, seq1, seq2)} |
+                              kFor s1=stmts s[","] e=exp s[","] s2=stmts kDo s3=stmts kOd {Seq (s1, While (e, Seq (s3, s2)))});
+
+var stmts = memo $ eta syntax (s1=stmt s[";"] s2=stmts {Seq (s1, s2)} |
+                               stmt);
+
 
 -- Public top-level parser
-public parse = stmt;
+public parse = stmts;
