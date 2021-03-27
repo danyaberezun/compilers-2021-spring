@@ -27,7 +27,16 @@ public fun showSM (prg) {
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  foldl (fun ([s, st, w], insn) {
+    case insn of
+      READ          -> case readWorld (w) of [x, w0] -> [x : s, st, w0] esac
+    | WRITE         -> case s of value : rest -> [rest, st, writeWorld (value, w)] esac
+    |	BINOP (op)    -> case s of rExpr : lExpr : rest -> [binOp (op, lExpr, rExpr) : rest, st, w] esac
+    |	LD    (vr)    -> [st (vr) : s, st, w]
+    |	ST    (vr)    -> case s of value : rest -> [rest, st <- [vr, value], w] esac
+    | CONST (const) -> [const : s, st, w]
+    esac
+  }, c, insns)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -35,16 +44,34 @@ public fun evalSM (input, insns) {
   eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
+var compileExprInner = fun (expr) {
+  case expr of
+    Var   (vr) 		           -> singletonBuffer (LD (vr))
+  | Const (const) 		       -> singletonBuffer (CONST (const))
+  | Binop (op, lExpr, rExpr) -> compileExprInner (lExpr) <+> compileExprInner (rExpr) <+ BINOP (op)
+  esac
+};
+
+var compileSMInner = fun (stmt) {
+  case stmt of
+    Assn  (vr, expr)     -> compileExprInner (expr) <+ ST (vr)
+  | Seq   (stmt1, stmt2) -> compileSMInner (stmt1) <+> compileSMInner (stmt2)
+  | Skip 				         -> emptyBuffer ()
+  |	Read  (vr) 		       -> listBuffer ({READ, ST (vr)})
+  | Write (expr) 	     	 -> compileExprInner (expr) <+ WRITE
+  esac
+};
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list 
 -- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  getBuffer (compileExprInner (expr))
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+ getBuffer (compileSMInner (stmt))
 }
