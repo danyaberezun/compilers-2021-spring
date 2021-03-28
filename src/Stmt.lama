@@ -19,8 +19,43 @@ import World;
 --        While   (expr, stmt)       |
 --        DoWhile (stmt, expr)
 
+
+fun prisv (a, x, [st, w]) {
+	[st <- [a, x], w]
+}
+
+fun read (a, [st, w]) {
+	var res = readWorld(w);
+	[st <- [a, res[0]], res[1]] 
+}
+
+fun while_func(expr, stmt, c) {
+	while evalExpr(c[0], expr) do 
+		c:=eval(c, stmt) 
+	od;
+	c
+}
+
+fun do_while_func(expr, stmt, c) {
+	do 
+		c:=eval(c, stmt) 
+	while evalExpr(c[0], expr) 
+	od;
+	c
+}
+
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+	case stmt of
+		Skip -> c |
+		Assn(a, expr) -> prisv(a, evalExpr(c[0], expr), c) |
+		Seq(stmt1, stmt2) -> eval(eval(c, stmt1), stmt2) |
+		Read(a) -> read(a, c) |
+		Write(expr) -> [c[0], writeWorld(evalExpr(c[0], expr), c[1])] |
+		If(expr, stmt1, stmt2) -> if evalExpr(c[0],expr) then eval(c, stmt1) else eval(c, stmt2) fi |
+		While(expr, stmt1) -> while_func(expr,stmt1, c) | --while evalExpr(c[0], expr) do eval(c, stmt) od |
+		DoWhile(stmt1, expr) -> do_while_func(expr, stmt1, c) | --do eval(c, stmt) while evalExpr(c[0], expr) od | 
+		_ -> failure("The statement is not recognised!")
+	esac
 }
 
 -- Evaluates a program with a given input and returns an output
