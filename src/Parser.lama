@@ -4,7 +4,6 @@ import Ostap;
 import Lexer;
 import List;
 import Fun;
-import Matcher;
 
 -- A parser of "something" in brackets; l, r are left and right
 -- brackets as parsers, p --- a parser of "something"
@@ -12,14 +11,79 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
--- Primary expression
-var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
-                          lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+var exprsList =  {
+		[Left, funcExprSymb({"&&"})],
+		[Left, funcExprSymb({"!!"})],
+        	[Nona, funcExprSymb({"=="})],
+		[Nona, funcExprSymb({"!="})],
+		[Nona, funcExprSymb({"<"})],
+		[Nona, funcExprSymb({"<="})],
+		[Nona, funcExprSymb({">"})],
+		[Nona, funcExprSymb({">="})],
+        	[Left, funcExprSymb({"+"})],
+		[Left, funcExprSymb({"-"})],
+		[Left, funcExprSymb({"*", "/", "%"})]
+      }; 
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
-   
+
+
+-- Primary expression
+var primary = memo $ eta syntax (x=decimal {Const (stringInt (x))} |
+                                 x=lident  {Var (x)}               |
+                                 arrInbr[exp]),
+
+	exp = memo $ eta expr (exprsList, primary);
+
+fun arrInbr (i) {
+  inbr (s ("("), i, s (")"))
+}
+
+fun funcExprSymb(expr){
+    map(funcExpr,expr)
+}
+
+fun funcExpr(op) {
+  [s(op), fun (l, op, r) {Binop (op, l, r)}]
+}
+
+fun elseFunc(){
+  memo $ eta syntax (kElse e=(x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt) kFi {e})
+}
+
+fun elseIfFunc(){
+  memo $ eta syntax (kElif c=exp kThen i=(x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt) e=exprIf {If (c, i, e)})
+}
+
+fun funcIf(){
+  var elseIf = elseIfFunc();
+  var elseFun = elseFunc();
+  memo $ eta syntax ( 		 elseFun|
+			         kFi {Skip} |
+				 elseIf)
+                                   
+}
+
+fun buildSeqForWhile(x, y, seqstmt){
+	Seq (x, While (y, seqstmt))
+}
+
+fun funcCycle(){
+  memo $ eta syntax (
+                               kDo f=(x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt) kWhile c=exp kOd                        {DoWhile (f, c)} |
+                               kFor init=(x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt) s[","] c=exp s[","] post=(x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt) kDo f=(x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt) kOd 
+                                                                    {buildSeqForWhile(init, c, Seq (f, post))}|
+			       kWhile c=exp kDo f=(x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt) kOd                          {While (c, f)})
+}
+var exprIf = funcIf();
+var cycle = funcCycle();
+var stmt = memo $ eta syntax(  kSkip  {Skip}                        |
+			       kRead i=arrInbr[lident] {Read (i)}   |
+			       kWrite i=arrInbr[exp] {Write (i)}    |
+                               kIf c=exp kThen i=(x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt) e=exprIf           {If (c, i, e)} |
+                               cycle |
+                               x1=lident s[":="] 
+			       x2=exp {Assn (x1, x2)});       
 
 -- Public top-level parser
-public parse = stmt;
+public parse = memo $ eta syntax (x1=stmt s[";"] x2=parse {Seq (x1, x2)} | stmt);
+    

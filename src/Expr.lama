@@ -14,5 +14,29 @@ import State;
 --        Binop (string, expr, expr)
 
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Const (i)       -> i |
+    Var   (i)       -> st (i) |
+    Binop (i, ex1, ex2) -> calcBinop(st, i) (ex1, ex2) |
+    _ -> failure("Failure in evalExpr - incorrect expression\n")
+  esac
+}
+
+fun calcBinop (st, sign) {
+  case sign of
+    "<"  -> fun (exp1, exp2) {evalExpr (st, exp1) <  evalExpr (st, exp2)} |
+    "<=" -> fun (exp1, exp2) {evalExpr (st, exp1) <= evalExpr (st, exp2)} |
+    ">"  -> fun (exp1, exp2) {evalExpr (st, exp1) >  evalExpr (st, exp2)} |
+    ">=" -> fun (exp1, exp2) {evalExpr (st, exp1) >= evalExpr (st, exp2)} |
+    "/"  -> fun (exp1, exp2) {evalExpr (st, exp1) /  evalExpr (st, exp2)} |
+    "%"  -> fun (exp1, exp2) {evalExpr (st, exp1) %  evalExpr (st, exp2)} |
+    "==" -> fun (exp1, exp2) {evalExpr (st, exp1) == evalExpr (st, exp2)} |
+    "+"  -> fun (exp1, exp2) {evalExpr (st, exp1) +  evalExpr (st, exp2)} |
+    "-"  -> fun (exp1, exp2) {evalExpr (st, exp1) -  evalExpr (st, exp2)} |
+    "&&" -> fun (exp1, exp2) {evalExpr (st, exp1) && evalExpr (st, exp2)} |
+    "!!" -> fun (exp1, exp2) {evalExpr (st, exp1) !! evalExpr (st, exp2)} |
+    "*"  -> fun (exp1, exp2) {evalExpr (st, exp1) *  evalExpr (st, exp2)} |
+    "!=" -> fun (exp1, exp2) {evalExpr (st, exp1) != evalExpr (st, exp2)} |
+    _    -> failure("Failure in calcBinop - incorrect binop\n")
+  esac
 }

@@ -47,15 +47,35 @@ fun initEvalEnv (insns) {
   }]
 }
 
--- Accessor function
-fun fromLabel (env, lab) {
-  env [0] (lab)
-}
 
--- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
+
+-- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c, in) {
+  case in of
+    READ : in     -> eval (env, [readWorld(c[2])[0]:c[0], c[1], readWorld(c[2])[1]], in) |
+    WRITE : in    -> eval (env, [c[0].snd, c[1], writeWorld (c[0].fst, c[2])], in) |
+    BINOP (op) : in -> eval (env, funcBinop (c, op), in) |
+    LD (name) : in -> eval (env, [c[1](name):c[0], c[1], c[2]], in) |
+    ST (name) : in -> eval (env, [c[0].snd, c[1] <- [name, c[0].fst], c[2]], in) |
+    CONST (value) : in -> eval (env, [value:c[0], c[1], c[2]], in) |
+    JMP (hl) : in -> eval (env, c, env[0](hl)) |
+    CJMP (cd, hl) : in -> (
+                                  var ex = c.fst;
+				  var cs = (case case ex of
+    					0:ex -> funcEstm([ex, in],[c.fst, env[0](hl)], "X", cd) |
+    					_:ex -> funcEstm([ex, in],[c.fst, env[0](hl)], "Y", cd)
+  				  esac
+				  of
+    				  [ex, in] -> [[ex, c.snd, c[2]], in]
+  				  esac); 
+				  case cs of
+                                    [c, in] -> eval (env, c, in)
+                                  esac) |
+    LABEL (hl) : in -> eval (env, c, in) |
+    {}         -> c |
+    _ -> failure("Error in eval-no such expr\n")
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -94,14 +114,94 @@ fun genLabels (env, n) {
 }
 
 -- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+-- Takes an expression, returns a list (of, possibly, lists)
+-- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Const (i)       -> singletonBuffer (CONST (expr.fst)) |
+    Var   (i)       -> singletonBuffer (LD (expr.fst)) | 
+    Binop (i, n, x) -> compileExpr (expr.snd) <+> compileExpr (expr[2]) <+ BINOP (expr.fst) |
+    _               -> failure ("Failure at compileExpr - Incorrect expression for SM\n")
+  esac
+}
+
+fun funcBinop ([x1:x2:y, st, w], inc) {
+  var ex = case inc of
+    "+"  -> x2 +  x1 |
+    "-"  -> x2 -  x1 |
+    "*"  -> x2 *  x1 |
+    "/"  -> x2 /  x1 |
+    "%"  -> x2 %  x1 |
+    ">=" -> x2 >= x1 |
+    "&&" -> x2 && x1 |
+    "==" -> x2 == x1 |
+    "!=" -> x2 != x1 |
+    "<"  -> x2 <  x1 |
+    "<=" -> x2 <= x1 |
+    ">"  -> x2 >  x1 |
+    "!!" -> x2 !! x1 |
+    _    -> failure ("Failure at funcBinop - Incorrect expression for binop\n")
+  esac;
+  [ex:y, st, w]
+}
+
+fun funcEstm(fstArr, sndArr, mode, cd){
+		case mode of
+                 "X" -> (case cd of
+			"z" -> sndArr |
+                 	"nz" -> fstArr
+                	 
+                	esac)|
+                 "Y" -> (case cd of
+			"z" -> fstArr |
+                 	"nz" -> sndArr
+                      	esac)
+                esac
+}
+
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
+-- instructions.
+fun compileStmt (stmt, x) {
+  case stmt of
+    Skip         -> [{}, x]                      |
+    Assn  (i, n) -> [compileExpr (stmt.snd) <+ ST (stmt.fst), x] |
+    Seq   (i, n) -> (case compileStmt (stmt.fst, x) of
+    			[x1, x] -> case compileStmt (stmt.snd, x) of
+                      			[x2, x] -> [x1 <+> x2, x]
+                    			esac
+  		    esac) |    
+    Read  (i)    -> [listBuffer ({READ, ST (stmt.fst)}), x] |
+    Write (i)    -> [compileExpr (stmt.fst) <+ WRITE, x] |
+    DoWhile (i, n) -> (case genLabel (x) of
+    			[x1, x] ->
+      			case compileStmt(stmt.fst, x) of
+        		[y, x] -> [singletonBuffer (LABEL (x1)) <+> y <+>
+                               compileExpr (stmt.snd) <+ CJMP ("nz", x1),  x]
+      			esac
+  			esac) |
+    While (i, n)   -> (case genLabels (x, 2) of
+    			[x2, x1, x] ->
+      			case compileStmt(stmt.snd, x) of
+        			[y, x] -> [singletonBuffer (JMP (x1)) <+ LABEL (x2) <+> y <+ LABEL (x1) <+>
+                        	compileExpr (stmt.fst) <+ CJMP ("nz", x2),  x]
+      			esac
+  		       esac)  |
+    If (i, n, k) ->
+      case x.genLabels(2) of [l1, l2, y] ->
+        var in = compileExpr (i) <+ CJMP ("z", l1) <+> compileStmt (n, y)[0];
+        [in <+ JMP (l2) <+ LABEL (l1) <+>compileStmt (k, compileStmt (n, y)[1])[0] <+ LABEL (l2), compileStmt (k, compileStmt (n, y)[1])[1]]
+      esac|
+    _            -> failure ("Error in compileStmt-no such stmt\n")
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  case compileStmt (stmt, initCompEnv()) of
+    [in, i] -> getBuffer (in)
+  esac
 }
+

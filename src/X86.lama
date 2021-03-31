@@ -279,24 +279,91 @@ fun suffix (op) {
   esac
 }
 
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  foldl (
-    fun ([env, scode], i) {
-      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-      case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+    foldl (
+      fun ([env, scode], i) {
+        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+        case i of
+          READ ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+            esac             
+        | WRITE ->
+            case env.pop of
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+            esac
+	| CONST (j) ->
+            case env.allocate of 
+              [s, env] -> [env, code <+> move (L (j), s)]
+            esac 
+	| BINOP (j) ->
+            case env.pop2 of 
+              [x1, x2, env] -> [env.push(x2), code <+> expr (j, x1, x2)]
+            esac 
+        | LD (j) -> 
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (j), s) <+ Push (s)] 
+            esac
+        | ST (j) ->
+            case env.addGlobal (j).pop of 
+              [s, env] -> [env, code <+> move (s, env.loc (j))]
+            esac
+	| JMP (j) -> [env, code <+ Jmp (j)]
+	| CJMP (x, j) ->
+            case env.pop of
+              [s, env] -> [env, code <+ Binop ("cmp", L(0), s) <+ CJmp (x, j)]
+            esac
+	| LABEL (j) -> [env, code <+ Label (j)]      
+        | _ -> failure ("Failure in compile(env,code) - Incorrect instruction\n")
         esac
-    }, [env, emptyBuffer ()], code)}
+    }, [env, emptyBuffer ()], code)
+}
+
+fun expr (j, x1, x2) {
+  case j of
+				  "<" -> move (L (0), eax) <+> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop ("cmp", x1, x2))
+  					 fi <+ Set (suffix(j), "%al") <+> move (eax, x2)
+				  | "<=" -> move (L (0), eax) <+> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop ("cmp", x1, x2))
+  					 fi <+ Set (suffix(j), "%al") <+> move (eax, x2)
+				  | ">" -> move (L (0), eax) <+> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop ("cmp", x1, x2))
+  					 fi <+ Set (suffix(j), "%al") <+> move (eax, x2)
+				  | ">=" -> move (L (0), eax) <+> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop ("cmp", x1, x2))
+  					 fi <+ Set (suffix(j), "%al") <+> move (eax, x2)
+				  | "&&" -> expr (">", L(0), x1) <+> expr(">", L(0), x2) <+> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop (j, x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop (j, x1, x2))
+  					 fi <+ Binop ("&&", L (1), x2)	
+				  | "/" -> move (x2, eax) <+ Cltd <+ IDiv (x1) <+> move (eax, x2)
+				  | "%" -> move (x2, eax) <+ Cltd <+ IDiv (x1) <+> move (edx, x2)
+				  | "==" -> move (L (0), eax) <+> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop ("cmp", x1, x2))
+  					 fi <+ Set (suffix(j), "%al") <+> move (eax, x2)
+				  | "!=" -> move (L (0), eax) <+> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop ("cmp", x1, x2))
+  					 fi <+ Set (suffix(j), "%al") <+> move (eax, x2)
+				  | "!!" -> expr (">", L(0), x1) <+> expr(">", L(0), x2) <+> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop (j, x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop (j, x1, x2))
+  					 fi <+ Binop ("&&", L (1), x2)
+  			  	  | _ -> if memOpnd (x2)
+  					 then move (x2, edx) <+ Binop (j, x1, edx) <+ Mov (edx, x2)
+  					 else singletonBuffer (Binop (j, x1, x2))
+  					 fi
+  esac
+}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
@@ -305,8 +372,8 @@ public fun compileX86 (args, code) {
     [env, code] ->
        var asmFile = args.getBaseName ++ ".s",
            runtime = case getEnv ("LAMA_RUNTIME") of
-                       #val -> "../runtime/"
-                     | path     -> path
+                       #val  -> "../runtime/"
+                     | path  -> path
                      esac ++ "/runtime.o";
        
        fwrite (asmFile,
@@ -319,8 +386,8 @@ public fun compileX86 (args, code) {
                         prologue (getStackSize (env)) <+>
                         code <+>
                         epilogue ()
-                    )
-                   ).stringcat);
+                      )
+                    ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
