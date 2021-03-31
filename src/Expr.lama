@@ -54,7 +54,7 @@ public fun evalOp (op, l, r) {
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
                 case eval (c, e) of
-                  [c, v] -> [c, v : vals]
+                  [c, {v}] -> [c, v : vals]
                 esac
               },
               [c, {}],
@@ -63,8 +63,31 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[s, w], expression) {
+  case expression of
+  	Const (value) -> [c, {value}]
+  | Var (x) -> [c, {s(x)}]	
+  | Ref (x) -> [c, {expression}]
+  |	Binop (op, l, r) -> case evalList (c, {l, r}) of [newC, {w, v}] -> [newC, {evalOp(op, w, v)}] esac
+  | Skip -> [c, {}]
+  |	Assn (l, r) -> case evalList (c, {l, r}) of [[newS, newW], {Ref (x), v}] -> [[newS <- [x, v], newW], {v}] esac
+  |	Read (x) -> case readWorld(w) of [n, newW] -> [[s <- [x, n], newW], {}] esac
+  |	Write (expr) -> case eval(c, expr) of [[newS, newW], {v}] -> [[newS, writeWorld(v, newW)], {}] esac
+  |	Seq (stm1, stm2) -> eval(eval(c, stm1)[0], stm2)
+  | If (expr, ifTrue, ifFalse) -> 
+  		case eval(c, expr) 
+  			of [newC, {n}] -> if (n != 0) then eval(newC, ifTrue) else eval(newC, ifFalse) fi
+  		esac
+  | While (expr, body) -> 
+  		case eval(c, expr) 
+  			of [newC, {n}] -> if (n != 0) 
+  										then eval((*c'' = *) eval(newC, body)[0], expression)
+  										else [newC, {}] 
+  										fi
+  		esac
+  | DoWhile (body, expr) -> eval(c, Seq (body, While(expr, body)))
+  | Ignore (expr) -> [eval (c, expr)[0], {}]
+  esac
 }
 
 
