@@ -1,4 +1,4 @@
--- Parser 
+-- Parser
 
 import Ostap;
 import Lexer;
@@ -25,7 +25,7 @@ fun assertValue (atr, v, loc) {
   case atr of
     Ref  -> error ("reference expected", loc)
   | Void -> Ignore (v)
-  | _    -> v
+  | Val  -> v
   esac
 }
 
@@ -33,7 +33,7 @@ fun assertVoid (atr, v, loc) {
   case atr of
     Void -> v
   | Val  -> error ("value expected", loc)
-  | _    -> error ("reference expected", loc)
+  | Ref  -> error ("reference expected", loc)
   esac
 }
 
@@ -43,6 +43,9 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+-- Public top-level parser
+-- public parse = stmtSeq;
+--=======
 fun binop (op) {
   [syntax (pos -s[op]), fun (l, loc, r) {
                           fun (a) {
@@ -54,17 +57,69 @@ fun binop (op) {
 
 var primary  = memo $ eta syntax (
                                   -- decimal constant
-                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
-
+                                  loc=pos x=decimal    {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
                                   -- identifier
-                                  x=lident                                          {fun (a) {
-                                                                                       case a of
-                                                                                         Ref  -> Ref (x)
-                                                                                       | Void -> Ignore (Var (x))
-                                                                                       | _    -> Var (x)
-                                                                                       esac
-                                                                                    }} |
-                                  $(failure ("the rest of primary parsing in not implemented\n"))),
+                                  loc=pos x=lident     {fun (a) {
+                                                          case a of
+                                                              Ref  -> Ref (x)
+                                                            | Void -> Ignore (Var (x))
+                                                            | _    -> Var (x)
+                                                          esac
+                                                        }}                                                         |
+                                 -- (exp)
+                                 inbr[s ("("), exp, s (")")]                                                       |
+                                 loc=pos kRead x=inbr[s ("("), exp, s (")")] {fun (a) {
+                                                                                assertVoid (a, Read (x (Ref)), loc)
+                                                                             }}                                    |
+                                 loc=pos kWrite x=inbr[s ("("), exp, s (")")] {fun (a) {
+                                                                                 assertVoid (a, Write (x (Val)), loc)
+                                                                              }}                                   |
+                                 loc=pos kSkip {fun (a) { assertVoid (a, Skip, loc) }}                             |
+                                 loc=pos kIf cond=exp kThen ifBr=exp elseBr=ifChain {
+                                   fun (a) {
+                                     case a of
+                                         Ref -> If (cond (Val), ifBr (Ref), elseBr (Ref))
+                                       | Void -> If (cond (Val), ifBr (Void), elseBr (Void))
+                                       | Val ->  If (cond (Val), ifBr (Val), elseBr (Val))
+                                     esac
+                                   }
+                                 }                                                                                 |
+                                 loc=pos kWhile cond=exp kDo body=exp kOd {
+                                   fun (a) {
+                                     assertVoid (a, While (cond (Val), body (Void)), loc)
+                                   }
+                                 }                                                                                |
+                                 loc=pos kDo body=exp kWhile cond=exp kOd {
+                                    fun (a) {
+                                      assertVoid (a, DoWhile (body (Void), cond (Val)))
+                                    }
+                                 }                                                                                |
+                                 kFor init=exp s[","] cond=exp s[","] post=exp loc=pos kDo body=exp kOd {
+                                    fun (a) {
+                                      assertVoid (a, Seq (init (Void),
+                                                  While (cond (Val), Seq (body (Void), post (Void)))),
+                                                  loc)
+                                    }
+                                 }),
+    ifChain  = memo $ eta syntax (loc=pos kFi {fun (a) {assertVoid (a, Skip, loc)}}                               |
+                                  loc=pos kElif cond=exp kThen ifBr=exp elseBr=ifChain {
+                                    fun (a) {
+                                      case a of
+                                          Ref  -> If (cond (Val), ifBr (Ref), elseBr (Ref))
+                                        | Void -> If (cond (Val), ifBr (Void), elseBr (Void))
+                                        | Val  -> If (cond (Val), ifBr (Val), elseBr (Val))
+                                      esac
+                                    }
+                                  }                                                                              |
+                                  loc=pos kElse elseBr=exp kFi {
+                                    fun (a) {
+                                      case a of
+                                          Ref  -> elseBr (Ref)
+                                        | Void -> elseBr (Void)
+                                        | Val  -> elseBr (Val)
+                                      esac
+                                    }
+                                  }),
     basic    = memo $ eta (expr ({[Right, {[s (":="),
                                             fun (l, loc, r) {
                                               fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}

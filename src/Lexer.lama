@@ -54,7 +54,7 @@ public rWhiteSpace  = createRegexp ("\\(\\([ \n\r\t]*\\)\\|\\(--[^\n]*[ \n\r\t]*
        rDo          = createRegexp ("do\\b", """do"""),
        rOd          = createRegexp ("od\\b", """od"""),
        rFor         = createRegexp ("for\\b", """for""");
-      
+
 var whiteSpace = token (rWhiteSpace);
 
 -- Public parsers for concrete tokens
@@ -77,7 +77,7 @@ public kRead    = s (rRead),
        decimal  = s (rDecimal),
        pos      = memo $ whiteSpace |> lift (loc),
        end      = memo $ whiteSpace |> lift (eof),
-       lident   = memo $       
+       lident   = memo $
          whiteSpace |> lift (fun (k) {
                                 fun (s) {
                                   k (case s.matchRegexp (rLident) of
