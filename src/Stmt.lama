@@ -10,17 +10,42 @@ import World;
 --
 -- A statement is represented by a data structure of the following shape:
 --
--- stmt = Assn   (string, expr)     |
---        Seq    (stmt, stmt)       |
---        Skip                      |
---        Read   (string)           |
---        Write  (expr)             |
+-- stmt = Assn    (string, expr)     |
+--        Seq     (stmt, stmt)       |
+--        Skip                       |
+--        Read    (string)           |
+--        Write   (expr)             |
+--        If      (expr, stmt, stmt) |
+--        While   (expr, stmt)       |
+--        DoWhile (stmt, expr)
 
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+  case stmt of
+    Assn (s, e) -> [c[0] <- [s, evalExpr (c[0], e)], c[1]] |
+    Seq (st1, st2) -> eval (eval (c, st1), st2) |
+    Skip -> c |
+    Read (s) -> (
+      var newWorld = readWorld (c[1]);
+      [c[0] <- [s, newWorld[0]], newWorld[1]]
+     ) |
+    Write (e) -> [c[0], writeWorld (evalExpr(c[0], e), c[1])] |
+    If (e, st1, st2) ->
+      case evalExpr (c[0], e) of
+        0 -> eval (c, st2) |
+        _ -> eval (c, st1)
+      esac |
+    While (e, st) ->
+      case evalExpr (c[0], e) of
+        0 -> c |
+        _ -> eval (eval (c, st), While (e, st))
+      esac |
+    DoWhile (st, e) -> eval (eval (c, st), While (e, st))
+  esac
 }
 
+
 -- Evaluates a program with a given input and returns an output
-public fun evalStmt (input, stmt) {
+public fun evalStmt (input, stmt)
+{
   eval ([emptyState, createWorld (input)], stmt).snd.getOutput
 }

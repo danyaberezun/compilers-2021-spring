@@ -1,0 +1,5 @@
+
+read (x0);
+read (x1);
+y := 25+x0+34-40-x0;
+write (y)
