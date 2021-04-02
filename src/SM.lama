@@ -23,7 +23,7 @@ public fun showSMInsn (i) {
   | CONST (n)    -> sprintf ("CONST %d", n)
   | LABEL (s)    -> sprintf ("LABEL %s", s)
   | JMP   (l)    -> sprintf ("JMP %s", l)
-  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
+  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c.string, l)
   | DUP          -> "DUP"
   | DROP         -> "DROP"  
   esac
@@ -58,8 +58,53 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, world], insns) {
+  case insns of
+    {}         -> c
+  | insn:insns -> (-- printf ("%s\n", string (insn));
+      case insn of
+        JMP (l)     -> eval (env, c, fromLabel (env, l))
+      | CJMP (c, l) -> case case (case c of NE -> 1 | E -> 0 esac):stack of 
+            0:0:tail  -> [tail, fromLabel (env, l)]
+          | 0:_:tail  -> [tail, insns]
+          | _:0:tail  -> [tail, insns]
+          | _:_:tail  -> [tail, fromLabel (env, l)]
+          | _         -> failure ("stack is empty") 
+          esac of [stack, insns] -> eval (env, [stack, state, world], insns) esac
+      | _ -> 
+          case case insn of
+            READ  -> case readWorld (world) of [n, w] -> [n:stack, state, w] esac
+          | WRITE -> case stack of
+              head:tail -> [tail, state, writeWorld (head, world)]
+            | _         -> failure ("stack is empty")
+            esac
+          | BINOP (s) -> case stack of
+              r:l:rest -> [(evalOp (s, l, r)):rest, state, world]
+            | _        -> failure ("stack is empty")
+            esac
+          | DROP -> case stack of
+              head:tail -> [tail, state, world]
+            | _         -> failure ("stack is empty")
+            esac
+          | DUP -> case stack of
+              head:tail -> [head:head:tail, state, world]
+            | _         -> failure ("stack is empty")
+            esac 
+          | LD (x) -> [state (x):stack, state, world]
+          | ST (x) -> case stack of
+              {}        -> failure ("stack is empty")
+            | head:tail -> [stack, state <- [x, head], world]
+            esac
+          | STI -> case stack of
+              x:r:tail -> [x:tail, state <- [r, x], world]
+            | _        -> failure ("stack is empty")  
+            esac
+          | LDA (s) -> [s:stack, state, world]
+          | CONST (n) -> [n:stack, state, world]
+          | LABEL (s) -> [stack, state, world]
+          esac of c -> eval (env, c, insns) esac
+      esac)  
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -101,5 +146,62 @@ fun genLabels (env, n) {
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  fun inner (env, stmt) {
+    case stmt of
+      Assn (Ref (st), expr) ->  case inner (env, expr) of [env, code] -> 
+                                  [env, code <+ ST (st)]
+                                esac
+    | Assn (st, expr) ->  case inner (env,   st) of [env, code0] ->
+                          case inner (env, expr) of [env, code1] -> 
+                            [env, code0 <+> code1 <+ STI]
+                          esac esac
+    | Read (Ref (st)) -> [env, singletonBuffer (READ) <+ ST (st)]
+    | Read (st) ->  case inner (env, st) of [env, code] ->
+                      [env, code <+ READ <+ STI <+ DROP]
+                    esac
+    | Write (expr) -> case inner (env, expr) of [env, code] ->
+                        [env, code <+ WRITE]
+                      esac
+    | Skip -> [env, emptyBuffer ()]
+    | Ignore (expr) ->  case inner (env, expr) of [env, code] ->
+                          [env, code <+ DROP]
+                        esac
+    | Binop (opCode, e0, e1) -> case inner (env, e0) of [env, code0] ->
+                                case inner (env, e1) of [env, code1] ->
+                                  [env, code0 <+> code1 <+ BINOP (opCode)]
+                                esac esac
+    | Var (st) -> [env, singletonBuffer (LD (st))]
+    | Const (n) -> [env, singletonBuffer (CONST (n))]
+    | Imm (n)   -> [env, singletonBuffer (IMM (n))]
+    | Ref (st) -> [env, singletonBuffer (LDA (st))]
+    | Seq (stmt0, stmt1) -> case inner (env, stmt0) of [env, code0] -> 
+                            case inner (env, stmt1) of [env, code1] ->
+                              [env, code0 <+> code1]
+                            esac esac
+    | If (cond, stmt0, stmt1) ->  case inner (env, cond) of [env, code] ->
+                                  case inner (env, stmt0) of [env, code0] ->
+                                  case genLabel (env) of [lbl0, env] ->
+                                  case inner (env, stmt1) of [env, code1] ->
+                                  case genLabel (env) of [lbl1, env] -> 
+                                    [env, code <+ 
+                                          CJMP (E, lbl0) <+> code0 <+ JMP (lbl1) <+ 
+                                          LABEL (lbl0) <+> code1 <+ LABEL (lbl1)]
+                                  esac esac esac esac esac
+    | While (cond, body) -> case genLabel (env) of [lbl0, env] ->
+                            case inner (env, body) of [env, code0] ->
+                            case genLabel (env) of [lbl1, env] ->
+                            case inner (env, cond) of [env, code] ->
+                              [env, singletonBuffer (JMP (lbl1)) <+ 
+                                    LABEL (lbl0) <+> code0 <+ 
+                                    LABEL (lbl1) <+> code <+ CJMP (NE, lbl0)]
+                            esac esac esac esac
+    | DoWhile (body, cond) -> case genLabel (env) of [lbl, env] ->
+                              case inner (env, body) of [env, code0] ->
+                              case inner (env, cond) of [env, code] ->
+                                [env, singletonBuffer (LABEL (lbl)) <+> code0 <+> 
+                                      code <+ CJMP (NE, lbl)]
+                              esac esac esac
+    esac
+  }
+  getBuffer (inner (initCompEnv (), stmt) [1])
 }
