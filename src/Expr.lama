@@ -23,7 +23,7 @@ var ops = {
 
 -- The evaluator for infix operators: takes an operator as a string
 -- and two operand values, and returns the result
-public fun evalOp (op, l, r) {
+public fun binop (op, l, r) {
   case assoc (ops, op) of
     Some (f) -> f (l, r)
   esac
@@ -63,10 +63,58 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
-}
+fun eval (c@[st, w], expr) {
+  -- printf("evalexpr %s\n", expr.string);
 
+  case expr of
+    Const (v) -> [c, v] 
+    |Var (x) ->  [c, st(x)] 
+    |Ref (x) -> [c, Ref(x)] 
+    |Read (x) -> 
+          var r = readWorld(w);
+          [[(st <- [x, r.fst]), r.snd], {}] 
+    |Write (x) ->
+            case eval(c, x) of
+              [[st, w], v] ->
+                [[st, writeWorld(v, w)], {}]
+            esac 
+    |Binop (op, l, r) ->
+          case evalList(c, {l, r}) of 
+            [c, {lc, rc}] ->
+              [c, binop(op, lc, rc)]
+          esac 
+    |Assn (e1, e2) -> 
+            case evalList(c, {e1, e2}) of
+              [[st, w], {Ref(x), v}] ->
+                [[st <- [x, v], w], v]
+            esac 
+    |Seq (st1, st2) -> 
+            case eval(c, st1) of
+              [c, _] ->
+                eval(c, st2)
+            esac 
+    |If (cond, ifSt, elseSt) ->
+              case eval(c, cond) of
+                [c, 0] -> eval(c, elseSt) |
+                [c, _] -> eval(c, ifSt)
+              esac 
+    |While (cond, body) ->
+            case eval(c, cond) of 
+              [c, 0] -> [c, {}] |
+              _ ->
+                eval(eval(c, body)[0], expr)
+            esac 
+    |DoWhile (body, cond) ->
+            case eval(eval(c, body)[0], cond) of
+              [c, 0] -> [c, {}] |
+              [c, _] -> eval(c, expr)
+            esac 
+    |Ignore (x) -> [eval(c, x)[0], {}]
+    |Skip -> [c, {}] 
+    | _ ->
+      failure ("Unknown expr '" ++ string(expr) ++ "' appeared at evaluation\n")
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
@@ -74,3 +122,4 @@ public fun evalExpr (input, expr) {
     [c, _] -> c.snd.getOutput
   esac
 }
+
