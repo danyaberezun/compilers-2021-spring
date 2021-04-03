@@ -9,6 +9,46 @@ import State;
 import Expr;
 import Buffer;
 
+fun binary_op([b:a:stack, st, w], op){
+	var res = case op of
+		"+" -> a + b |
+		"-" -> a - b |
+		"*" -> a * b |
+		"/" -> a / b |
+		"%" -> a % b |
+		"<" -> a < b |
+		">" -> a > b |
+		"<=" -> a <= b |
+		">=" -> a >= b |
+		"==" -> a == b |
+		"!=" -> a != b |
+		"&&" -> a && b |
+		"!!" -> a !! b
+	esac;
+	[res:stack, st, w]
+}
+
+fun read_op([stack, st, w]) {
+	var res = readWorld(w);
+	[res[0]:stack, st, res[1]]
+}
+
+fun write_op([s, st, w]) {
+	case s of
+		a:stack -> [stack, st, writeWorld(a, w)]
+		--| a -> [{}, st, writeWorld(a, w)]
+	esac
+}
+
+fun ld_op(x, [stack, st, w]) {
+	[st(x):stack, st, w]
+}
+
+fun st_op(x, [a:stack, st, w]) {
+	[stack, st <- [x, a], w]
+}
+
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -52,10 +92,44 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+
+fun cjmp_op1 (c, l, env, [s:stack, state, world], insns) {
+	case c of 
+		"z" -> if s == 0 then  [[stack, state, world], fromLabel(env, l)] 
+				else [[stack, state, world], insns] 
+				fi |
+		"nz" -> if s != 0 then [[stack, state, world], fromLabel(env, l)] 
+				else [[stack, state, world], insns]
+				fi 
+	esac
+}
+
+fun eval_help1 (env, c, i) {
+	var insns = i;
+	var context = c;
+	while insns != {} do
+		case insns of
+		ins1:ins2 -> 
+			case ins1 of
+    			READ      -> context := read_op(context); insns := ins2
+  			| WRITE     -> context := write_op(context); insns:= ins2
+  			| BINOP (s) -> context := binary_op(context, s); insns := ins2
+  			| LD    (x) -> context := ld_op(x, context); insns := ins2   
+  			| ST    (x) -> context := st_op(x, context); insns := ins2
+  			| CONST (n) -> context := [n:context[0], context[1], context[2]]; insns := ins2
+			| JMP   (l) -> insns := fromLabel(env, l)
+			| CJMP  (cc, l) -> var out = cjmp_op1(cc, l, env, context, ins2); context := out[0]; insns := out[1]
+			| LABEL (l) -> insns := ins2
+  			esac
+ 		esac
+	od;
+	context
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+	eval_help1(env, c, insns)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -96,12 +170,56 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+	case expr of
+		Const(a) -> singletonBuffer(CONST(a)) |
+		Var(a) -> singletonBuffer(LD(a)) |
+		Binop(a, expr1, expr2) -> compileExpr(expr1) <+> compileExpr(expr2) <+> singletonBuffer(BINOP(a)) |	
+		_ -> failure("The expression is not recognized!")
+	esac
+}
+
+
+fun ifSM(env, expr, stmt1, stmt2) {
+	var l1 = genLabel(env);
+	var l2 = genLabel(l1[1]);
+	var a3 = compileSMBuffer(stmt1, l2[1]);
+	var a4 = compileSMBuffer(stmt2, a3[1]);
+	[compileExpr(expr) <+ CJMP("z", l1[0]) <+> a3[0] <+ JMP(l2[0]) <+ LABEL(l1[0]) <+> a4[0] <+ LABEL(l2[0]), a4[1]]
+}
+
+fun whileSM(env, expr, stmt) {
+	var l1 = genLabel(env);
+	var l2 = genLabel(l1[1]);
+	var a3 = compileSMBuffer(stmt, l2[1]);
+	[singletonBuffer(LABEL(l1[0])) <+> compileExpr(expr) <+ CJMP("z", l2[0]) <+> a3[0] <+ JMP(l1[0]) <+ LABEL(l2[0]), a3[1]]
+}
+
+fun doWhileSM(env, expr, stmt) {
+	var l1 = genLabel(env);
+	var a2 = compileSMBuffer(stmt, l1[1]);
+	[singletonBuffer(LABEL(l1[0])) <+> a2[0] <+> compileExpr(expr) <+ CJMP("nz", l1[0]), a2[1]]	
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
+public fun compileSMBuffer (stmt, env) {
+	case stmt of
+		Skip -> [emptyBuffer(), env] |
+		Assn(a, expr) -> [compileExpr(expr) <+> singletonBuffer(ST(a)), env] |
+		Seq(stmt1, stmt2) -> var a1 = compileSMBuffer(stmt1, env);
+				     var a2 = compileSMBuffer(stmt2, a1[1]);
+				     [a1[0] <+> a2[0], a2[1]] |
+		Read(a) -> [singletonBuffer(READ) <+> singletonBuffer(ST(a)), env] |
+		Write(expr) -> [compileExpr(expr) <+> singletonBuffer(WRITE), env] |
+		If(expr, stmt1, stmt2) -> ifSM(env, expr, stmt1, stmt2) |
+		While(expr, stmt1) -> whileSM(env, expr, stmt1) |
+		DoWhile(stmt1, expr) -> doWhileSM(env, expr, stmt1) | 
+		_ -> failure("The statement is not recognised!")
+	esac
+}
+
+
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+	getBuffer(compileSMBuffer(stmt, initCompEnv())[0])
 }

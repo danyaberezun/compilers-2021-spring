@@ -279,6 +279,38 @@ fun suffix (op) {
   esac
 }
 
+
+fun plusMinusMul(a, b, op) {
+  case a of
+    M(_) -> case b of
+      M(_) -> move(a, eax) <+ Binop(op, eax, b) |
+      _ -> singletonBuffer(Binop(op, a, b))
+    esac |
+    _ -> singletonBuffer(Binop(op, a, b))
+    esac 
+}
+
+
+fun command(a, b, op) {
+  case op of
+    "+" -> move(a, eax) <+ Binop(op, eax, b) |
+    "-" -> move(a, eax) <+ Binop(op, eax, b) |
+    "*" -> move(a, eax) <+ Binop(op, b, eax) <+> move(eax, b) |
+    "/" -> move(b, eax) <+ Cltd <+ IDiv(a) <+> move(eax, b) |
+    "%" -> move(b, eax) <+ Cltd <+ IDiv(a) <+> move(edx, b) |
+    "<" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    ">" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    "<=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    ">=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    "==" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    "!=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    "&&" -> move(L(0), eax) <+ Binop("cmp", a, eax) <+ Set(suffix("!="), "%al") <+> move(eax, a) <+> move(L(0), eax) <+ Binop("cmp", b, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, a, eax) <+> move(eax, b) |
+    "!!" -> move(L(0), eax) <+ Binop("cmp", a, eax) <+ Set(suffix("!="), "%al") <+> move(eax, a) <+> move(L(0), eax) <+ Binop("cmp", b, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, a, eax) <+> move(eax, b)
+  esac
+
+}
+
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -294,6 +326,27 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+      | CONST (n) ->
+          case env.allocate of 
+            [s, env] -> [env, code <+> move(L(n), s)]
+          esac
+      | LD (x) ->
+          case env.addGlobal(x).allocate of
+            [s, env] -> [env, code <+> move(env.loc(x), s)]
+          esac
+      | ST (x) ->
+          case env.addGlobal(x).pop of
+            [s, env] -> [env, code <+> move(s, env.loc(x))]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [a, b, env] -> [env.push(b), code <+> command(a, b, op)]
+          esac 
+      | LABEL (l) -> [env, code <+ Label(l)]
+      | JMP (l) -> [env, code <+ Jmp(l)]
+      | CJMP(c, l) -> case env.pop of
+			[x, env] -> [env, code <+> move(x, eax) <+ Binop("-", L(0), eax) <+ CJmp(c, l)]
+			esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
     }, [env, emptyBuffer ()], code)}
