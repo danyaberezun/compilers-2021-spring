@@ -19,8 +19,51 @@ import World;
 --        While   (expr, stmt)       |
 --        DoWhile (stmt, expr)
 
+fun evalAssn ([state, world], Assn (variable, expr)) {
+  [state <- [variable, evalExpr (state, expr)], world] 
+}
+
+fun evalSeq (c, Seq (stmt1, stmt2)) {
+  eval (eval (c, stmt1), stmt2) 
+}
+
+fun evalRead ([state, world], Read (variable)) {
+  var readRes = readWorld (world);
+  [state <- [variable, readRes[0]], readRes[1]] 
+}
+
+fun evalWrite ([state, world], Write(expr)) {
+  [state, writeWorld(evalExpr (state, expr), world)]
+}
+
+fun evalIf ([state, world], If(expr, stmt1, stmt2)) {
+  if evalExpr (state, expr) then eval ([state, world], stmt1) else eval ([state, world], stmt2) fi
+}
+
+fun evalWhile (c, While(expr, stmt)) {
+  while evalExpr(c[0], expr) do
+    c := eval (c, stmt)
+  od;
+  c
+}
+
+fun evalDoWhile (c, DoWhile(stmt, expr)) {
+  c := eval(c, stmt); 
+  evalWhile(c, While(expr, stmt)) 
+}
+
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+  case stmt of
+    Assn  (_, _)    -> evalAssn  (c, stmt)
+  | Seq   (_, _)    -> evalSeq   (c, stmt)
+  | Skip            -> c
+  | Read  (_)       -> evalRead  (c, stmt)
+  | Write (_)       -> evalWrite (c, stmt)
+  | If    (_, _, _) -> evalIf    (c, stmt)
+  | While (_, _)    -> evalWhile (c, stmt)
+  | DoWhile (_, _)  -> evalDoWhile (c, stmt)
+  | _               -> failure   ("Invalid statement!")
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output

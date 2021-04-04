@@ -52,10 +52,88 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
--- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
+fun evalSMRead ([stack, state, world], READ) {
+  var readRes = readWorld (world);
+  [[readRes[0]:stack, state, readRes[1]], Next]
+}
+
+fun evalSMWrite ([value:stack, state, world], WRITE) {
+  [[stack, state, writeWorld (value, world)], Next]
+}
+
+fun evalSMBinop ([r:l:stack, state, world], BINOP (op)) {
+  var result = 
+  case op of
+    "+"  -> l +  r
+  | "-"  -> l -  r
+  | "*"  -> l *  r
+  | "/"  -> l /  r
+  | "%"  -> l %  r
+  | "<"  -> l <  r
+  | ">"  -> l >  r
+  | "==" -> l == r
+  | "<=" -> l <= r
+  | ">=" -> l >= r
+  | "!=" -> l != r
+  | "&&" -> l && r
+  | "!!" -> l !! r
+  | _    -> failure ("Invalid binary operation!")
+  esac;
+  [[result:stack, state, world], Next]
+}
+
+fun evalSMLD ([stack, state, world], LD (x)) {
+  [[state (x):stack, state, world], Next]
+}
+
+fun evalSMST ([value:stack, state, world], ST (variable)) {
+  [[stack, state <- [variable, value], world], Next]
+}
+
+fun evalSMConst ([stack, state, world], CONST (value)) {
+  [[value:stack, state, world], Next]
+}
+
+fun evalJump (conf, JMP (l))
+{
+    [conf, Next(l)]
+}
+
+fun evalCJump ([value:stack, state, world], CJMP (c, l))
+{
+    case c of
+        "z"  -> if value == 0 then [[stack, state, world], Next(l)] else [[stack, state, world], Next] fi 
+      | "nz" -> if value != 0 then [[stack, state, world], Next(l)] else [[stack, state, world], Next] fi
+    esac
+}
+
+fun evalSingleIns(conf, i) {
+    case i of
+      READ         -> evalSMRead   (conf, i)
+    | WRITE        -> evalSMWrite  (conf, i)
+    | BINOP (s)    -> evalSMBinop  (conf, i)
+    | LD    (x)    -> evalSMLD     (conf, i)
+    | ST    (x)    -> evalSMST     (conf, i)
+    | CONST (n)    -> evalSMConst  (conf, i)
+    | LABEL (s)    -> [conf, Next]
+    | JMP   (l)    -> evalJump     (conf, i)
+    | CJMP  (c, l) -> evalCJump    (conf, i)
+    | _            -> failure      ("Invalid instruction!")
+    esac
+}
+-- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {}       -> c
+  | i:tail -> (
+      var result = evalSingleIns (c, i);
+      case result.snd of
+          Next         -> eval (env, result.fst, tail)
+        | Next (label) -> eval (env, result.fst, fromLabel (env, label))
+      esac
+    )
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -93,15 +171,83 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine instructions
+fun compileExprVar (Var (variable)) {
+  singletonBuffer(LD (variable))
+}
+
+fun compileExprConst (Const (n)) {
+  singletonBuffer (CONST (n))
+}
+
+fun compileExprBinop(Binop (op, expr1, expr2)) {
+  compileExpr(expr1) <+> compileExpr(expr2) <+ BINOP (op)
+}
+
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var   (_)       -> compileExprVar   (expr)
+  | Const (_)       -> compileExprConst (expr)
+  | Binop (_, _, _) -> compileExprBinop (expr)
+  | _               -> failure          ("Invalid compiling expression type!")
+  esac
+}
+
+fun compileStmtAssn (Assn (variable, expr), lbState) {
+  [compileExpr (expr) <+ ST (variable), lbState]
+}
+
+fun compileStmtSeq (Seq (stmt1, stmt2), lbState) {
+  var leftCompiled = compileSMBuffer(stmt1, lbState);
+  var rightCompiled = compileSMBuffer(stmt2, leftCompiled.snd);
+  [leftCompiled.fst <+> rightCompiled.fst, rightCompiled.snd]
+}
+
+fun compileStmtRead (Read (variable), lbState) {
+  [listBuffer({READ, ST (variable)}), lbState]
+}
+
+fun compileStmtWrite (Write (expr), lbState) {
+  [compileExpr (expr) <+ WRITE, lbState]
+}
+
+fun compileIf (If (cond, thenStmt, elseStmt), lbState) {
+  var elseLab = genLabel (lbState);
+  var endLab = genLabel (elseLab.snd);
+  var thenCompiled = compileSMBuffer (thenStmt, endLab.snd);
+  var elseCompiled = compileSMBuffer (elseStmt, thenCompiled.snd);
+  [compileExpr (cond) <+ CJMP ("z", elseLab.fst) <+> thenCompiled.fst <+ JMP(endLab.fst) <+ LABEL (elseLab.fst) <+> elseCompiled.fst <+ LABEL (endLab.fst), elseCompiled.snd] 
+}
+
+fun compileWhile (While (cond, stmt), lbState) {
+  var beginLab = genLabel (lbState);
+  var endLab = genLabel (beginLab.snd);
+  var bodyCompiled = compileSMBuffer (stmt, endLab.snd);
+  [singletonBuffer (LABEL (beginLab.fst)) <+> compileExpr (cond) <+ CJMP ("z", endLab.fst) <+> bodyCompiled.fst <+ JMP (beginLab.fst) <+ LABEL (endLab.fst), bodyCompiled.snd]
+}
+
+fun compileDoWhile (DoWhile (stmt, cond), lbState) {
+  var beginLab = genLabel (lbState);
+  var bodyCompiled = compileSMBuffer (stmt, beginLab.snd);
+  [singletonBuffer (LABEL (beginLab.fst)) <+> bodyCompiled.fst <+> compileExpr (cond) <+ CJMP ("nz", beginLab.fst), bodyCompiled.snd]
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compileSMBuffer (stmt, initCompEnv ()).fst)
+}
+
+public fun compileSMBuffer (stmt, lbState) {
+  case stmt of
+    Assn  (_, _)      -> compileStmtAssn  (stmt, lbState)
+  | Seq   (_, _)      -> compileStmtSeq   (stmt, lbState)
+  | Skip              -> [emptyBuffer (), lbState]
+  | Read  (_)         -> compileStmtRead  (stmt, lbState)
+  | Write (_)         -> compileStmtWrite (stmt, lbState)
+  | If      (_, _, _) -> compileIf        (stmt, lbState)
+  | While   (_, _)    -> compileWhile     (stmt, lbState)
+  | DoWhile (_, _)    -> compileDoWhile   (stmt, lbState)
+  | _                 -> failure          ("Invalid compiling statement!")
+  esac
 }

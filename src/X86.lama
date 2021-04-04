@@ -11,7 +11,7 @@ import Manifest;
 -- The registers: 
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
 
--- We can not freely operate with all register; only with 4 by now
+-- We can not freely opefrate with all register; only with 4 by now
 var nRegs = regs.length - 5;
 
 -- For convenience we define the following synonyms for the registers: 
@@ -77,6 +77,7 @@ fun insnString (insn) {
   
   case insn of
     Cltd               -> "\tcltd\n"
+  | Test  (s1, s2)     -> sprintf ("\ttest\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | IDiv  (s1)         -> sprintf ("\tidivl\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
@@ -279,6 +280,35 @@ fun suffix (op) {
   esac
 }
 
+-- Commands to cast a value to boolean (nonzero - true, zero - false)
+fun castToBool (opnd) {
+    singletonBuffer(Test (eax, eax)) <+ Binop("cmp", opnd, eax) <+ Set (suffix("!="), "%al") <+> move (eax, opnd)  
+}
+
+fun binopWrap (op, x, y) {
+    move (x, eax) <+ Binop(op, eax, y) 
+}
+fun boolOp(op, x, y) {
+    move(L(0), eax) <+ Binop("cmp", x, eax) <+ Set(suffix("!="), "%al") <+> move(eax, x) <+> move(L(0), eax) <+ Binop("cmp", y, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, x, eax) <+> move(eax, y)
+}
+fun compileBinop(op, x, y) {
+    case op of
+     "+"  -> binopWrap(op, x, y)
+   | "-"  -> binopWrap(op, x, y)
+   | "*"  -> move(y, eax) <+ Binop(op, x, eax) <+> move(eax, y)
+   | "&&" -> boolOp(op, x, y)
+   | "!!" -> boolOp(op, x, y)
+   | "/"  -> move (y, eax) <+ Cltd <+ IDiv(x) <+> move(eax, y)
+   | "%"  -> move (y, eax) <+ Cltd <+ IDiv(x) <+> move(edx, y)
+   | ">"  -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "<"  -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "<=" -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | ">=" -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "==" -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "!=" -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -294,8 +324,30 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
+      | CONST(n) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (n), s)]
+          esac
+      | LD (x) ->
+          case env.addGlobal (x).allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+      | ST (x) ->
+          case env.addGlobal (x).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [x, y, env] -> [env.push(y), code <+> compileBinop(op, x, y)]
+          esac
+      | LABEL (lab) -> [env, code <+ Label (lab)]
+      | JMP (lab) -> [env, code <+ Jmp (lab)]
+      | CJMP (type, lab) -> 
+          case env.pop of
+            [v, env] -> [env, code <+ Binop("cmp", L (0), v) <+ CJmp (type, lab)]
+          esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
+      esac
     }, [env, emptyBuffer ()], code)}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
