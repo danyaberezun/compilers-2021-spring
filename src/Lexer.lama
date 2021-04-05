@@ -58,7 +58,7 @@ public rWhiteSpace  = createRegexp ("\\(\\([ \n\r\t]*\\)\\|\\(--[^\n]*[ \n\r\t]*
        rFor         = createRegexp ("for\\b", """for"""),
        rVar         = createRegexp ("var\\b", """var"""),
        rFun         = createRegexp ("fun\\b", """for""");
-      
+
 var whiteSpace = token (rWhiteSpace);
 
 -- Public parsers for concrete tokens
@@ -95,7 +95,7 @@ public kRead    = s (rRead),
                                           esac)
                                      }
                                    }
-       
+
                                 ]);
 
 (*
