@@ -19,21 +19,21 @@ fun error (msg, loc) {
 --   Ref  --- a reference to a mutable cell (aka "lvalue")
 --   Void --- no value (aka "void"/"unit")
 
--- Checks if a plain value "val" can be used in the context described by
--- the attribute "atr".
-fun assertValue (atr, v, loc) {
-  case atr of
+-- Casts an argument "value" of type Val to the expected type, if possible
+fun assertValue (expectedType, value, loc) {
+  case expectedType of
     Ref  -> error ("reference expected", loc)
-  | Void -> Ignore (v)
-  | _    -> v
+  | Void -> Ignore (value)
+  | Val  -> value
   esac
 }
 
-fun assertVoid (atr, v, loc) {
-  case atr of
-    Void -> v
+-- Casts an argument "void" of type Void to the expected type, if possible
+fun assertVoid (expectedType, void, loc) {
+  case expectedType of
+    Void -> void
   | Val  -> error ("value expected", loc)
-  | _    -> error ("reference expected", loc)
+  | Ref  -> error ("reference expected", loc)
   esac
 }
 
@@ -43,40 +43,170 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
-fun binop (op) {
-  [syntax (pos -s[op]), fun (l, loc, r) {
-                          fun (a) {
-                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
-                          }
-                        }
-  ]
+fun inOrdinaryBrackets (p) {
+  inbr (s ("("), p, s (")"))
 }
 
-var primary  = memo $ eta syntax (
-                                  -- decimal constant
-                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+fun getInfixParsers (ops) {
+	map (
+		fun (op) {
+			[
+				syntax (
+					loc=pos parsedOp=s[op] {
+						[loc, parsedOp]
+					}
+				),
+				fun (leftGetter, [loc, parsedOp], rightGetter) {
+	      	fun (expectedType) {
+	      		case parsedOp of
+	      			op ->
+	      				var left = leftGetter (Val);
+	      				var right = rightGetter (Val);
+	      				var res = Binop (op, left, right);
+	      				assertValue (expectedType, res, loc)
+	      		|	_ -> failure ("Unexpected behaviour of parser")
+	      		esac
+	      	}
+        }
+  		]
+		},
+		ops
+	)
+}
 
-                                  -- identifier
-                                  x=lident                                          {fun (a) {
-                                                                                       case a of
-                                                                                         Ref  -> Ref (x)
-                                                                                       | Void -> Ignore (Var (x))
-                                                                                       | _    -> Var (x)
-                                                                                       esac
-                                                                                    }} |
-                                  $(failure ("the rest of primary parsing in not implemented\n"))),
-    basic    = memo $ eta (expr ({[Right, {[s (":="),
-                                            fun (l, loc, r) {
-                                              fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                            }]}],
-                                  [Left , map (binop, {"!!"})],
-                                  [Left , map (binop, {"&&"})],
-                                  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                  [Left , map (binop, {"+", "-"})],
-                                  [Left , map (binop, {"*", "/", "%"})]
-                                 },
-                                 primary)),
-    exp      = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+var assnParser = {
+	[
+		syntax (
+			pos -s[":="]
+		),
+    fun (refGetter, loc, valGetter) {
+      fun (expectedType) {
+      	var ref = refGetter (Ref);
+      	var value = valGetter (Val);
+      	var res = Assn (ref, value);
+      	assertValue (expectedType, res, loc)
+      }
+    }
+	]
+};
+
+var infixParsers = {
+	[Right, assnParser],
+  [Left, getInfixParsers ({"!!"})],
+  [Left, getInfixParsers ({"&&"})],
+  [Nona, getInfixParsers ({"==", "!=", "<", ">", "<=", ">="})],
+  [Left, getInfixParsers ({"+", "-"})],
+  [Left, getInfixParsers ({"*", "/", "%"})]
+};
+
+var primaryParser = memo $ eta syntax (
+			loc=pos n=decimal {
+				fun (expectedType) {
+					var res = Const (stringInt (n));
+					assertValue (expectedType, res, loc)
+				}
+			} |
+			varName=lident {
+				fun (expectedType) {
+					case expectedType of
+				    Ref  -> Ref (varName)
+				  | Void -> Skip
+				  | Val  -> Var (varName)
+				  esac
+				}
+			} |
+			loc=pos kSkip {
+				fun (expectedType) {
+					assertVoid (expectedType, Skip, loc)
+				}
+			} |
+			loc=pos kRead refGetter=inOrdinaryBrackets[expressionsParser] {
+				fun (expectedType) {
+					var ref = refGetter (Ref);
+					var res = Read (ref);
+					assertVoid (expectedType, res, loc)
+				}
+			} |
+			loc=pos kWrite expGetter=inOrdinaryBrackets[expressionsParser] {
+				fun (expectedType) {
+					var exp = expGetter (Val);
+					var res = Write (exp);
+					assertVoid (expectedType, res, loc)
+				}
+			} |
+			kIf condGetter=expressionsParser kThen bodyGetter=expressionsParser elseGetter=elseParser {
+      	fun (expectedType) {
+      		var cond = condGetter (Val);
+      		var body = bodyGetter (expectedType);
+      		var curElse = elseGetter (expectedType);
+      		If (cond, body, curElse)
+      	}
+      } |
+      loc=pos kWhile condGetter=expressionsParser kDo bodyGetter=expressionsParser kOd {
+      	fun (expectedType) {
+      		var cond = condGetter (Val);
+      		var body = bodyGetter (Void);
+      		var res = While (cond, body);
+      		assertVoid (expectedType, res, loc)
+      	}
+      } |
+      loc=pos kDo bodyGetter=expressionsParser kWhile condGetter=expressionsParser kOd {
+      	fun (expectedType) {
+      		var body = bodyGetter (Void);
+      		var cond = condGetter (Val);
+      		var res = DoWhile (body, cond);
+      		assertVoid (expectedType, res, loc)
+      	}
+      } |
+      loc=pos 
+      kFor initGetter=expressionsParser s[","] 
+      condGetter=expressionsParser s[","] stepGetter=expressionsParser kDo 
+      	bodyGetter=expressionsParser
+      kOd {
+      	fun (expectedType) {
+      		var init = initGetter (Void);
+      		var cond = condGetter (Val);
+      		var step = stepGetter (Void);
+      		var body = bodyGetter (Void);
+      		var loopBody = Seq (body, step);
+      		var loop = While (cond, loopBody);
+      		var res = Seq (init, loop);
+      		assertVoid (expectedType, res, loc)
+      	}
+      } |
+      inOrdinaryBrackets[expressionsParser]
+    ),
+    elseParser = memo $ eta syntax (
+    	kElif condGetter=expressionsParser kThen bodyGetter=expressionsParser elseGetter=elseParser {
+    		fun (expectedType) {
+    			var cond = condGetter (Val);
+    			var body = bodyGetter (expectedType);
+    			var curElse = elseGetter (expectedType);
+    			If (cond, body, curElse)
+    		}
+    	} |
+      -kElse expressionsParser -kFi |
+      loc=pos kFi { 
+      	fun (expectedType) {
+      		assertVoid (expectedType, Skip, loc)
+      	}
+      }
+   	),
+    singleExpressionParser = memo $ eta (expr (infixParsers, primaryParser)),
+    expressionsParser = memo $ eta syntax (
+    	singleExpressionParser |
+    	headExpressionGetter=singleExpressionParser s[";"] tailExpressionsGetter=expressionsParser {
+    		fun (expectedType) {
+    			var headExpression = headExpressionGetter (Void);
+    			var tailExpressions = tailExpressionsGetter (expectedType);
+    			Seq (headExpression, tailExpressions)
+    		}
+    	}
+   	);
 
 -- Public top-level parser
-public parse = syntax (s=exp {s (Void)});
+public parse = syntax (
+	expressionsGetter=expressionsParser {
+		expressionsGetter (Void)
+	}
+);

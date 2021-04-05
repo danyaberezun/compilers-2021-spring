@@ -4,28 +4,50 @@ import List;
 import State;
 import World;
 
--- As association map which maps "\otimes" into "\oplus"
-var ops = {
-  ["+" , infix + ],
-  ["-" , infix - ],
-  ["*" , infix * ],
-  ["/" , infix / ],
-  ["%" , infix % ],
-  ["==", infix ==],
-  ["!=", infix !=],
-  ["<" , infix < ],
-  ["<=", infix <=],
-  [">" , infix > ],
-  [">=", infix >=],
-  ["&&", infix &&],
-  ["!!", infix !!]
-};
+-- Evaluates a list of expressions, properly threading a configurations.
+-- Returns the final configuration and the list of values
+fun evalList (c, exprs) {
+  case foldl (fun ([c, vals], e) {
+                case eval (c, e) of
+                  [c, v] -> [c, v : vals]
+                esac
+              },
+              [c, {}],
+              exprs) of
+    [c, vals] -> [c, reverse (vals)]
+  esac
+}
 
--- The evaluator for infix operators: takes an operator as a string
--- and two operand values, and returns the result
-public fun evalOp (op, l, r) {
-  case assoc (ops, op) of
-    Some (f) -> f (l, r)
+public fun evalBinop(op, a, b) {
+  case op of
+    "+" -> a + b
+  | "-" -> a - b
+  | "/" -> a / b
+  | "*" -> a * b
+  | "%" -> a % b
+  | "&&" -> a && b
+  | "!!" -> a !! b
+  | "==" -> a == b
+  | "!=" -> a != b
+  | ">=" -> a >= b
+  | ">" -> a > b
+  | "<" -> a < b
+  | "<=" -> a <= b
+  esac
+}
+ 
+fun executeWhile (c, cond, body) {
+  var condEvalResult = eval (c, cond);
+  var newC = condEvalResult.fst;
+  case condEvalResult.snd of
+    0 -> [c, Void]
+  | _ ->
+      var bodyEvalResult = eval (newC, body);
+      var finalC = bodyEvalResult.fst;
+      case bodyEvalResult.snd of
+        Void -> executeWhile (finalC, cond, body)
+      | _ -> failure ("While/DoWhile body must return Void")
+      esac
   esac
 }
 
@@ -48,29 +70,81 @@ public fun evalOp (op, l, r) {
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
 --        Ignore  (expr)
-
--- Evaluates a list of expressions, properly threading a configurations.
--- Returns the final configuration and the list of values
-fun evalList (c, exprs) {
-  case foldl (fun ([c, vals], e) {
-                case eval (c, e) of
-                  [c, v] -> [c, v : vals]
-                esac
-              },
-              [c, {}],
-              exprs) of
-    [c, vals] -> [c, reverse (vals)]
+fun eval (c, expr) {
+  case expr of
+    Assn (refExpr, valueExpr) ->
+      case evalList (c, {refExpr, valueExpr}) of
+        [[newState, newWorld], {ref, value}] ->
+          var finalState = newState <- [ref, value];
+          var finalC = [finalState, newWorld];
+          [finalC, value]
+        esac
+  | Seq (beforeExpr, afterExpr) ->
+      case evalList (c, {beforeExpr, afterExpr}) of 
+        [newC, {Void, res}] -> [newC, res]
+      | _ -> failure ("First part of Seq must return Void") 
+      esac
+  | Skip -> [c, Void]
+  | Read (varExpr) ->
+      var varEvalResult = eval (c, varExpr);
+      var newC = varEvalResult.fst;
+      var varName = varEvalResult.snd;
+      var newState = newC.fst;
+      var newWorld = newC.snd;
+ 
+      var readResult = readWorld (newWorld);
+      var finalWorld = readResult.snd;
+      var value = readResult.fst;
+ 
+      var finalState = newState <- [varName, value];
+      var finalC = [finalState, finalWorld];
+      [finalC, Void]
+  | Write (expr) ->
+      var evalResult = eval (c, expr);
+      var newC = evalResult.fst;
+      var value = evalResult.snd;
+      var newState = newC.fst;
+      var newWorld = newC.snd;
+ 
+      var finalWorld = writeWorld (value, newWorld);
+      var finalC = [newState, finalWorld];
+      [finalC, Void]
+  | If (cond, ifBody, elseBody) ->
+      var condEvalResult = eval (c, cond);
+      var newC = condEvalResult.fst;
+      case condEvalResult.snd of
+        0 -> eval (newC, elseBody)
+      | _ -> eval (newC, ifBody)
+      esac
+  | While (cond, body) -> executeWhile (c, cond, body)
+  | DoWhile (body, cond) ->
+      var bodyEvalResult = eval (c, body);
+      var newC = bodyEvalResult.fst;
+      case bodyEvalResult.snd of
+        Void -> executeWhile (newC, cond, body)
+      | _ -> failure ("DoWhile body must return Void")
+      esac
+  | Var (varName) ->
+      var state = c.fst;
+      [c, state (varName)]
+  | Ref (refName) -> [c, refName]
+  | Const (n) -> [c, n]
+  | Binop (op, aExpr, bExpr) ->
+      case evalList (c, {aExpr, bExpr}) of
+        [newC, {a, b}] -> [newC, evalBinop (op, a, b)]
+      esac
+  | Ignore (expr) ->
+      var evalRes = eval (c, expr);
+      var newC = evalRes.fst;
+      [newC, Void]
   esac
 }
-
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
-}
-
-
+ 
+ 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
   case eval ([emptyState, createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
+    [[_, w], Void] -> getOutput (w)
+  | [_, _] -> failure ("The whole program must return Void")
   esac
 }

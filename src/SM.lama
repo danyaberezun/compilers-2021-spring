@@ -46,7 +46,6 @@ fun initEvalEnv (insns) {
             esac
           }
         }) $ [emptyMap (compare), insns];
-  
   [fun (l) {
      case findMap (map, l) of Some (insns) -> insns esac
   }]
@@ -57,10 +56,104 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun evalSingleCommand (env, stack, state, world, insn) {
+  case insn of
+    READ ->
+      var readResult = readWorld (world);
+      var value = readResult.fst;
+      var newWorld = readResult.snd;
+      var newStack = value : stack;
+      var newC = [newStack, state, newWorld];
+      [newC, NEXT]
+  | WRITE -> case stack of
+      head : newStack ->
+        var newWorld = writeWorld (head, world);
+        var newC = [newStack, state, newWorld];
+        [newC, NEXT]
+    esac
+  | BINOP (op) -> case stack of
+      y : x : tail ->
+        var res = evalBinop (op, x, y);
+        var newStack = res : tail;
+        var newC = [newStack, state, world];
+        [newC, NEXT]
+    esac
+  | LD (varName) ->
+      var value = state (varName);
+      var newStack = value : stack;
+      var newC = [newStack, state, world];
+      [newC, NEXT]
+  | LDA (varName) ->
+      var newStack = varName : stack;
+      var newC = [newStack, state, world];
+      [newC, NEXT]
+  | ST (varName) -> case stack of
+      value : _ ->
+        var newState = state <- [varName, value];
+        var newC = [stack, newState, world];
+        [newC, NEXT]
+    esac
+  | STI -> case stack of
+      value : ref : tail ->
+        var newStack = value : tail;
+        var newState = state <- [ref, value];
+        var newC = [newStack, newState, world];
+        [newC, NEXT]
+    esac
+  | CONST (n) ->
+      var newStack = n : stack;
+      var newC = [newStack, state, world];
+      [newC, NEXT]
+  | LABEL (label) ->
+      var newC = [stack, state, world];
+      [newC, NEXT]
+  | JMP (label) ->
+      var newC = [stack, state, world];
+      var to = env.fromLabel (label);
+      [newC, JUMP (to)]
+  | CJMP (cType, label) -> case stack of
+      top : newStack ->
+        var newC = [newStack, state, world];
+        var isNZ = case cType of
+          NZ -> 1
+        | Z -> 0
+        esac;
+        var jump = if isNZ == 1 && top != 0 !! isNZ == 0 && top == 0 then
+                      var to = fromLabel (env, label);
+                      JUMP (to)
+                    else
+                      NEXT
+                    fi;
+        [newC, jump]
+    esac
+  | DUP -> case stack of
+      head : tail ->
+        var newStack = head : head : tail;
+        var newC = [newStack, state, world];
+        [newC, NEXT]
+    esac
+  | DROP -> case stack of
+      _ : newStack ->
+        var newC = [newStack, state, world];
+        [newC, NEXT]
+    esac
+  esac
+}
+ 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, world], insns) {
+  case insns of
+    {} -> c
+  | insn : other ->
+      var evalResult = evalSingleCommand (env, stack, state, world, insn);
+      var newC = evalResult.fst;
+      var cmds = case evalResult.snd of
+        NEXT -> other
+      | JUMP (to) -> to
+      esac;
+      eval (env, newC, cmds)
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -98,9 +191,125 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+fun compileList (env, exprs) {
+  case exprs of
+    {} -> [env, {}]
+  | headExpr : tailExprs ->
+      var compileResult = compileSMBuf (env, headExpr);
+      var newEnv = compileResult.fst;
+      var code = compileResult.snd;
+ 
+      var tailResult = compileList (newEnv, tailExprs);
+      var finalEnv = tailResult.fst;
+      var codes = tailResult.snd;
+ 
+      [finalEnv, code : codes]
+  esac
+}
+
+fun compileSMBuf (env, stmt) {
+  case stmt of
+    Assn (refExpr, valExpr) -> case compileList (env, {refExpr, valExpr}) of [newEnv, {refCode, valCode}] ->
+      var resCode = refCode <+>
+                    valCode <+
+                    STI;
+      [newEnv, resCode]
+    esac
+  | Seq (aExpr, bExpr) -> case compileList (env, {aExpr, bExpr}) of [newEnv, {aCode, bCode}] ->
+      var resCode = aCode <+>
+                    bCode;
+      [newEnv, resCode]
+    esac
+  | Skip -> [env, emptyBuffer ()]
+  | Read (refExpr) ->
+      var compileRes = compileSMBuf (env, refExpr);
+      var newEnv = compileRes.fst;
+      var code = compileRes.snd;
+ 
+      var resCode = code <+
+                    READ <+
+                    STI <+
+                    DROP;
+      [newEnv, resCode]
+  | Write (expr) ->
+      var compileRes = compileSMBuf (env, expr);
+      var newEnv = compileRes.fst;
+      var code = compileRes.snd;
+ 
+      var resCode = code <+
+                    WRITE;
+      [newEnv, resCode]
+  | If (cond, thenBody, elseBody) -> 
+    case compileList (env, {cond, thenBody, elseBody}) of
+      [newEnv, {condCode, thenCode, elseCode}] ->
+        var genResult = genLabels (newEnv, 2);
+        var elseLabel = genResult[0];
+        var exitLabel = genResult[1];
+        var finalEnv = genResult[2];
+ 
+        var resCode = condCode <+
+                      CJMP (Z, elseLabel) <+>
+                      thenCode <+
+                      JMP (exitLabel) <+
+                      LABEL (elseLabel) <+>
+                      elseCode <+
+                      LABEL (exitLabel);
+        [finalEnv, resCode]
+    esac
+  | While (cond, body) -> case compileList (env, {cond, body}) of [newEnv, {condCode, bodyCode}] ->
+      var genResult = genLabels (newEnv, 2);
+      var checkCondLabel = genResult[0];
+      var bodyLabel = genResult[1];
+      var finalEnv = genResult[2];
+ 
+      var resCode = singletonBuffer (JMP (checkCondLabel)) <+
+                    LABEL (bodyLabel) <+>
+                    bodyCode <+
+                    LABEL (checkCondLabel) <+>
+                    condCode <+
+                    CJMP (NZ, bodyLabel);
+      [finalEnv, resCode]
+    esac
+  | DoWhile (body, cond) -> case compileList (env, {body, cond}) of [newEnv, {bodyCode, condCode}] ->
+      var genResult = genLabel (newEnv);
+      var bodyLabel = genResult.fst;
+      var finalEnv = genResult.snd;
+ 
+      var resCode = singletonBuffer (LABEL (bodyLabel)) <+>
+                    bodyCode <+>
+                    condCode <+
+                    CJMP (NZ, bodyLabel);
+      [finalEnv, resCode]
+    esac
+  | Var (varName) ->
+      var resCode = singletonBuffer (LD (varName));
+      [env, resCode]
+  | Ref (varName) ->
+      var resCode = singletonBuffer (LDA (varName));
+      [env, resCode]
+  | Const (n) ->
+      var resCode = singletonBuffer (CONST (n));
+      [env, resCode]
+  | Binop (op, a, b) -> case compileList (env, {a, b}) of [newEnv, {aCode, bCode}] ->
+      var resCode = aCode <+>
+                    bCode <+
+                    BINOP (op);
+      [newEnv, resCode]
+    esac
+  | Ignore (expr) ->
+      var compileRes = compileSMBuf (env, expr);
+      var newEnv = compileRes.fst;
+      var code = compileRes.snd;
+ 
+      var resCode = code <+
+                    DROP;
+      [newEnv, resCode]
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  compileSMBuf (initCompEnv (), stmt).snd.getBuffer
 }
