@@ -350,25 +350,52 @@ fun suffix (op) {
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         case i of
-          READ ->
+          Read ->
             case env.allocate of
               [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
             esac             
-        | WRITE ->
-            case env.pop of
+        | Write ->
+            case pop (env) of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
+        | Const (n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s)]
+          esac
+        | LD (x) ->
+            case env.addGlobal (x).allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac
+        | LDA (x) ->
+             case env.addGlobal (x).allocate of
+              [s, env] -> [env, code <+ Lea (env.loc (x), eax) <+> move (eax, s)]
+          esac
+        | ST (x) ->
+            case env.addGlobal (x).pop of
+              [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+        | STI ->
+            case env.pop2 of
+              [s, ref, env] -> [push(env, s), code <+> move (ref, eax) <+> move (s, edx) <+> move (edx, I(0, eax))]
+          esac
+        | Binop (op) ->
+            case env.pop2 of
+              [e2, e1, env] -> [env.push(e2), code <+> binopCompile(op, e1, e2)]
+          esac
+        | CJMP (c, l) ->
+        case env.pop of [value, env] ->
+          [setStack(env, l), code <+ Mov(L(0), eax) <+ Binop("cmp", eax, value) <+ CJmp(c, l)]
+        esac
+        | JMP (l) -> [setBarrier(setStack(env, l)), code <+ Jmp(l)]
+        | LABEL (l) -> [if isBarrier(env) then retrieveStack(env, l) else env fi, code <+ Label(l)]
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
-  }
 
-  compile (env, code) 
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
@@ -398,3 +425,34 @@ public fun compileX86 (args, code) {
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
 }
+
+fun binopCompile (op, e1, e2) {
+   case op of
+     "+"  -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, eax, e2))
+     | "-"  -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, e2, eax)) <+> move (eax, e2)
+     |  "*"  -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, e2, eax)) <+> move (eax, e2)
+     | "/"  -> move (e1, eax)
+       <+ Cltd <+ IDiv(e2) <+> move (eax, e2)
+     | "%"  -> move (e1, eax)
+       <+ Cltd <+ IDiv(e2) <+> move (edx, e2)
+     | "<"  -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2)
+     | ">"  -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2)
+     | "<=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2)
+     | ">=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2)
+     | "==" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2)
+     | "!=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2)
+     | "&&" -> move (L(0), edx) <+> binopCompile ("<", edx, e1) <+> binopCompile ("<", edx, e2)
+       <+> binopCompile ("+", e1, e2) <+>  move (L(1), edx) <+> binopCompile ("<", edx, e2)
+     | "!!" -> move (L(0), edx) <+> binopCompile ("<", edx, e1) <+> binopCompile ("<", edx, e2)
+       <+> binopCompile ("+", e1, e2) <+> binopCompile ("<", edx, e2)
+   esac
+ }

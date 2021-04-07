@@ -63,8 +63,74 @@ fun evalList (c, exprs) {
   esac
 }
 
+-- s - state
+-- w - world
+-- c - configuration
+-- n - name
+-- v - value
+-- cond - condition
+-- se - subexpression
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+case expr of
+    Var (v) -> [c, s(v)] 
+  | Const (v) -> [c, v]
+  | Ref (x) -> [c, Ref(x)]
+  | Binop (o, e1, e2) ->
+      case evalList(c, {e1, e2}) of
+        [c, {lhs, rhs}] -> [c, evalOp(o, lhs, rhs)]
+      esac 
+  | Assn (e1, e2) ->
+      case evalList(c, {e1, e2}) of
+        [[s, w], {Ref(n), v}] -> [[s <- [n, v], w], v]
+      esac 
+  | Seq (s1, s2) ->
+      case eval(c, s1) of
+        [c, _] -> eval(c, s2)
+      esac 
+  | Skip -> [c, Bottom]
+  | Read (n) ->
+      var res = readWorld(w);
+      [[(s <- [n, res[0]]), res[1]], Bottom] 
+  | Write (se) ->
+      case eval(c, se) of
+        [[s, w], v] -> [[s, writeWorld(v, w)], Bottom]
+      esac 
+  | While (cond, body) ->
+      case eval(c, cond) of
+        [c, 0] -> [c, Bottom] |
+        _ -> eval(eval(c, body)[0], expr)
+      esac 
+  | DoWhile (body, cond) ->
+      case eval(eval(c, body)[0], cond) of
+        [c, 0] -> [c, Bottom] |
+        [c, _] -> eval(c, expr)
+      esac 
+  | If (cond, b1, b2) ->
+      case eval(c, cond) of
+        [c, 0] -> eval(c, b2) |
+        [c, _] -> eval(c, b1)
+      esac 
+  | Ignore (se) -> [eval(c, se)[0], Bottom]
+  esac
+}
+
+public fun evalBinop (s, e1, e2) {
+  case s of
+    "+"  -> e1 + e2 |
+    "-"  -> e1 - e2 |
+    "/"  -> e1 / e2 |
+    "*"  -> e1 * e2 |
+    "<"  -> e1 < e2 |
+    ">"  -> e1 > e2 |
+    "%"  -> e1 % e2 |
+    "<=" -> e1 <= e2 |
+    ">=" -> e1 >= e2 |
+    "==" -> e1 == e2 |
+    "!=" -> e1 != e2 |
+    "!!" -> e1 !! e2 |
+    "&&" -> e1 && e2
+  esac
 }
 
 
