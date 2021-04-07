@@ -14,19 +14,19 @@ import Fun;
 -- string representation.
 public fun showSMInsn (i) {
   case i of
-    READ         -> "READ"
-  | WRITE        -> "WRITE"
-  | BINOP (s)    -> sprintf ("BINOP %s", s)
-  | LD    (x)    -> sprintf ("LD %s", x)
+    Read      -> sprintf ("READ")
+  | Write     -> sprintf ("WRITE")
+  | Binop (s) -> sprintf ("BINOP %s", s)
+  | LD    (x) -> sprintf ("LD %s", x)
   | LDA   (x)    -> sprintf ("LDA %s", x)
-  | ST    (x)    -> sprintf ("ST %s", x)
+  | ST    (x) -> sprintf ("ST %s", x)
   | STI          -> "STI"
-  | CONST (n)    -> sprintf ("CONST %d", n)
+  | Const (n) -> sprintf ("CONST %d", n)
   | LABEL (s)    -> sprintf ("LABEL %s", s)
   | JMP   (l)    -> sprintf ("JMP %s", l)
   | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
   | DUP          -> "DUP"
-  | DROP         -> "DROP"  
+  | DROP         -> "DROP"
   esac
 }
 
@@ -46,7 +46,7 @@ fun initEvalEnv (insns) {
             esac
           }
         }) $ [emptyMap (compare), insns];
-  
+
   [fun (l) {
      case findMap (map, l) of Some (insns) -> insns esac
   }]
@@ -60,8 +60,55 @@ fun fromLabel (env, lab) {
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  -- foldl (evalInsn, c, insns)
+  fun oldInsnsCheck (c, insn) {
+    -- printf ("%s\n", c[0].string);
+    case insn of
+        Read -> (
+          var newWorld = readWorld(c[2]);
+          [newWorld[0] : c[0], c[1], newWorld[1]]
+        ) |
+        Write -> [c[0].tl, c[1], writeWorld (c[0].hd, c[2])] |
+        Binop (s) -> [evalBinop (s, c[0].tl.hd, c[0].hd) : c[0].tl.tl, c[1], c[2]] |
+        LD (x) -> [c[1] (x) : c[0], c[1], c[2]] |
+        LDA (x) -> [Ref (x) : c[0], c[1], c[2]] |
+        ST (x) -> [c[0].tl, c[1] <- [x, c[0].hd], c[2]] |
+        STI ->
+          case c[0] of
+            hd : Ref(x) : tl -> [hd : tl, c[1] <- [x, hd], c[2]]
+          esac |
+        Const (n) -> [n : c[0], c[1], c[2]] |
+        DROP -> [c[0].tl, c[1], c[2]] |
+        _ -> [c[0], c[1], c[2]]
+    esac
+  }
+
+  fun newInsnsCheck (c, insns) {
+    case insns.hd of
+      JMP (l) -> [[c[0], c[1], c[2]], env.fromLabel (l)] |
+      CJMP (cond, l) -> (
+        if (compare("nz", cond) == 0 && c[0].hd != 0 !! compare("z", cond) == 0 && c[0].hd == 0)
+        then [[c[0].tl, c[1], c[2]], env.fromLabel (l)]
+        else [[c[0].tl, c[1], c[2]], insns.tl]
+        fi
+      ) |
+      _ -> [[c[0], c[1], c[2]], insns.tl]
+    esac
+  }
+
+  while size(insns) > 0 do
+    -- printf("%s\n", insns.hd.string);
+    case insns of
+      _ -> (
+        var newData = newInsnsCheck (oldInsnsCheck (c, insns.hd), insns);
+        c := newData[0];
+        insns := newData[1]
+      )
+    esac
+  od;
+  c
 }
+
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
@@ -98,9 +145,58 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compileAllExpr (stmt, initCompEnv ())[0])
+}
+
+
+public fun compileAllExpr (stmt, env) {
+  -- printf("2");
+  -- printf("%s\n", stmt.string);
+  case stmt of
+    Var (v) -> [singletonBuffer (LD (v)), env] |
+    Const (c) -> [singletonBuffer (Const (c)), env] |
+    Ref(s) -> [singletonBuffer (LDA (s)), env] |
+    Binop (s, e1, e2) ->
+      var comp1 = compileAllExpr (e1, env);
+      var comp2 = compileAllExpr (e2, comp1[1]);
+      [comp1[0] <+> comp2[0] <+> singletonBuffer (Binop (s)), comp2[1]] |
+    Assn (s, e) ->
+      var comp1 = compileAllExpr(s, env);
+      var comp2 = compileAllExpr(e, comp1[1]);
+      [comp1[0] <+> comp2[0] <+ STI, comp2[1]] |
+    Seq (st1, st2) ->
+      var comp1 = compileAllExpr (st1, env);
+      var comp2 = compileAllExpr (st2, comp1[1]);
+      [comp1[0] <+> comp2[0], comp2[1]] |
+    Skip -> [emptyBuffer (), env] |
+    Read (s) -> [singletonBuffer (Read) <+> singletonBuffer (ST (s)), env] |
+    Write (e) ->
+      var comp = compileAllExpr (e, env);
+      [comp[0] <+> singletonBuffer (Write), comp[1]] |
+    While (c, s) ->
+      case env.genLabels(2) of [l1, l2, newEnv] ->
+        var newData = compileAllExpr (s, newEnv);
+        var comp = compileAllExpr (c, newData[1]);
+        [singletonBuffer (JMP (l1)) <+ LABEL (l2) <+> newData[0] <+ LABEL (l1)
+          <+> comp[0] <+ CJMP ("nz", l2), comp[1]]
+      esac |
+    DoWhile(s, c) ->
+      case env.genLabels(1) of [l, newEnv] ->
+        var newData = compileAllExpr (s, newEnv);
+        var comp = compileAllExpr (c, newData[1]);
+        [singletonBuffer (LABEL (l)) <+> newData[0] <+> comp[0] <+ CJMP ("nz", l), comp[1]]
+      esac |
+    If (c, st1, st2) ->
+      case env.genLabels(2) of [l1, l2, newEnv] ->
+        var comp1 = compileAllExpr (c, newEnv);
+        var comp2 = compileAllExpr (st1, comp1[1]);
+        var comp3 = compileAllExpr (st2, comp2[1]);
+        [comp1[0] <+ CJMP ("z", l1) <+> comp2[0] <+ JMP (l2) <+ LABEL (l1) <+> comp3[0] <+ LABEL (l2), comp3[1]]
+      esac |
+      Ignore (e) -> compileAllExpr(e, env)
+  esac
 }

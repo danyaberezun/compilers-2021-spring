@@ -16,6 +16,7 @@ import Manifest;
 -- Parses a command-line arguments, represented as a list, and
 -- returns an environment. The environment's interface is
 -- defined in the unit Manifest
+
 fun parseArgs (args) {
   var mode   = ref (Comp),
       infile = ref ({}),
@@ -26,7 +27,7 @@ fun parseArgs (args) {
       SM -> smDump ::= true
     esac
   }
-  
+
   fun setMode (m) {
     case deref (mode) of
       Comp -> mode ::= m
@@ -40,7 +41,7 @@ fun parseArgs (args) {
     | _    -> failure ("omitting ""%s"", input file name already set to ""%s""\n", fn, deref (infile))
     esac
   }
-  
+
   fix (fun (rec) {
          fun (args) {
             case args of
@@ -57,10 +58,11 @@ fun parseArgs (args) {
          }
       })(args);
 
+  -- printf("1");
   [fun () {deref (mode)},
    fun () {case deref(infile) of #val -> failure ("input file name not set\n") | fn -> fn esac},
    fun () {deref (smDump)}
-  ]        
+  ]
 }
 
 -- Utility function to peeping to SM code
@@ -70,11 +72,13 @@ fun peepSM (args, smCode) {
 }
 
 var args = parseArgs (arrayList (sysargs).tl);
+-- printf("2");
 
 -- The main part: parses input file, invokes interpreter/stack machine interpreter/x86
 -- code generator
 case parseString (parse |> bypass (end), fread (args.getInFile)) of
   Succ (program) ->
+    -- printf("3");
     case args.getMode of
       Comp -> compileX86 (args, peepSM (args, compileSM (program)))
     | mode ->
@@ -91,8 +95,8 @@ case parseString (parse |> bypass (end), fread (args.getInFile)) of
              case mode of
                Int -> evalExpr (input, program)
              | SM  -> evalSM   (input, peepSM (args, compileSM (program)))
-             esac) 
+             esac)
     esac
-| x@Fail (err, line, col) ->   
+| x@Fail (err, line, col) ->
    failure ("%s at %d:%d\n", err.hd, line, col)
 esac
