@@ -54,9 +54,26 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+
+fun eval (env, c@[s, st, w], insns) {
+  case insns of
+    READ : tl           -> case readWorld (w) of [x, w0] -> eval (env, [x : s, st, w0], tl) esac
+  | WRITE : tl          -> case s of value : rest -> eval (env, [rest, st, writeWorld (value, w)], tl) esac
+  | BINOP (op) : tl     -> case s of rExpr : lExpr : rest -> eval (env, [binOp (op, lExpr, rExpr) : rest, st, w], tl) esac
+  | LD    (vr) : tl     -> eval (env, [st (vr) : s, st, w], tl)
+  | ST    (vr) : tl     -> case s of value : rest -> eval (env, [rest, st <- [vr, value], w], tl) esac
+  | CONST (const) : tl  -> eval (env, [const : s, st, w], tl)
+  | LABEL (s) : tl      -> eval (env, c, tl)
+  | JMP   (l) : tl      -> eval (env, c, fromLabel (env, l))
+  | CJMP  (c, l) : tl   -> case s of
+      0 : tail -> eval (env, [tail, st, w], if compare (c, "z") == 0  then fromLabel (env, l) else tl fi)
+    | _ : tail -> eval (env, [tail, st, w], if compare (c, "nz") == 0 then fromLabel (env, l) else tl fi)
+    esac
+  | 0 -> c
+  esac
 }
+
+var env = initCompEnv();
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
@@ -93,15 +110,45 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+var compileExprInner = fun (expr) {
+  case expr of
+    Var   (vr) 		           -> singletonBuffer (LD (vr))
+  | Const (const) 		       -> singletonBuffer (CONST (const))
+  | Binop (op, lExpr, rExpr) -> compileExprInner (lExpr) <+> compileExprInner (rExpr) <+ BINOP (op)
+  esac
+};
+
+var compileSMInner = fun (stmt) {
+  case stmt of
+    Assn  (vr, expr)     -> compileExprInner (expr) <+ ST (vr)
+  | Seq   (stmt1, stmt2) -> compileSMInner (stmt1) <+> compileSMInner (stmt2)
+  | Skip 				         -> emptyBuffer ()
+  |	Read  (vr) 		       -> listBuffer ({READ, ST (vr)})
+  | Write (expr) 	     	 -> compileExprInner (expr) <+ WRITE
+  | If (c, t, f)         -> fun ([tl, fl, nenv]) {
+      env := nenv;
+      compileExprInner (c) <+ CJMP ("z", fl) <+> compileSMInner (t) <+ JMP (tl) <+ LABEL (fl) <+> compileSMInner (f) <+ LABEL (tl)
+    } (genLabels (env, 2))
+  | While (c, stmt)      -> fun ([cl, bl, nenv]) {
+      env := nenv;
+      singletonBuffer (JMP (cl)) <+ LABEL (bl) <+> compileSMInner (stmt) <+ LABEL (cl) <+> compileExprInner (c) <+ CJMP ("nz", bl)
+    } (genLabels (env, 2))
+  | DoWhile (stmt, c)    -> fun ([bl, nenv]) {
+      env := nenv;
+      singletonBuffer (LABEL (bl)) <+> compileSMInner (stmt) <+> compileExprInner (c) <+ CJMP ("nz", bl)
+    } (genLabel (env))
+  esac
+};
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  getBuffer (compileExprInner (expr))
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+ getBuffer (compileSMInner (stmt))
 }
