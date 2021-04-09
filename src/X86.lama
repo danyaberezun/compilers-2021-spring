@@ -321,6 +321,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -347,28 +348,208 @@ fun suffix (op) {
   esac
 }
 
+fun compileLDA (env, varName, mem) {
+  var varAddr = loc (env, varName);
+  var addr = I (0, varAddr);
+  case mem of
+    Reg (_) -> singletonBuffer (Lea (addr, mem))
+  | _ -> listBuffer ({
+      Lea (addr, eax),
+      Mov (eax, mem)
+    })
+  esac
+}
+
+fun compileSTI (value, varAddr) {
+  case varAddr of
+    Reg (_) -> move (value, I (0, varAddr))
+  | _ -> singletonBuffer (Mov (varAddr, eax)) <+>
+         move (value, I (0, eax))
+  esac
+}
+
+fun compileSimpleBinOp (op, x, y) {
+  case y of
+    R (_) -> singletonBuffer (Binop (op, x, y))
+  | _ -> singletonBuffer (Mov (y, eax)) <+ 
+         Binop (op, x, eax) <+ 
+         Mov (eax, y)
+  esac
+}
+
+fun compileDiv (op, x, y) {
+  var resultReg = case op of
+    "/" -> eax
+  | "%" -> edx
+  esac;
+  singletonBuffer (Mov (y, eax)) <+
+  Cltd <+ 
+  IDiv (x) <+ 
+  Mov (resultReg, y)
+}
+
+fun compileBoolConversion (x) {
+  singletonBuffer (Binop ("^", edx, edx)) <+
+  Binop ("cmp", L (0), x) <+
+  Set ("ne", "%dl") <+
+  Mov (edx, x)
+}
+
+fun compileBoolBinOp (op, x, y) {
+  compileBoolConversion (x) <+>
+  compileBoolConversion (y) <+>
+  compileSimpleBinOp (op, x, y)
+}
+
+fun compileComparison (op, x, y) {
+  singletonBuffer (Binop ("^", edx, edx)) <+
+  Mov (x, eax) <+
+  Binop ("cmp", eax, y) <+
+  Set (suffix (op), "%dl") <+
+  Mov (edx, y)
+}
+
+fun saveRegistersCode () {
+  listBuffer ({Push (ebx), Push (ecx), Push (esi), Push (edi)})
+}
+
+fun loadRegistersCode () {
+  listBuffer ({Pop (edi), Pop (esi), Pop (ecx), Pop (ebx)}) 
+}
+
+fun compileSingleInstruction([env, scode], i) {
+  var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+  case i of
+    READ ->
+      var allocateResult = allocate (env);
+      var mem = allocateResult.fst;
+      var newEnv = allocateResult.snd;
+
+      var resCode = code <+>
+                    saveRegistersCode() <+
+                    Call ("Lread") <+>
+                    loadRegistersCode() <+
+                    Mov (eax, mem);
+      [newEnv, resCode]     
+  | WRITE ->
+      var popRes = pop (env);
+      var mem = popRes.fst;
+      var newEnv = popRes.snd;
+
+      var resCode = code <+
+                    Mov (mem, eax) <+>
+                    saveRegistersCode() <+
+                    Push (eax) <+
+                    Call ("Lwrite") <+
+                    Pop (eax) <+>
+                    loadRegistersCode();
+      [newEnv, resCode]
+  | LD (varName) ->
+      var allocateRes = allocate (env);
+      var mem = allocateRes.fst;
+      var newEnv = allocateRes.snd;
+
+      var resCode = code <+>
+                    move (loc (newEnv, varName), mem);
+      [newEnv, resCode]
+  | ST (varName) ->
+      var mem = peek (env);
+      var resCode = code <+>
+                    move (loc (env, varName), mem);
+      [env, resCode]
+  | CONST (n) ->
+      var allocateRes = allocate (env);
+      var mem = allocateRes.fst;
+      var newEnv = allocateRes.snd;
+      
+      var resCode = code <+
+                    Mov (L (n), mem);
+      [newEnv, resCode]
+  | DROP ->
+      var newEnv = pop (env).snd;
+      [newEnv, code]
+  | DUP ->
+      var top = peek (env);
+      var allocateRes = allocate (env);
+      var mem = allocateRes.fst;
+      var newEnv = allocateRes.snd;
+
+      var resCode = code <+>
+                    move (top, mem);
+      [newEnv, resCode]
+  | LDA (varName) ->
+      var allocateRes = addGlobal (env, varName).allocate;
+      var mem = allocateRes.fst;
+      var newEnv = allocateRes.snd;
+
+      var resCode = code <+>
+                    compileLDA (newEnv, varName, mem);
+      [newEnv, resCode]
+  | STI ->
+      var popRes = pop2 (env);
+      var value = popRes[0];
+      var varAddr = popRes[1];
+      var newEnv = popRes[2];
+
+      var resCode = code <+>
+                    compileSTI (value, varAddr);
+      var finalEnv = push (newEnv, value);
+      [finalEnv, resCode]
+  | LABEL (label) ->
+      var newEnv = if isBarrier (env) then
+        retrieveStack (env, label)
+      else
+        env
+      fi;
+      var resCode = code <+
+                    Label (label);
+      [newEnv, resCode]
+  | JMP (label) ->
+      var newEnv = setStack (env, label).setBarrier;
+      var resCode = code <+
+                    Jmp (label);
+      [newEnv, resCode]
+  | CJMP (tp, label) ->
+      var popRes = pop (env);
+      var mem = popRes.fst;
+      var newEnv = popRes.snd;
+
+      var finalEnv = setStack (newEnv, label);
+
+      var x86Tp = case tp of
+        Z -> "e"
+      | NZ -> "ne"
+      esac;
+      var resCode = code <+
+                    Binop ("cmp", L (0), mem) <+
+                    CJmp (x86Tp, label);
+      [finalEnv, resCode]
+  | BINOP (op) ->
+      var popRes = pop (env);
+      var x = popRes.fst;
+      var newEnv = popRes.snd;
+      var y = peek (newEnv);
+
+      var opCodeFun = case op of
+        "+" -> compileSimpleBinOp
+      | "-" -> compileSimpleBinOp
+      | "*" -> compileSimpleBinOp
+      | "&&" -> compileBoolBinOp
+      | "!!" -> compileBoolBinOp
+      | "/" -> compileDiv
+      | "%" -> compileDiv
+      | _ -> compileComparison
+      esac;
+      var resCode = code <+> 
+                    opCodeFun (op, x, y);
+      [newEnv, resCode]
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
-
-  compile (env, code) 
+  foldl (compileSingleInstruction, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,

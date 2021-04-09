@@ -7,6 +7,7 @@ import Fun;
 import Matcher;
 import Ref;
 import Collection;
+import Buffer;
 
 -- Signals an error; takes an error message and location info
 public fun error (msg, loc) {
@@ -20,42 +21,26 @@ public fun error (msg, loc) {
 --   Void --- no value (aka "void"/"unit")
 --   Weak --- works like Val, but allows to provide a "default" value for void constructs
 
--- Checks if a plain value "val" can be used in the context described by
--- the attribute "atr".
-fun assertValue (atr, v, loc) {
-  case atr of
+-- Casts an argument "value" of type Val to the expected type, if possible
+fun assertValue (expectedType, value, loc) {
+  case expectedType of
     Ref  -> error ("reference expected", loc)
-  | Void -> Ignore (v)
-  | _    -> v
+  | Void -> Ignore (value)
+  | Val  -> value
+  | Weak -> value
   esac
 }
 
--- Checks if a void epxression can be used in the context described by
--- the attribute "atr".
-fun assertVoid (atr, v, loc) {
-  case atr of
-    Void -> v
+-- Casts an argument "void" of type Void to the expected type, if possible
+fun assertVoid (expectedType, void, loc) {
+  case expectedType of
+    Void -> void
   | Val  -> error ("value expected", loc)
-  | Weak -> Seq (v, Const (0))
-  | _    -> error ("reference expected", loc)
+  | Ref  -> error ("reference expected", loc)
+  | Weak -> Seq (void, Const (0))
   esac
 }
 
--- A parser of "something" in brackets; l, r are left and right
--- brackets as parsers, p --- a parser of "something"
-fun inbr (l, p, r) {
-  syntax (-l p -r)
-}
-
--- A helper function to be used with super-combinator "expr"
-fun binop (op) {
-  [syntax (pos -s[op]), fun (l, loc, r) {
-                          fun (a) {
-                            assertValue (a, Binop (op, l (Val), r (Val)), loc)
-                          }
-                        }
-  ]
-}
 
 -- Helper parser: parses a (possible empty) list of items separated by ","
 fun list0 (item) {
@@ -105,35 +90,232 @@ fun distributeScope (expr, exprConstructor) {
   esac
 }
 
-var primary    = memo $ eta syntax (
-                                      -- decimal constant
-                                      loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+-- A parser of "something" in brackets; l, r are left and right
+-- brackets as parsers, p --- a parser of "something"
+fun inbr (l, p, r) {
+  syntax (-l p -r)
+}
 
-                                      -- identifier
-                                      x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {
-                                                                                                            case args of
-                                                                                                              None -> case a of
-                                                                                                                        Ref  -> Ref (x)
-                                                                                                                      | Void -> Ignore (Var (x))
-                                                                                                                      | _    -> Var (x)
-                                                                                                                      esac
-                                                                                                            | Some (args) -> assertValue (a, Call (x, args))
-                                                                                                            esac
-                                                                                                         }} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
-      scopeExpr = memo $ eta syntax ($(failure ("scope expression parsing is not implemented\n"))),
-      basic      = memo $ eta (expr ({[Right, {[s (":="),
-                                                fun (l, loc, r) {
-                                                  fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                                }]}],
-                                      [Left , map (binop, {"!!"})],
-                                      [Left , map (binop, {"&&"})],
-                                      [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                      [Left , map (binop, {"+", "-"})],
-                                      [Left , map (binop, {"*", "/", "%"})]
-                                     },
-                                     primary)),
-      exp        = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+fun inOrdinaryBrackets (p) {
+  inbr (s ("("), p, s (")"))
+}
+
+fun getInfixParsers (ops) {
+	map (
+		fun (op) {
+			[
+				syntax (
+					loc=pos parsedOp=s[op] {
+						[loc, parsedOp]
+					}
+				),
+				fun (leftGetter, [loc, parsedOp], rightGetter) {
+	      	fun (expectedType) {
+	      		case parsedOp of
+	      			op ->
+	      				var left = leftGetter (Val);
+	      				var right = rightGetter (Val);
+	      				var res = Binop (op, left, right);
+	      				assertValue (expectedType, res, loc)
+	      		|	_ -> failure ("Unexpected behaviour of parser")
+	      		esac
+	      	}
+        }
+  		]
+		},
+		ops
+	)
+}
+
+var assnParser = {
+	[
+		syntax (
+			pos -s[":="]
+		),
+    fun (refGetter, loc, valGetter) {
+      fun (expectedType) {
+      	var ref = refGetter (Ref);
+      	var value = valGetter (Val);
+      	var res = Assn (ref, value);
+      	assertValue (expectedType, res, loc)
+      }
+    }
+	]
+};
+
+var infixParsers = {
+	[Right, assnParser],
+  [Left, getInfixParsers ({"!!"})],
+  [Left, getInfixParsers ({"&&"})],
+  [Nona, getInfixParsers ({"==", "!=", "<", ">", "<=", ">="})],
+  [Left, getInfixParsers ({"+", "-"})],
+  [Left, getInfixParsers ({"*", "/", "%"})]
+};
+
+var primaryParser = memo $ eta syntax (
+		loc=pos n=decimal {
+			fun (expectedType) {
+				var res = Const (stringInt (n));
+				assertValue (expectedType, res, loc)
+			}
+		} |
+		loc=pos funName=lident args=inOrdinaryBrackets[list0 (argParser)] {
+			fun (expectedType) {
+				var res = Call (funName, args);
+				assertValue (expectedType, res, loc)
+			}
+		} |
+		varName=lident {
+			fun (expectedType) {
+				case expectedType of
+			    Ref -> Ref (varName)
+			  | Void -> Skip
+			  | Val -> Var (varName)
+			  | Weak -> Var (varName)
+			  esac
+			}
+		} |
+		loc=pos kSkip {
+			fun (expectedType) {
+				assertVoid (expectedType, Skip, loc)
+			}
+		} |
+		loc=pos kRead refGetter=inOrdinaryBrackets[expressionsParser] {
+			fun (expectedType) {
+				var ref = refGetter (Ref);
+				var res = Read (ref);
+				assertVoid (expectedType, res, loc)
+			}
+		} |
+		loc=pos kWrite exprGetter=inOrdinaryBrackets[expressionsParser] {
+			fun (expectedType) {
+				var expr = exprGetter (Val);
+				var res = Write (expr);
+				assertVoid (expectedType, res, loc)
+			}
+		} |
+		kIf condGetter=expressionsParser kThen thenGetter=scopeParser elseGetter=elseParser {
+			fun (expectedType) {
+				var cond = condGetter (Val);
+				var thenBody = thenGetter (expectedType);
+				var elseBody = elseGetter (expectedType);
+				If (cond, thenBody, elseBody)
+			}
+		} |
+		loc=pos kWhile condGetter=expressionsParser kDo bodyGetter=scopeParser kOd {
+			fun (expectedType) {
+				var cond = condGetter (Val);
+				var body = bodyGetter (Void);
+				var res = While (cond, body);
+				assertVoid (expectedType, res, loc)
+			}
+		} |
+		loc=pos kDo bodyGetter=scopeParser kWhile condGetter=expressionsParser kOd {
+			fun (expectedType) {
+				var cond = condGetter (Val);
+				distributeScope (bodyGetter (Void), fun (body) {
+					var resLoop = DoWhile (body, cond);
+					assertVoid (expectedType, resLoop, loc)
+				})
+			}
+		} |
+		loc=pos kFor 
+		initGetter=scopeParser s[","] condGetter=expressionsParser s[","] stepGetter=expressionsParser 
+		kDo 
+			bodyGetter=scopeParser
+		kOd {
+			fun (expectedType) {
+				var cond = condGetter (Val);
+				var body = bodyGetter (Void);
+				var step = stepGetter (Void);
+				var loopBody = Seq (body, step);
+				var loop = While (cond, loopBody);
+				distributeScope (initGetter (Void), fun (init) {
+					var res = Seq (init, loop);
+					assertVoid (expectedType, res, loc)
+				})
+			}
+		} |
+	  inOrdinaryBrackets[scopeParser]
+  ),
+  argParser = memo $ eta syntax (
+  	argGetter=expressionsParser {
+  		argGetter (Val)
+  	}
+  ),
+  elseParser = memo $ eta syntax (
+ 		kElif condGetter=expressionsParser kThen thenGetter=scopeParser elseGetter=elseParser {
+ 			fun (expectedType) {
+ 				var cond = condGetter (Val);
+ 				var thenBody = thenGetter (expectedType);
+ 				var elseBody = elseGetter (expectedType);
+ 				If (cond, thenBody, elseBody)
+ 			}
+ 		} |
+    -kElse scopeParser -kFi |
+    loc=pos kFi {
+    	fun (expectedType) {
+    		assertVoid (expectedType, Skip, loc)
+    	} 
+    }
+  ),
+  singleVarDefinitionParser = memo $ eta syntax (
+  	varName=lident {
+  		[varName, None]
+  	} |
+  	varName=lident s["="] valGetter=singleExpressionParser {
+  		var initValue = valGetter (Val);
+  		[varName, Some (initValue)]
+  	}
+  ),
+  definitionParser = memo $ eta syntax (
+  	s["var"] varDefs=list[singleVarDefinitionParser] s[";"] {
+  		Var (varDefs)
+  	} |
+  	s["fun"] funName=lident args=inOrdinaryBrackets[list0 (lident)] s["{"] 
+  		bodyGetter=scopeParser 
+  	s["}"] {
+  		var body = bodyGetter (Weak);
+  		Fun (funName, args, body)
+  	}
+  ),
+  definitionsParser = memo $ eta syntax (
+  	head=definitionParser tail=definitionsParser {
+  		head : tail
+  	} |
+  	head=definitionParser {
+  		{head}
+  	}
+  ),
+  scopeParser = memo $ eta syntax (
+  	definitions=definitionsParser expGetter=expressionsParser {
+  		fun (expectedType) {
+  			var mainExp = expGetter (expectedType);
+  			expandScope (definitions, mainExp)
+  		}
+  	} | 
+		expGetter=expressionsParser {
+			fun (expectedType) {
+				var resExp = expGetter (expectedType);
+				Scope ({}, resExp)
+			}
+		}
+  ),
+  singleExpressionParser = memo $ eta (expr (infixParsers, primaryParser)),
+  expressionsParser = memo $ eta syntax (
+  	singleExpressionParser |
+  	headGetter=singleExpressionParser s[";"] tailGetter=expressionsParser {
+  		fun (expectedType) {
+  			var head = headGetter (Void);
+  			var tail = tailGetter (expectedType);
+  			Seq (head, tail)
+  		}
+  	}
+	);
 
 -- Public top-level parser
-public parse = syntax (s=scopeExpr {s (Void)});
+public parse = syntax (
+	scopeGetter=scopeParser {
+		scopeGetter (Void)
+	}
+);
