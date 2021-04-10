@@ -33,7 +33,7 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
--- Evaluation environment: keeps a mapping between labels and (sub)programs
+-- Evaluation environment:e keeps a mapping between labels and (sub)programs
 fun initEvalEnv (insns) {
   var map =
     fix (fun (rec) {
@@ -58,8 +58,82 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, world], insns) {
+  case insns of 
+      READ : other -> case readWorld( world) of [value, new_world] -> eval (
+        env,
+        [value : stack, state, new_world],
+        other
+      ) esac
+    | WRITE : other -> case stack of top : other_stack -> eval (
+        env,
+        [other_stack, state, writeWorld (top, world)],
+        other
+      ) esac
+    | BINOP (oper) : other -> case stack of b : a : other_stack -> eval (
+        env,
+        [binop (oper, a, b) : other_stack, state, world],
+        other
+      ) esac
+    | LD (name) : other -> eval (
+        env,
+        [state (name) : stack, state, world],
+        other
+      )
+    | LDA (x) : other -> eval (
+        env,
+        [x : stack, state, world],
+        other
+      )
+    | ST (name) : other -> case stack of top : other_stack -> eval (
+        env,
+        [other_stack, state <- [name, top], world],
+        other
+      ) esac
+    | STI : other -> case stack of top : x : other_stack -> eval (
+        env,
+        [top : other_stack, state <- [x, top], world],
+        other
+    ) esac
+    | CONST (value) : other -> eval (
+        env,
+        [value : stack, state, world],
+        other
+      )
+    | LABEL (label) : other -> eval (
+        env,
+        c,
+        other
+      )
+    | JMP (label) : other -> eval (
+        env,
+        c,
+        fromLabel (env, label)
+      )
+    | CJMP (cond, label) : other -> case stack of top : other_stack -> (
+        var need_jump = case cond of 
+            "nz" -> top != 0
+          | "z" -> top == 0
+          | _ -> failure ("unrecognized condition")
+        esac;
+        if need_jump then
+          eval (env, [other_stack, state, world], fromLabel (env, label))
+        else
+          eval (env, [other_stack, state, world], other)
+        fi
+      ) esac
+    | DUP : other -> case stack of top : other_stack -> eval (
+        env, 
+        [top : stack, state, world], 
+        other
+      ) esac
+    | DROP : other -> case stack of top : other_stack -> eval (
+        env, 
+        [other_stack, state, world], 
+        other
+      ) esac 
+    | _ -> [stack, state, world]
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -100,6 +174,93 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+
+fun cmpIf(env, e, s1, s2){
+  case s2 of
+    Skip ->
+      var ls = genLabels(env, 1);
+      var p = compileSMBuf (ls[1], s1);
+
+      [p[0], compileSMBuf(p[0], e)[1]
+        <+  CJMP ("z", ls[0])
+        <+> p[1]
+        <+  LABEL (ls[0])
+      ]
+  | _ ->
+      var ls = genLabels(env, 2);
+      var p2 = compileSMBuf(ls[2], s2);
+      var p1 = compileSMBuf(p2[0], s1);
+
+      [p1[0], compileSMBuf(p1[0], e)[1]
+        <+  CJMP ("nz", ls[0])
+        <+> p2[1]
+        <+  JMP (ls[1])
+        <+  LABEL (ls[0])
+        <+> p1[1]
+        <+  LABEL (ls[1])
+      ]
+  esac
 }
+
+fun compileSMBuf(env, stmt){
+  case stmt of
+    Assn (s, e) -> case s of 
+        Ref (s) -> [env, compileSMBuf(env, e)[1] <+ DUP <+ ST(s)]
+      | _ -> 
+          var s1 = compileSMBuf(env, s);
+          var e1 = compileSMBuf(s1[0], e);
+          [s1[0], s1[1] <+> e1[1] <+ STI]
+      esac
+
+
+
+  | Seq (e1,e2) ->
+      var p1 = compileSMBuf(env, e1);
+      var p2 = compileSMBuf(p1[0], e2);
+      [p2[0], p1[1] <+> p2[1] ]
+
+  | Skip -> [env, emptyBuffer()]
+  | Read (x) -> case x of
+        Ref(x) -> [env, listBuffer ({READ, ST(x)})]
+      | _ -> failure("Read - Not Ref IN\n")
+      esac    
+  | Write (e) -> [env, compileSMBuf(env, e)[1] <+ WRITE]
+
+
+
+  | Var (x) -> [env, singletonBuffer(LD (x))]
+  | Const (n) -> [env, singletonBuffer(CONST (n))]
+  | Ref (x) -> [env, singletonBuffer(LDA (x))]
+
+  | Binop (op, e1, e2) -> 
+      var p1 = compileSMBuf(env, e1);
+      var p2 = compileSMBuf(p1[0], e2);
+      [p2[0], p1[1] <+> p2[1] <+ BINOP (op)]
+  
+  | Ignor (x) -> 
+      var p = compileSMBuf (env, x);
+      [p[0], p[1] <+ DROP]
+      
+
+  | While (e1, e2) -> 
+      var ls = genLabels(env, 2);
+      var p = compileSMBuf (ls[2], e2);
+      
+      [p[0], emptyBuffer()
+        <+  JMP (ls[0])
+        <+  LABEL (ls[1])
+        <+> p[1]
+        <+  LABEL (ls[0])
+        <+> compileSMBuf (p[0], e1)[1]
+        <+  CJMP ("nz", ls[1])
+      ]
+  | If (e, s1, s2) -> cmpIf (env, e, s1, s2)
+
+  | _ -> failure("\n\nFTF:  %s\n\n", stmt.string)
+
+  esac
+}
+
+public fun compileSM (stmt) {
+  getBuffer (compileSMBuf (initCompEnv(), stmt).snd)
+} 
