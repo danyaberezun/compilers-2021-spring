@@ -1,0 +1,61 @@
+-- Statement evaluator.
+
+import State;
+import Expr;
+import World;
+
+-- Evaluates a statement "stmt" in a configuration "c".
+-- A configuration is a pair of a state "s" and a world "w".
+-- Returns a final configuration (if any)
+--
+-- A statement is represented by a data structure of the following shape:
+--
+-- stmt = Assn    (string, expr)     |
+--        Seq     (stmt, stmt)       |
+--        Skip                       |
+--        Read    (string)           |
+--        Write   (expr)             |
+--        If      (expr, stmt, stmt) |
+--        While   (expr, stmt)       |
+--        DoWhile (stmt, expr)
+
+fun eval (c, stmt) {
+	var state = c[0];
+	var world = c[1];
+
+    case stmt of
+            Skip -> c
+	    |   Assn (name, expression) -> (
+                [state <- [name, evalExpr (state, expression)], world]
+            )
+        |   Read (name) -> (
+                var value_and_world_1 = readWorld(world);
+                [state <- [name, value_and_world_1[0]], value_and_world_1[1]]
+	        )
+        |   Write (expression) -> (
+                [state, writeWorld (evalExpr (state, expression), world)]
+            )
+        |   Seq (statement_1, statement_2) -> (
+                      eval (eval (c, statement_1), statement_2)
+            )
+        |   If (expression, branch_0, branch_1) ->
+        		case evalExpr (state, expression) of
+	        			0 -> eval ([state, world], branch_1)
+	        		|	_ -> eval ([state, world], branch_0)
+        		esac
+        | 	While (expression, branch) ->
+        		case evalExpr (state, expression) of
+        				0 -> [state, world]
+        			|	_ -> case eval ([state, world], branch) of [state, world] -> eval ([state, world], stmt) esac
+        		esac
+        | 	DoWhile (branch, expression) ->
+        		case eval ([state, world], branch) of
+        			[state, world] -> eval ([state, world], While (expression, branch))
+        		esac
+    esac
+}
+
+-- Evaluates a program with a given input and returns an output
+public fun evalStmt (input, stmt) {
+  eval ([emptyState, createWorld (input)], stmt).snd.getOutput
+}

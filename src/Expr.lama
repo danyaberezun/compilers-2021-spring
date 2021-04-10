@@ -64,9 +64,48 @@ fun evalList (c, exprs) {
 }
 
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+case expr of
+	Assn (l, r) ->
+      case evalList (c, {l, r}) of
+        [c@[s,w], {l,r}] -> [[s <- [l, r], w], r]
+      esac 
+  | Seq (stmt_1, stmt_2) ->
+      case eval(c, stmt_1) of
+        [c, _] -> eval(c, stmt_2)
+      esac 
+  | Skip -> [c, Bottom]
+  | Read (x) ->
+      var n;
+      n := readWorld(w);
+      [[s <- [eval (c, x)[1], n[0]], n[1]], Void]
+  | Write (se) ->
+      case eval(c, se) of
+        [[s, w], v] -> [[s, writeWorld(v, w)], Bottom]
+      esac 
+  | If (e, s1, s2) ->
+      case eval (c, e) of
+        [c, v] -> if (v != 0) then eval (c, s1) else eval (c, s2) fi 
+      esac
+  | While (cond, body) ->
+      case eval(c, cond) of
+        [c, 0] -> [c, Bottom] |
+        _ -> eval(eval(c, body)[0], expr)
+      esac 
+  | DoWhile (body, cond) ->
+      case eval(eval(c, body)[0], cond) of
+        [c, 0] -> [c, Bottom] |
+        [c, _] -> eval(c, expr)
+      esac 
+  | Var (v) -> [c, s(v)] 
+  | Ref (x) -> [c, x]
+  | Const (v) -> [c, v]
+  | Binop (o, e1, e2) ->
+      case evalList(c, {e1, e2}) of
+        [c, {lhs, rhs}] -> [c, evalOp(o, lhs, rhs)]
+      esac 
+  | Ignore (se) -> [eval(c, se)[0], Bottom]
+  esac
 }
-
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
@@ -74,3 +113,23 @@ public fun evalExpr (input, expr) {
     [c, _] -> c.snd.getOutput
   esac
 }
+
+
+public fun binop(bp, x, y){
+  case bp of
+    "+"  -> x +  y 
+  | "-"  -> x -  y 
+  | "*"  -> x *  y 
+  | "/"  -> x /  y 
+  | "%"  -> x %  y 
+  | "==" -> x == y 
+  | "!=" -> x != y 
+  | "<"  -> x <  y 
+  | "<=" -> x <= y 
+  | ">"  -> x >  y 
+  | ">=" -> x >= y 
+  | "&&" -> x && y 
+  | "!!" -> x !! y 
+  esac
+}
+
