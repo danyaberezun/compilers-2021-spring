@@ -1,5 +1,5 @@
 -- Expression evaluator
-
+-- Alhasan Alkhaddour M4138c
 import List;
 import State;
 import World;
@@ -63,8 +63,53 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (config@[st, w], exprs){
+  -- fun eval (configuration@[state, w], expression)
+
+  case exprs of
+	Assn (exp1, exp2) -> 
+		case evalList(config, {exp1, exp2}) of
+		[[st, w], {Ref(x), v}] -> [[st <- [x, v], w], v]
+		esac 
+    | Seq (exp1, exp2) -> 
+       case eval(config, exp1) of
+        [config, _] -> eval(config, exp2)
+       esac 
+    | Skip -> [config, Bottom] 
+    | Read (x) -> 
+    	   var res = readWorld(w);
+	   [[(st <- [x, res.fst]), res.snd], Bottom] 
+    | Write (expr) ->
+       case eval(config, expr) of
+        [[st, w], v] ->
+          [[st, writeWorld(v, w)], Bottom]
+       esac 
+
+    | If (cond, thenStmt, elseStmt) ->
+       case eval(config, cond) of
+          [config, 0] -> eval(config, elseStmt) 
+        | [config, _] -> eval(config, thenStmt)
+      esac 
+    | While (cond, stmt) ->
+       case eval(config, cond) of 
+          [config, 0] -> [config, Bottom] 
+        | _ -> eval(eval(config, stmt)[0], exprs)
+       esac 
+    | DoWhile (stmt, cond) ->
+      	case eval(eval(config, stmt)[0], cond) of
+      	   [config, 0] -> [config, Bottom] 
+      	 | [config, _] -> eval(config, exprs)
+      	esac 
+    | Var (v) -> [config, st(v)] 
+    | Ref (x) -> [config, Ref(x)] 
+    | Const (n) ->  [config, n] 
+    | Binop (op, exp1, exp2) ->
+      case evalList(config, {exp1, exp2}) of 
+        [config, {l, r}] -> [config, evalOp(op, l, r)]
+      esac   	
+    | Ignore (exprs) ->
+      [eval(config, exprs)[0], Bottom] 
+  esac
 }
 
 

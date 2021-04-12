@@ -1,5 +1,6 @@
 -- X86 codegeneration interface
 -- We use stack machine programs as intermediate representation
+-- Alhasan Alkhaddour M4138c
 import SM;
 import Collection;
 import List;
@@ -328,9 +329,20 @@ fun memOpnd (opnd) {
 -- Generates a move between locations, using
 -- intermediate register if needed
 fun move (from, to) {
-  if memOpnd (from) && memOpnd (to)
+  if from == to 
+  then emptyBuffer ()
+  elif memOpnd (from) && memOpnd (to)
   then singletonBuffer (Mov (from, eax)) <+ Mov (eax, to)
   else singletonBuffer (Mov (from, to))
+  fi
+}
+
+fun moveAddr (from, to) {
+  if memOpnd (from) && memOpnd (to)
+	  then 
+	  		singletonBuffer (Lea (from, eax)) <+ Lea (eax, to)
+	  else 
+	  		singletonBuffer (Lea (from, to))
   fi
 }
 
@@ -347,28 +359,76 @@ fun suffix (op) {
   esac
 }
 
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+		READ ->
+		  case env.allocate of
+		    [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+		  esac             
+	  | WRITE ->
+		  case env.pop of
+		    [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+		  esac
+	  | CONST (n) ->
+		  case env.allocate of 
+		    [s, env] -> [env, code <+> move(L(n), s)]
+		  esac
+	  | LD (x) ->
+		  case env.addGlobal(x).allocate of
+		    [s, env] -> [env, code <+> move(env.loc(x), s)]
+		  esac  
+	  | ST (x) -> 
+		  case addGlobal (env, x) of
+			env -> [env, code <+> move (peek (env), loc(env, x))]
+		  esac
 
-  compile (env, code) 
+	  | BINOP (op) ->
+				  	case env.pop2 of
+							[a, b, env] -> 
+							   [env.push(b), code <+> (
+								  case op of
+									  "+" 	-> move(a, eax) <+ Binop(op, eax, b) 
+									| "-" 	-> move(a, eax) <+ Binop(op, eax, b) 
+									| "*" 	-> move(a, eax) <+ Binop(op, b, eax) <+> move(eax, b) 
+									| "/" 	-> move(b, eax) <+ Cltd <+ IDiv(a) <+> move(eax, b) 
+									| "%" 	-> move(b, eax) <+ Cltd <+ IDiv(a) <+> move(edx, b) 
+									| "<"	-> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+									| ">" 	-> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+									| "<=" 	-> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+									| ">=" 	-> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+									| "==" 	-> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+									| "!=" 	-> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) 
+									| "&&" 	-> move(L(0), eax) <+ Binop("cmp", a, eax) <+ Set(suffix("!="), "%al") <+> move(eax, a) <+> move(L(0), eax) <+ Binop("cmp", b, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, a, eax) <+> move(eax, b) 
+									| "!!" 	-> move(L(0), eax) <+ Binop("cmp", a, eax) <+ Set(suffix("!="), "%al") <+> move(eax, a) <+> move(L(0), eax) <+ Binop("cmp", b, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, a, eax) <+> move(eax, b)
+								  esac
+								 )]
+						esac
+      | LABEL (l)     	-> [if (isBarrier (env)) then retrieveStack (env, l) else env fi, code <+ Label(l)]
+      | JMP   (l)       -> [setBarrier(setStack(env, l)), code <+ Jmp (l)]
+
+      | CJMP (x, l)		-> 
+          case env.pop of
+            [s, env] -> [setStack(env, l), code <+ Binop("cmp", L(0), s) <+ CJmp (x, l)]
+          esac
+      		  
+      | LDA (x) 		-> 
+          case addGlobal (env, x).allocate of
+            [s, env] -> [env, code <+> moveAddr (loc(env, x), s)]
+          esac
+
+      | STI 			->
+          case pop2 (env) of
+            [s, x, env] -> [push (env, s), code <+> move (x, eax) <+ Mov (s, I (0, eax))]
+          esac 
+      | DROP -> case pop (env) of [_, env] -> [env, code] esac
+        esac
+    }, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,

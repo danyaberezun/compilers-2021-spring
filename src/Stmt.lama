@@ -1,0 +1,44 @@
+-- Statement evaluator.
+-- Alhasan Alkhaddour M4138c
+
+import State;
+import Expr;
+import World;
+
+-- Evaluates a statement "stmt" in a configuration "c".
+-- A configuration is a pair of a state "s" and a world "w".
+-- Returns a final configuration (if any)
+--
+-- A statement is represented by a data structure of the following shape:
+--
+-- stmt = Assn   (string, expr)     |
+--        Seq    (stmt, stmt)       |
+--        Skip                      |
+--        Read   (string)           |
+--        Write  (expr)             |
+
+
+
+fun eval (c, stmt) {
+  case stmt of
+    Assn  (s, e)   -> [c.fst <- [s, evalExpr (c.fst, e)], c.snd]
+  | Seq   (s1, s2) -> eval (eval (c, s1), s2)
+  | Skip           -> c
+  | Read  (s)      -> case readWorld (c.snd) of 
+                            [n, w] -> [c.fst <- [s, n], w]
+                      esac
+  | Write (e)      -> [c.fst, writeWorld (evalExpr (c.fst, e), c.snd)]
+  | If (e, s1, s2) -> if evalExpr(c.fst, e) != 0 then eval(c, s1) else eval(c, s2) fi
+  | While (e, s1)  -> if evalExpr(c.fst, e) != 0 then eval(eval(c, s1), stmt) else c fi
+  | DoWhile (s1, e)-> 
+                        var c2 = eval(c, s1);
+                        if evalExpr(c2.fst, e) != 0 then eval(c2 , stmt) else c2 fi
+                      
+  esac
+}
+
+-- Evaluates a program with a given input and returns an output
+public fun evalStmt (input, stmt) {
+  eval ([emptyState, createWorld (input)], stmt).snd.getOutput
+}
+
