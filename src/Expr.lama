@@ -54,25 +54,30 @@ public fun evalOp (op, l, r) {
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
-fun checkVar (state, name) {
+fun lookupVar (state, name) {
   case state.lookup (name) of
-    Var (_) -> skip
+    Var (n) -> n
   | _       -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
 
 -- Helper function: checks that given name designates a function in
 -- a given state
-fun checkFun (state, name) {
+fun lookupFun (state, name) {
   case state.lookup (name) of
-    Fun (_, _) -> skip
+    Fun (a, b) -> Fun (a, b)
   | _          -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
   esac
 }
 
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
+  foldl (fun (s, name) {
+    case name of
+      Func (name, args, body) -> s.addFunction (name, args, body)
+    | _                       -> s.addName (name, Var (0))
+    esac
+  }, state, names)
 }
 
 -- Helper function: adds a function in current scope
@@ -94,11 +99,68 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var     (n)                  -> [c, lookupVar (s, n)]
+  | Ref     (n)                  -> [c, n]
+  | Const   (n)                  -> [c, n]
+  | Imm     (n)                  -> [c, n]
+  | Skip                         -> [c, Void]
+  | Ignore  (body)               -> case eval (c, body) of [c@[s, w], v0] ->
+                                      [c, Void]
+                                    esac
+  | Binop   (opcode, e0, e1)     -> case eval (c, e0) of [c@[s, w], v0] -> 
+                                    case eval (c, e1) of [c@[s, w], v1] -> 
+                                      [c, evalOp (opcode, v0, v1)]
+                                    esac esac
+  | Assn    (to, from)           -> case eval (c,   to) of [c@[s, w], v0] ->
+                                    case eval (c, from) of [c@[s, w], v1] ->
+                                      [[s <- [v0, Var (v1)], w], v1]
+                                    esac esac
+  | Read    (to)                 -> case eval (c, to) of [c@[s, w], v0] ->
+                                    case readWorld (w) of [n, w] -> 
+                                      [[s <- [v0, Var (n)], w], Void]
+                                    esac esac
+  | Write   (from)               -> case eval (c, from) of [c@[s, w], v0] ->
+                                      [[s, writeWorld (v0, w)], Void]
+                                    esac
+  | Seq     (body0, body1)       -> case eval (c, body0) of [c@[s, w], Void] -> 
+                                      eval (c, body1)
+                                    esac
+  | If      (cond, body0, body1) -> case eval (c, cond) of 
+                                      [c, 0] -> eval (c, body1)
+                                    | [c, _] -> eval (c, body0)
+                                    esac
+  | While   (cond, body)         -> case eval (c, cond) of 
+                                      [c, 0] -> [c, Void]
+                                    | [c, n] -> eval (c, Seq (body, expr))
+                                    esac
+  | DoWhile (body, cond)         -> eval (c, Seq (body, While (cond, body))) 
+  | Call    (f, args, t)         -> case evalList (c, args) of [c@[s, w], args] ->
+                                    case lookupFun (s, f) of Fun (varargs, body) ->
+                                    var f = fun (c@[s, w]) {
+                                                case enterFunction (s) of s ->
+                                                case foldl (fun (s, [r, v]) {addName (s, r, Var (v))}, s, zip (varargs, args)) of s ->
+                                                case eval ([s, w], body) of [c@[s, w], v] ->
+                                                case leaveFunction (s) of s ->
+                                                case v of
+                                                  Chained (f) -> f ([s, w])
+                                                | _           -> [[s, w], v] 
+                                                esac esac esac esac esac
+                                              };
+                                    case t of
+                                      Tail -> [[s, w], Chained (f)]
+                                    | _    -> f ([s, w])
+                                    esac esac esac
+  | Scope   (defs, exp)          -> if size (defs) then
+                                      case enterScope (s) of s ->
+                                      case addNames (s, defs) of s ->
+                                      case eval ([s, w], exp) of [c@[s, w], v] ->
+                                        [[leaveScope (s), w], v]
+                                      esac esac esac
+                                    else eval ([s, w], exp) fi
+  esac
 }
-(* End *)
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
