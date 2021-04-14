@@ -1,5 +1,5 @@
 -- Driver: a top-level compiler utility
-
+-- Version: A07
 import List;
 import Ref;
 import Array;
@@ -17,15 +17,13 @@ import Manifest;
 -- returns an environment. The environment's interface is
 -- defined in the unit Manifest
 fun parseArgs (args) {
-  var mode    = ref (Comp),
-      infile  = ref ({}),
-      smDump  = ref (false),
-      astDump = ref (false);
+  var mode   = ref (Comp),
+      infile = ref ({}),
+      smDump = ref (false);
 
   fun setDump (m) {
     case m of
-      SM  -> smDump ::= true
-    | AST -> astDump ::= true
+      SM -> smDump ::= true
     esac
   }
   
@@ -52,7 +50,6 @@ fun parseArgs (args) {
                  "-i"  -> setMode (Int)
                | "-s"  -> setMode (SM)
                | "-ds" -> setDump (SM)
-               | "-dp" -> setDump (AST)
                | fn    -> setInFile (fn)
                esac;
                rec (t)
@@ -62,29 +59,22 @@ fun parseArgs (args) {
 
   [fun () {deref (mode)},
    fun () {case deref(infile) of #val -> failure ("input file name not set\n") | fn -> fn esac},
-   fun () {deref (smDump)},
-   fun () {deref (astDump)}
+   fun () {deref (smDump)}
   ]        
 }
 
--- Utility function to peep into SM code
+-- Utility function to peeping to SM code
 fun peepSM (args, smCode) {
   dumpSM (args, lazy (showSM (smCode)));
   smCode
-}
-
--- Utility function to peep into AST
-fun peepAST (args, ast) {
-  dumpAST (args, lazy (ast.string))
 }
 
 var args = parseArgs (arrayList (sysargs).tl);
 
 -- The main part: parses input file, invokes interpreter/stack machine interpreter/x86
 -- code generator
-case parseString (syntax (parse -end), fread (args.getInFile)) of
+case parseString (parse |> bypass (end), fread (args.getInFile)) of
   Succ (program) ->
-    peepAST (args, program);
     case args.getMode of
       Comp -> compileX86 (args, peepSM (args, compileSM (program)))
     | mode ->

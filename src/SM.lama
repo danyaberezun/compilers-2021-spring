@@ -1,5 +1,5 @@
 -- Stack machine.
-
+-- Alhasan Alkhaddour M4138c
 import Array;
 import List;
 import Fun;
@@ -8,6 +8,7 @@ import World;
 import State;
 import Expr;
 import Buffer;
+import Fun;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
@@ -56,10 +57,38 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun evalCJmp(env, [stack, st, w],insns, cond, l ) {
+  case case stack of
+    0:stack -> case cond of
+                 "nz" -> [stack, insns] |
+                 "z" -> [stack, fromLabel (env, l)]
+                esac |
+    _:stack -> case cond of
+                 "nz" -> [stack, fromLabel (env, l)] |
+                 "z" -> [stack, insns]
+               esac
+  esac of
+    [stack, insns] -> [[stack, st, w], insns]
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, c@[stack, state, world], insns) {
+  case insns of
+	    READ   		: insns     -> eval (env, case c of [stack, st, w] -> var rw= readWorld(w); [rw[0]:stack, st, rw[1]] esac, insns) 
+	  | WRITE  		: insns    	-> eval (env, case c of [a:stack, st, w] -> [stack, st, writeWorld(a, w)] esac, insns) 
+	  | BINOP (op) 	: insns		-> eval (env, case stack of b:a:stack  -> [evalOp (op, a, b):stack, state, world] esac, insns)
+      | LD    (x)  	: insns 	-> eval (env, [state(x):stack, state, world], insns)      
+      | ST    (x)  	: insns		-> eval (env, case stack of v:tail -> [stack, state <- [x, v], world] esac, insns)
+  	  | CONST (n)  	: insns 	-> eval (env, [n:c[0], c[1], c[2]], insns) 
+      | LABEL (l)  	: insns 	-> eval (env, c, insns)
+	  | JMP (l) 	: insns 		-> eval (env, c, fromLabel (env, l)) 
+      | CJMP (cond, l) : insns -> case evalCJmp (env, c, insns, cond, l) of [c, insns] -> eval (env, c, insns)  esac 	  	 	  | {} -> c
+	  | LDA   (x)  	: insns 	-> eval (env, [Ref(x):stack, state, world], insns)
+	  | STI        	: insns		-> eval (env, case stack of v:Ref(x):tail -> [v:tail, state <- [x, v], world] esac, insns)
+      | DROP  	   	: insns   	-> eval (env, case stack of n:tail -> [tail, state, world] esac, insns)
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -100,6 +129,90 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
+  fun compile(env, stmt) {
+    	case stmt of
+	  Assn (varName, x)  -> 
+								case compile(env, varName) of
+									[env, lc] ->
+									            case compile (env, x) of
+													[env, rc] -> [env, lc <+> rc <+ STI]
+									  			esac
+          						esac   
+      -- from fun compileExpr     
+      | Const (n) 			-> [env, singletonBuffer (CONST (n))]
+      | Var (v) 			-> [env, singletonBuffer (LD (v))]
+      | Binop (op, e1, e2) 	-> 
+		      case compile (env, e1) of
+		        [env, lc] ->
+		          case compile (env, e2) of
+		            [env, rc] -> [env, lc <+> rc <+ BINOP (op)]
+		          esac
+		      esac
+      
+      | Seq (st1, st2)  	-> 
+		      case compile(env, st1) of
+		        [env, c1] ->
+		          case compile (env, st2) of
+		            [env, c2] -> [env, c1 <+> c2]
+		          esac
+		      esac
+		      
+      | Read (x)          	-> [env, listBuffer ({READ, ST (x), DROP})]
+      | Write (x)      		-> case compile (env, x) of [env, c] -> [env, c <+ WRITE] esac
+       
+      | If (x, ifTrue, ifFalse) -> 
+          case genLabels (env, 3) of
+            [ifStmt, thenStart, thenEnd, env] -> 
+              case compile (env, x) of
+                [env, xc] -> 
+                  case compile(env, ifTrue) of
+                    [env, tc] -> 
+                      case compile(env, ifFalse) of 
+                        [env, fc] -> 
+                        				[env, xc <+ 
+                        				 CJMP ("z", thenStart) <+ 
+                                         LABEL (ifStmt) <+> tc <+ 
+                                         JMP (thenEnd) <+ 
+                                         LABEL (thenStart) <+> fc 
+                                         <+ LABEL (thenEnd)]
+                      esac
+                  esac  
+              esac
+          esac 
+
+      | While (x, c) 		-> 
+          case genLabels (env, 2) of
+            [cond, endL, env] -> 
+              case compile(env, x) of
+                [env, xc] ->
+                  case compile (env, c) of
+                    [env, bc] -> [env, 
+            					  singletonBuffer (LABEL (cond)) <+> xc <+ 
+                                  CJMP ("z", endL) <+> bc <+ 
+                                  JMP (cond) <+ 
+                                  LABEL (endL)]
+                  esac
+              esac
+          esac
+      | DoWhile (c, x) 		-> 
+          case genLabel (env) of
+            [thenL, env] -> 
+              case compile(env, c) of
+                [env, bc] ->
+                  case compile (env, x) of
+                    [env, xc] 	-> [env, 
+                    				singletonBuffer (LABEL (thenL)) <+> bc <+> xc <+ 
+                    				CJMP ("nz", thenL)]
+                  esac
+              esac
+        esac
+ 
+      | Ref (x)				-> [env, singletonBuffer (LDA (x))]
+      | Skip             	-> [env, emptyBuffer ()]
+      | Ignore (x) -> case compile (env, x) of [env, c] -> [env, c <+ DROP] esac
+    esac
+  }
+
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compile(initCompEnv (), stmt)[1])
 }

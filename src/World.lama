@@ -1,5 +1,5 @@
 -- World: holds input-output streams
-
+-- Version: A07
 import List;
 
 -- Creates a world; "input" is expected to be a

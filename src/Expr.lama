@@ -1,5 +1,5 @@
 -- Expression evaluator
-
+-- Alhasan Alkhaddour M4138c
 import List;
 import State;
 import World;
@@ -101,14 +101,90 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun initScopeElements(st, d){
+  while size(d) > 0 do
+    st := case d[0] of 
+           Var (v) -> addNames (st, v)
+         | Fun (f, args, body) -> addFunction (st, f, args, body)
+         esac;
+    d := d.tl
+  od;
+  st
 }
 
+fun regArgs (st, argsNames, args){
+  while size(args) > 0 do
+    st := addName(st, argsNames[0], args[0]);
+    argsNames := argsNames.tl;
+    args := args.tl
+  od;
+  st
+}
 
--- Evaluates a program with a given input and returns an output
-public fun evalExpr (input, expr) {
-  case eval ([emptyState (), createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
+fun eval (c@[st, w], exprs) {
+  case exprs of
+      Assn (exp1, exp2) ->
+        case evalList (c, {exp1, exp2}) of
+          [c@[st,w], {exp1, exp2}] -> [[st <- [exp1, exp2], w], exp2]
+        esac 
+    | Seq (exp1, exp2) -> 
+        case eval(c, exp1) of
+          [c, _] -> eval(c, exp2)
+        esac 
+    | Skip -> [c, Bottom]
+    | Read (x) ->
+        var res = readWorld(w);
+        [[st <- [eval (c, x)[1], res.fst], res.snd], Void]
+    | Write (expr) ->
+        case eval(c, expr) of
+        [[st, w], v] ->
+          [[st, writeWorld(v, w)], Bottom]
+        esac 
+    | If (cond, thenStmt, elseStmt) ->
+        case eval(c, cond) of
+            [c, 0] -> eval(c, elseStmt) 
+          | [c, _] -> eval(c, thenStmt)
+        esac 
+    | While (cond, stmt) ->
+        case eval(c, cond) of 
+            [c, 0] -> [c, Bottom] 
+          | _ -> eval(eval(c, stmt)[0], exprs)
+        esac 
+    | DoWhile (stmt, cond) ->
+          case eval(eval(c, stmt)[0], cond) of
+            [c, 0] -> [c, Bottom] 
+          | [c, _] -> eval(c, exprs)
+          esac 
+    | Var (v) -> [c, lookup(st, v)]
+    | Ref (x) -> [c, x]
+    | Const (n) -> [c, n]
+    | Binop (op, exp1, exp2) ->
+      case evalList(c, {exp1, exp2}) of 
+        [c, {l, r}] -> [c, evalOp(op, l, r)]
+      esac  
+    | Ignore (exprs) -> [eval(c, exprs)[0], Bottom]
+    | Scope (defs, exprs) ->
+        st := enterScope (st);
+        st := initScopeElements (st, defs);
+        case eval ([st,w], exprs) of
+          [[st,w], r] -> [[leaveScope (st), w], r]
+        esac
+    | Call (f, args) ->  
+        case lookup (st, f) of Fun (argsNames, exprs) ->
+          case evalList (c, args) of [[st, w], args] ->
+            case regArgs(enterFunction (st), argsNames, args) of st ->
+              case eval ([st, w], exprs) of 
+                [[st,w], r] -> [ [leaveFunction(c[0], getGlobal(st)), w], r]
+              esac
+            esac
+          esac
+        esac
+    esac
+  }
+
+  -- Evaluates a program with a given input and returns an output
+  public fun evalExpr (input, expr) {
+    case eval ([emptyState (), createWorld (input)], expr) of
+      [c, _] -> c.snd.getOutput
   esac
 }
