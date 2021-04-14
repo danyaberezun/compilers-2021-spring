@@ -58,7 +58,7 @@ public rWhiteSpace  = createRegexp ("\\(\\([ \n\r\t]*\\)\\|\\(--[^\n]*[ \n\r\t]*
        rFor         = createRegexp ("for\\b", """for"""),
        rVar         = createRegexp ("var\\b", """var"""),
        rFun         = createRegexp ("fun\\b", """for""");
-      
+
 var whiteSpace = token (rWhiteSpace);
 
 -- Public parsers for concrete tokens
@@ -84,31 +84,32 @@ public kRead    = s (rRead),
        pos      = memo $ syntax (-whiteSpace loc),
        end      = memo $ syntax (-whiteSpace eof),
        lident   = memo $ syntax (-whiteSpace located[
-                                   fun (k) {
-                                     fun (s) {
-                                       k (case s.matchRegexp (rLident) of
-                                            a@Succ (v, _) -> if memSet (keywords, v)
-                                                             then Fail ("lowercase identifier expected", s.getLine, s.getCol)
-                                                             else a
-                                                             fi
-                                          | a             -> a
-                                          esac)
-                                     }
-                                   }
-       
-                                ]);
+         fun (k) {
+           fun (s) {
+             k (case s.matchRegexp (rLident) of
+                  a@Succ (v, _) -> if memSet (keywords, v)
+                                   then Fail ("lowercase identifier expected", s.getLine, s.getCol)
+                                   else a
+                                   fi
+                | a             -> a
+                esac)
+           }
+         }
+
+      ]);
 
 (*
-         whiteSpace |> lift (fun (k) {
-                               fun (s) {
-                                 k (case s.matchRegexp (rLident) of
-                                      a@Succ (v, _) -> if memSet (keywords, v)
-                                                       then Fail ("lowercase identifier expected", s.getLine, s.getCol)
-                                                       else a
-                                                       fi
-                                    | a             -> a
-                                    esac)
-                                }
-                              });
+
+       whiteSpace |> lift (fun (k) {
+         fun (s) {
+           k (case s.matchRegexp (rLident) of
+                a@Succ (v, _) -> if memSet (keywords, v)
+                                 then Fail ("lowercase identifier expected", s.getLine, s.getCol)
+                                 else a
+                                 fi
+              | a             -> a
+              esac)
+          }
+        });
 
 *)
