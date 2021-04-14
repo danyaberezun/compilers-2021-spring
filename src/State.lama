@@ -1,14 +1,140 @@
 -- States: partial maps from variables into values
 
--- Empty state (undefined everywhere)
-public fun emptyState (x) {
-  0
-  --failure ("undefined variable ""%s""\n", x)
+import Collection;
+import List;
+import Lexer;
+import Parser;
+
+-- State with a stack of scopes; each scope is a map from names to
+-- their kind and values
+fun makeState (scopes) {
+  -- Searches a scope stack and performed a specified action
+  -- on the found binding
+  fun lookup (name, action) {
+    fun lookupInScopes (scopes) {
+      case scopes of
+        {}         -> error (sprintf ("name ""%s"" undefined", name), getLoc (name))
+      | s : scopes ->
+         case findMap (s, name) of
+           None     -> lookupInScopes (scopes)
+         | Some (x) -> x
+         esac
+      esac
+    }
+
+    lookupInScopes (scopes)  
+  }
+  
+  -- Makes and assignment in scopes
+  fun assign (name, v) {
+    fun assignInScopes (scopes) {
+      case scopes of
+        {}         -> error (sprintf ("name ""%s"" undefined", name), getLoc (name))
+      | s : scopes ->
+         case findMap (s, name) of
+           None     -> s : assignInScopes (scopes)
+         | Some (_) -> addMap (s, name, v) : scopes
+         esac
+      esac    
+    }
+
+    makeState (assignInScopes (scopes))
+  }
+
+  -- Enters a new scope
+  fun enterScope () {
+    makeState (emptyMap (compare) : scopes)
+  }
+
+  -- Leaves a scope
+  fun leaveScope () {
+    makeState (scopes.tl)
+  }
+
+  -- Adds a name into a scope
+  fun addName (name, v) {
+    case scopes of
+      s : scopes ->
+       case findMap (s, name) of
+         None     -> makeState (addMap (s, name, v) : scopes)
+       | Some (_) -> error (sprintf ("duplicate ""%s"" name definition", name), getLoc (name))
+       esac
+    esac
+  }
+
+  -- Enters a function; this drops all local scopes and creates a new one
+  fun enterFunction () {
+    fun enterScopes (scopes) {
+      case scopes of        
+        {s}        -> scopes
+      | _ : scopes -> enterScopes (scopes)
+      esac
+    }
+
+    makeState (emptyMap (compare) : enterScopes (scopes))
+  }
+
+  -- Leaves a function: replaces the global scope in the state with a given one
+  fun leaveFunction (global) {
+    fun replaceGlobal (scopes) {
+      case scopes of
+        {s} -> {global}
+      | s : scopes -> s : replaceGlobal (scopes)
+      esac    
+    }
+
+    makeState (replaceGlobal (scopes))
+  }
+
+  --- Gets a global scope from a state
+  fun getGlobal () {
+    fun findGlobal (scopes) {
+      case scopes of
+        {s}        -> s
+      | _ : scopes -> findGlobal (scopes)
+      esac
+    }
+
+    findGlobal (scopes)
+  }
+  
+  [lookup, assign, enterScope, leaveScope, addName, enterFunction, leaveFunction, getGlobal]
 }
 
--- Putting a binding into a state
-public infix <- before : (st, [x, v]) {
-  fun (y) {
-    if compare (x, y) == 0 then v else st (y) fi
-  }
+-- Accessors functions
+public fun lookup (state, x) {
+  state [0] (x)
+}
+
+public infix <- before : (state, [x, v]) {
+  state [1] (x, v)
+}
+
+public fun enterScope (state) {
+  state [2] ()
+}
+
+public fun leaveScope (state) {
+  state [3] ()
+}
+
+public fun addName (state, name, v) {
+  state [4] (name, v)
+}
+
+public fun enterFunction (state) {
+  state [5] ()
+}
+
+public fun leaveFunction (state, global) {
+  state [6] (global)
+}
+
+public fun getGlobal (state) {
+  state [7] ()
+}
+
+-- Creates an empty state
+public fun emptyState () {
+  makeState ({})
 }

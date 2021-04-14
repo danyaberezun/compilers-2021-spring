@@ -1,10 +1,10 @@
-s := 0;
+var n, s = 0, p;
 read (n);
 p := 2;
 
 while n > 0 do
-    c := 2;
-    f := 1;
+    var c = 2,
+          f = 1;
     
     for c := 2, c*c <= p && f, c := c+1
     do  

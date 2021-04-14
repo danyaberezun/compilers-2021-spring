@@ -52,16 +52,33 @@ fun initEvalEnv (insns) {
   }]
 }
 
--- Accessor function
-fun fromLabel (env, lab) {
-  env [0] (lab)
+
+
+-- Stack machine interpreter. Takes an SM-configuration and a program,
+-- returns a final configuration
+fun eval (env, cf, in) {
+  case in of
+    READ : in     -> eval (env, [readWorld(cf[2])[0]:cf[0], cf[1], readWorld(cf[2])[1]], in) |
+    WRITE : in    -> eval (env, [cf[0].snd, cf[1], writeWorld (cf[0].fst, cf[2])], in) |
+    BINOP (op) : in -> eval (env, funcBinop (op, cf), in) |
+    LABEL (hl) : in -> eval (env, cf, in) |
+    LDA (name) : in         -> eval (env, [Ref(name):cf.fst, cf.snd, cf[2]], in) |
+    STI : in              -> eval (env, funcSti(cf[2], cf[1], cf[0]), in) |
+	LD (name) : in -> eval (env, [cf[1](name):cf[0], cf[1], cf[2]], in) |
+    ST (name) : in -> eval (env, [cf[0].snd, cf[1] <- [name, cf[0].fst], cf[2]], in) |
+    CONST (value) : in -> eval (env, [value:cf[0], cf[1], cf[2]], in) |
+    JMP (hl) : in -> eval (env, cf, env[0](hl)) |
+    CJMP (cd, hl) : in -> case funcCJ (cf, cd, hl, env, in) of
+                                    [cf, in] -> eval (env, cf, in)
+                                  esac |
+    DROP : in               -> eval (env, [cf[0].snd, cf[1], cf[2]], in) |
+    DUP : in               -> eval (env, [cf[0].fst:cf[0].fst:cf[0].snd, cf[1], cf[2]], in)  |
+    {}         -> cf |
+    _ -> failure("Error in eval-no such expr\n")
+  esac
 }
 
--- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
--- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
-}
+
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
@@ -98,9 +115,148 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
+
+fun funcBinop (inc, [x1:x2:y, s, k]) {
+  var ex = case inc of
+    "+"  -> x2 +  x1 |
+    "-"  -> x2 -  x1 |
+    "*"  -> x2 *  x1 |
+    "/"  -> x2 /  x1 |
+    "%"  -> x2 %  x1 |
+    ">=" -> x2 >= x1 |
+    "&&" -> x2 && x1 |
+    "==" -> x2 == x1 |
+    "!=" -> x2 != x1 |
+    "<"  -> x2 <  x1 |
+    "<=" -> x2 <= x1 |
+    ">"  -> x2 >  x1 |
+    "!!" -> x2 !! x1 |
+    _    -> failure ("Failure at funcBinop - Incorrect expression for binop\n")
+  esac;
+  [ex:y, s, k]
+}
+
+
+fun funcCJ([s, k, ed], cd, l, e, sf) {
+  case case s of
+    0:s -> case cd of
+                 "z" -> [s, e [0] (l)] |
+				 _ -> [s, sf]
+                esac |
+    _:s -> case cd of
+				 "z" -> [s, sf] |
+                 _ -> [s, e [0] (l)]
+                 
+               esac
+  esac of
+    [s, in] -> [[s, k, ed], in]
+  esac
+}
+
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
+-- instructions.
+-- Takes an expression, returns a list of stack machine instructions
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
+-- instructions.
+-- Takes an expression, returns a list of stack machine instructions
+fun compileExpr (expr, env) {
+  case expr of
+    Var   (i)          -> [singletonBuffer (LD (expr[0])), env] |
+    Const (i)          -> [singletonBuffer (CONST (expr[0])), env] |
+    Binop (i, j, y)    -> (case compileExpr (expr[1], env) of
+				[lIn, env] ->
+				case compileExpr (expr[2], env) of
+					[rIn, env] -> [lIn <+> rIn <+ BINOP (expr[0]), env]
+				esac
+		   esac) |
+    Ref (i)            -> [singletonBuffer (LDA (expr[0])), env] |
+   
+    Assn  (Ref (i), j) -> (case compileExpr (expr[1], env) of
+    				[in, env] -> [in <+ DUP <+ ST (expr[0][0]), env]
+  			   esac) |
+
+    Seq   (i, j)       -> (case compileExpr (expr.fst, env) of
+    					[x1, env] -> case compileExpr (expr.snd, env) of
+                      					[x2, env] -> [x1 <+> x2, env]
+                    				   esac
+  		    	   esac) | 
+				       While (i, j)       -> (case genLabels (env, 2) of
+    				[sta, cond, env] ->
+      				case compileExpr(expr[1], env) of
+        				[stmtInsns, env] ->
+        					case compileExpr (expr[0], env) of
+          					[exprInsns, env] -> [singletonBuffer (JMP (cond)) <+ LABEL (sta) <+> stmtInsns <+ LABEL (cond) <+>
+                               			exprInsns <+ CJMP ("nz", sta),  env]
+        					esac
+      					esac
+  				esac) |
+    DoWhile (i, j)     -> (case genLabel (env) of
+    				[sta, env] ->
+      					case compileExpr(expr[0], env) of
+        					[stmtInsns, env] ->
+        				case compileExpr (expr[1], env) of
+          					[exprInsns, env] -> [singletonBuffer (LABEL (sta)) <+> stmtInsns <+>
+                               			exprInsns <+ CJMP ("nz", sta),  env]
+        				esac
+      				esac
+  			  esac) |
+    Assn (i, j)        -> (case compileExpr (expr[0], env) of
+    				[rIns, env] ->
+    				case compileExpr (expr[1], env) of
+      					[in, env] -> [rIns <+> in <+ STI, env]
+    				esac
+  			   esac) |			  
+    If (i, j, y)       -> (case genLabel (env) of
+    				[th, env] ->
+      				case funcIf (expr, th, env) of
+        				[in, env] -> [in <+ LABEL (th), env]
+      				esac
+  			  esac) |
+    Skip               -> [{}, env]                      |
+    Read  (Ref (i))    -> [listBuffer ({READ, ST (expr[0][0])}), env] |
+    Write (i)          -> (case compileExpr (expr[0], env) of
+    				[in, env] -> [in <+ WRITE, env]
+  			   esac) |
+
+    Ignore (i)         -> (case compileExpr (expr[0], env) of
+    				[exprInsns, env] -> [exprInsns <+ DROP, env]
+  			  esac) |
+    Scope (i, e)       -> compileExpr(e, env)  |
+    _                  -> failure (sprintf("compileExpr for %s not implemented\n", string(expr)))
+  esac
+}
+
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  case compileExpr (stmt, initCompEnv()) of
+    [in, i] -> getBuffer (in)
+  esac
+}
+
+fun funcIf (If (er, th, el), l, e) {
+  case genLabel (e) of
+    [st, e] ->
+      case compileExpr (th, e) of
+        [iTh, e] ->
+          case case el of
+                 If (i, j, y) -> funcIf (el, l, e) |
+                 _ -> compileExpr (el, e)
+               esac of
+            [iEl, e] ->
+            case compileExpr(er, e) of
+              [eIn, e] -> [eIn <+ CJMP ("nz", st) <+> iEl <+ JMP (l) <+
+                                  LABEL (st) <+> iTh, e]
+            esac
+          esac
+      esac
+  esac
+}
+
+
+fun funcSti (x, s, i:Ref (n):j) {
+  [i:j, s <- [n, i], x]
 }

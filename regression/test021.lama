@@ -1,5 +1,6 @@
+var n, f = 1;
+
 read (n);
-f := 1;
 
 for skip, n >= 1, n := n-1
 do

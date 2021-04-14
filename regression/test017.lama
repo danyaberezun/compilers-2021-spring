@@ -1,3 +1,4 @@
+var n, i, fib_1, fib_2, fib;
 read (n);
 
 i     := 2;

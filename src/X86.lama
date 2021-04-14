@@ -3,9 +3,9 @@
 import SM;
 import Collection;
 import List;
+import Manifest;
 import Buffer;
 import Fun;
-import Manifest;
 
 -- Assembler language interface
 -- The registers: 
@@ -280,7 +280,7 @@ fun initEnv () {
 -- Codegeneration helper functions
 -- Generates code section
 fun codeSection (text) {
-  singletonBuffer (Meta ("\t.text\n")) <+> text
+  Meta ("\t.text\n") : text
 }
 
 -- Generates data section
@@ -303,9 +303,9 @@ fun prologue (size) {
 -- Generates function epilogue
 fun epilogue () {
   singletonBuffer (Mov (ebp, esp)) <+
-  Pop   (ebp) <+
-  Binop ("^", eax, eax) <+
-  Ret
+   Pop   (ebp) <+
+   Binop ("^", eax, eax) <+
+   Ret
 }
 
 -- Checks if an operand resides on a stack
@@ -355,21 +355,71 @@ fun compile (env, code) {
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
         case i of
-          READ ->
+		READ ->
             case env.allocate of
               [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
+            esac
         | WRITE ->
             case env.pop of
               [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+		| ST (i) ->
+            case env.addGlobal (i).pop of
+              [s, env] -> [env, code <+> move (s, env.loc (i))]
+            esac
+        | STI ->
+            case env.pop2 of
+              [x1, x2, env] -> [env.push (x1), code <+> move (x1, I (0, x2))]
+            esac
+        | BINOP (i) ->
+            case env.pop2 of
+              [x1, x2, env] -> [env.push (x2), code <+> binop (i, x1, x2)]
+            esac
+        | CONST (value) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (value), s)]
+            esac
+
+        | LD (i) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (i), s)]
+            esac
+
+        | LABEL (i) -> [if env.isBarrier then env.retrieveStack (i) else env fi, code <+ Label (i)]
+        | LDA (i) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> (if (memOpnd (s) == false)
+ 					then
+    					singletonBuffer (Lea (env.loc (i), eax)) <+ Mov (eax, s)
+ 					else
+    					singletonBuffer (Lea (env.loc (i), s))
+  					fi)]
+            esac
+	| DROP ->
+            case env.pop of
+              [k, env] -> [env, code]
+            esac
+        | DUP ->
+            case env.peek of
+              x1 ->
+              case env.allocate of
+                [i,j] -> [j, code <+> move (x1, i)]
+              esac
+            esac
+        
+	| JMP (i) -> [setBarrier (env.setStack (i)), code <+ Jmp (i)]
+        | CJMP (x1,x2) ->
+            case env.pop of
+              [s, env] -> [env.setStack (x2), code <+ Binop ("cmp", L(0), s) <+ CJmp (x1,x2)]
+            esac
+        | _ -> failure ("Failure in compile - no such expr")
         esac
       }, [env, emptyBuffer ()], code)
   }
 
-  compile (env, code) 
+  compile (env, code)
 }
+
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
@@ -385,16 +435,58 @@ public fun compileX86 (args, code) {
        fwrite (asmFile,
                map (insnString, 
                     getBuffer $
-                      singletonBuffer (Meta ("\t.global\tmain\n")) <+>
-                      dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
+                      singletonBuffer ("\t.global\tmain\n") <+>
+                      dataSection (listBuffer $  map (dataDef, getGlobals (env))) <+>
                       codeSection (
                         singletonBuffer (Meta ("main:\n")) <+>
                         prologue (getStackSize (env)) <+>
                         code <+>
-                        epilogue ()
-                      )
+                        epilogue ())
                    ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
   esac
+}
+
+fun binop (j, x1, x2) {
+  case j of
+  ">" -> move (L (0), eax) <+> (if memOpnd (x2)
+  	 then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+  	 else singletonBuffer (Binop ("cmp", x1, x2))
+  	 fi) <+ Set (suffix (j), "%al") <+> move (eax, x2)
+  | ">=" -> move (L (0), eax) <+> (if memOpnd (x2)
+  	    then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+  	    else singletonBuffer (Binop ("cmp", x1, x2))
+  	    fi) <+ Set (suffix (j), "%al") <+> move (eax, x2)
+  | "!!" -> binop (">", L(0), x1) <+> binop(">", L(0), x2) <+> (if memOpnd (x2)
+	  then move (x2, edx) <+ Binop (j, x1, edx) <+ Mov (edx, x2)
+	  else singletonBuffer (Binop (j, x1, x2))
+	  fi) <+ Binop ("&&", L (1), x2)
+  | "/" -> move (x2, eax) <+ Cltd <+ IDiv (x1) <+> move (eax, x2)
+  | "%" -> move (x2, eax) <+ Cltd <+ IDiv (x1) <+> move (edx, x2)
+  | "==" -> move (L (0), eax) <+> (if memOpnd (x2)
+	  then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+	  else singletonBuffer (Binop ("cmp", x1, x2))
+	  fi) <+ Set (suffix (j), "%al") <+> move (eax, x2)
+  | "!=" -> move (L (0), eax) <+> (if memOpnd (x2)
+	  then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+	  else singletonBuffer (Binop ("cmp", x1, x2))
+	  fi) <+ Set (suffix (j), "%al") <+> move (eax, x2)
+  | "<" -> move (L (0), eax) <+> (if memOpnd (x2)
+	  then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+	  else singletonBuffer (Binop ("cmp", x1, x2))
+	  fi) <+ Set (suffix (j), "%al") <+> move (eax, x2)
+  | "<=" -> move (L (0), eax) <+> (if memOpnd (x2)
+	  then move (x2, edx) <+ Binop ("cmp", x1, edx) <+ Mov (edx, x2)
+	  else singletonBuffer (Binop ("cmp", x1, x2))
+	  fi) <+ Set (suffix (j), "%al") <+> move (eax, x2)
+  | "&&" -> binop (">", L(0), x1) <+> binop(">", L(0), x2) <+> (if memOpnd (x2)
+	  then move (x2, edx) <+ Binop (j, x1, edx) <+ Mov (edx, x2)
+	  else singletonBuffer (Binop (j, x1, x2))
+	  fi) <+ Binop ("&&", L (1), x2)
+  | _ -> if memOpnd (x2)
+	  then move (x2, edx) <+ Binop (j, x1, edx) <+ Mov (edx, x2)
+	  else singletonBuffer (Binop (j, x1, x2))
+	  fi
+	  esac
 }

@@ -1,2 +1,4 @@
+var x;
+
 read (x);
 write (if x then 3 else 5 fi)

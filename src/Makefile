@@ -11,6 +11,8 @@ all: Parser.o Lexer.o X86.o SM.o Manifest.o
 
 Parser.o: Lexer.o
 
+State.o: Lexer.o Parser.o
+
 Expr.o: State.o 
 
 SM.o: State.o World.o Expr.o

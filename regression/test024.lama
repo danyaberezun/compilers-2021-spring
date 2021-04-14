@@ -1,3 +1,5 @@
+var x, y;
+
 read (x);
 read (y);
 write (x);
