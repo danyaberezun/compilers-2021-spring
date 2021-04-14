@@ -4,31 +4,6 @@ import List;
 import State;
 import World;
 
--- As association map which maps "\otimes" into "\oplus"
-var ops = {
-  ["+" , infix + ],
-  ["-" , infix - ],
-  ["*" , infix * ],
-  ["/" , infix / ],
-  ["%" , infix % ],
-  ["==", infix ==],
-  ["!=", infix !=],
-  ["<" , infix < ],
-  ["<=", infix <=],
-  [">" , infix > ],
-  [">=", infix >=],
-  ["&&", infix &&],
-  ["!!", infix !!]
-};
-
--- The evaluator for infix operators: takes an operator as a string
--- and two operand values, and returns the result
-public fun evalOp (op, l, r) {
-  case assoc (ops, op) of
-    Some (f) -> f (l, r)
-  esac
-}
-
 -- Evaluates an expression "expr" in a configuration "c".
 -- A configuration is a pair of a state "s" and a world "w".
 -- Returns a final configuration (if any)
@@ -49,6 +24,29 @@ public fun evalOp (op, l, r) {
 --        Binop   (string, expr, expr) |
 --        Ignore  (expr)
 
+fun matchBinop (s) {
+  case s of
+    "+" -> infix +
+  | "-" -> infix -
+  | "*" -> infix *
+  | "/" -> infix /
+  | "%" -> infix %
+  | "<" -> infix <
+  | ">" -> infix >
+  | "<=" -> infix <=
+  | ">=" -> infix >=
+  | "==" -> infix ==
+  | "!=" -> infix !=
+  | "&&" -> infix &&
+  | "!!" -> infix !!
+  esac
+}
+
+
+var bottom = 0;
+
+fun void (cfg) { [cfg, bottom] }
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -63,10 +61,67 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (cfg@[state, world], expr) {
+  case expr of
+    Assn (ref, e) ->
+    case evalList (cfg, {ref, e}) of 
+      [cfg@[state, world], {Ref (x), v}] -> [[state <- [x, v], world], v]
+    esac
+  | Seq (e1, e2) -> 
+    case evalList (cfg, {e1, e2}) of
+      [cfg, {v1, v2}] -> [cfg, v2]
+    esac
+  | Skip -> void (cfg)
+  | Read (x) ->
+    case readWorld (world) of
+      [v, world] -> void ([state <- [x, v], world])
+    esac
+  | Write (e) ->
+    case eval (cfg, e) of
+      [cfg@[state, world], v] -> void ([state, writeWorld (v, world)])
+    esac
+  | If (cond, e1, e2) ->
+    case eval (cfg, cond) of
+      [cfg@[state, world], 0] -> eval (cfg, e2)
+    | [cfg@[state, world], _] -> eval (cfg, e1)
+    esac
+  | While (cond, e) -> (
+      fun rec (cfg) {
+        case eval (cfg, cond) of
+          [cfg, 0] -> cfg
+        | [cfg, _] ->
+          case eval (cfg, e) of 
+            [cfg, _] -> rec (cfg)
+          esac
+        esac
+      }
+      void (rec (cfg))
+    )
+  | DoWhile (e, cond) -> (
+      fun rec (cfg) {
+        case eval (cfg, e) of
+          [cfg, _] -> 
+          case eval (cfg, cond) of
+            [cfg, 0] -> cfg
+          | [cfg, _] -> rec (cfg)
+          esac
+        esac
+      }
+      void (rec (cfg))
+    )
+  | Var (x) -> [cfg, state (x)]
+  | Ref (x) -> [cfg, Ref (x)]
+  | Const (v) -> [cfg, v]
+  | Binop (s, e1, e2) -> 
+    case evalList (cfg, {e1, e2}) of
+      [cfg, {v1, v2}] -> [cfg, matchBinop (s) (v1, v2)]
+    esac
+  | Ignore (e) ->
+    case eval (cfg, e) of
+      [cfg, _] -> void (cfg)
+    esac
+  esac
 }
-
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {

@@ -65,6 +65,7 @@ fun insnString (insn) {
     | "!!"  -> "orl" 
     | "^"   -> "xorl"
     | "cmp" -> "cmpl"
+    | "test"-> "test"
     esac
   }
 
@@ -334,6 +335,19 @@ fun move (from, to) {
   fi
 }
 
+-- Generate code with semantic:
+-- l2 = l2 `op` l1
+-- NOTE: not save edx
+fun binop (op, l1, l2) {
+  case [memOpnd (l1), memOpnd (l2)] of
+    [true, true] -> case op of
+        "*" -> listBuffer ({Mov (l2, edx), Binop (op, l1, edx), Mov (edx, l2)})
+      | _   -> listBuffer ({Mov (l1, edx), Binop (op, edx, l2)})
+      esac
+  | _            -> singletonBuffer (Binop (op, l1, l2))
+  esac
+}
+
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
 fun suffix (op) {
@@ -347,28 +361,116 @@ fun suffix (op) {
   esac
 }
 
+fun isCmpOp (op) {
+  case op of
+    "<" -> true
+  | ">" -> true
+  | "<=" -> true
+  | ">=" -> true
+  | "==" -> true
+  | "!=" -> true
+  | _ -> false
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+fun compile (env, codeSM) {
+
+  fun isLabel (i) { case i of LABEL (_) -> true | _ -> false esac }
+
+  -- NOTE: careless using the `push` instead of allocate may cause space leak 
+  fun inner ([env, codeSM], i) {
+    var code = codeSM <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+    if isBarrier (env) && isLabel (i) != true
+    then failure ("unreachable code!") -- TODO: maybe we will allow it in the future
+    else case i of
+      READ ->
+        case allocate (env) of
+          [s, env] -> [env, code <+ Call ("Lread") 
+                                 <+ Mov (eax, s)]
+        esac             
+    | WRITE ->
+        case pop (env) of
+          [s, env] -> [env, code <+ Push (s) 
+                                 <+ Call ("Lwrite") 
+                                 <+ Pop (eax)] -- or Binop ("-", "$4", eax) ???
         esac
-      }, [env, emptyBuffer ()], code)
+    | BINOP (s) ->
+        case pop2 (env) of [y, x, env] -> 
+          if isCmpOp (s)
+          then [push (env, x), code <+  Binop ("^", eax, eax) 
+                                    <+> binop ("cmp", y, x) 
+                                    <+  Set (suffix (s), "%al")
+                                    <+  Mov (eax, x)]
+          elif compare (s, "/") == 0 -- op1 / op2
+          then [push (env, x), code <+ Mov (x, eax)
+                                    <+ Cltd
+                                    <+ IDiv (y)
+                                    <+ Mov (eax, x)]
+          elif compare (s, "%") == 0
+          then [push (env, x), code <+ Mov (x, eax)
+                                    <+ Cltd
+                                    <+ IDiv (y)
+                                    <+ Mov (edx, x)]
+          elif compare (s, "&&") == 0 !! compare (s, "!!") == 0
+          then [push (env, x), code <+  Binop ("^", eax, eax)
+                                    <+> binop ("test", x, x)
+                                    <+  Set ("nz", "%al")
+                                    <+  Mov (eax, x)
+                                    <+  Binop ("^", eax, eax)
+                                    <+> binop ("test", y, y)
+                                    <+  Set ("nz", "%al")
+                                    <+  Binop (s, eax, x)]
+          else [push (env, x), code <+> binop (s, y, x)]
+          fi
+        esac
+    | ST (varName) ->
+        case pop (env) of
+          [op1, env] -> [ addGlobal (env, varName)
+                        , code <+> move (op1, loc (env, varName))]
+        esac
+    | STI -> 
+        case pop2 (env) of
+          [v, ref, env] -> case allocate (env) of
+            -- NOTE: ref == s
+            [s, env] -> [ env
+                        , code <+  Mov (ref, eax) 
+                               <+  Mov (v, I (0, eax))
+                               <+> move (v, s)]
+          esac
+        esac
+    | LD (varName) ->
+        case allocate (env) of
+          [s, env] -> [ addGlobal (env, varName)
+                      , code <+> move (loc (env, varName), s)]
+        esac
+    | LDA (varName) -> 
+        case allocate (env) of
+          [s, env] -> [ addGlobal (env, varName)
+                      , code <+ Lea (loc (env, varName), s)]
+        esac
+    | CONST (n) -> 
+        case allocate (env) of 
+          [s, env] -> [env, code <+ Mov (L (n), s)]
+        esac
+    | LABEL (s)    -> [retrieveStack (env, s), code <+ Label (s)]
+    | DROP -> 
+        case pop (env) of
+          [_, env] -> [env, code]
+        esac
+    | DUP          -> failure ("DUP")
+    | JMP (l)      -> [setBarrier (setStack (env, l)), code <+ Jmp (l)]
+    | CJMP (cond, l) -> 
+        case pop (env) of
+          [x, env] -> [ setStack (env, l)
+                      , code <+> binop ("test", x, x) 
+                             <+  CJmp (cond, l)]
+        esac
+    esac fi
   }
 
-  compile (env, code) 
+  foldl (inner, [env, emptyBuffer ()], codeSM)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,

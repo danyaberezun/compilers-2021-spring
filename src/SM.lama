@@ -14,19 +14,19 @@ import Fun;
 -- string representation.
 public fun showSMInsn (i) {
   case i of
-    READ         -> "READ"
-  | WRITE        -> "WRITE"
-  | BINOP (s)    -> sprintf ("BINOP %s", s)
-  | LD    (x)    -> sprintf ("LD %s", x)
-  | LDA   (x)    -> sprintf ("LDA %s", x)
-  | ST    (x)    -> sprintf ("ST %s", x)
-  | STI          -> "STI"
-  | CONST (n)    -> sprintf ("CONST %d", n)
-  | LABEL (s)    -> sprintf ("LABEL %s", s)
-  | JMP   (l)    -> sprintf ("JMP %s", l)
-  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
-  | DUP          -> "DUP"
-  | DROP         -> "DROP"  
+    READ         -> sprintf ("  READ")
+  | WRITE        -> sprintf ("  WRITE")
+  | BINOP (s)    -> sprintf ("  BINOP %s", s)
+  | LD    (x)    -> sprintf ("  LD %s", x)
+  | LDA   (x)    -> sprintf ("  LDA %s", x)
+  | ST    (x)    -> sprintf ("  ST %s", x)
+  | STI          -> sprintf ("  STI")
+  | CONST (n)    -> sprintf ("  CONST %d", n)
+  | LABEL (s)    -> sprintf ("%s: ", s)
+  | JMP   (l)    -> sprintf ("  JMP %s", l)
+  | CJMP  (c, l) -> sprintf ("  CJMP %s, %s", c, l)
+  | DUP          -> "  DUP"
+  | DROP         -> "  DROP"
   esac
 }
 
@@ -57,10 +57,70 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+fun matchBinop (s) {
+  case s of
+    "+" -> infix +
+  | "-" -> infix -
+  | "*" -> infix *
+  | "/" -> infix /
+  | "%" -> infix %
+  | "<" -> infix <
+  | ">" -> infix >
+  | "<=" -> infix <=
+  | ">=" -> infix >=
+  | "==" -> infix ==
+  | "!=" -> infix !=
+  | "&&" -> infix &&
+  | "!!" -> infix !!
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+fun eval (env, same_cfg@[stack, state, world], insns) {
+  -- config -> Insn -> config
+  fun evalInsn (env, same_cfg@[stack, state, world], insn) {
+    case insn of
+      READ -> case readWorld (world) of
+          [v, w] -> [v : stack, state, w] 
+        esac
+    | WRITE -> case stack of
+          v:stack -> [stack, state, writeWorld (v, world)]
+        esac
+    | BINOP (s) -> case stack of 
+          x:y:stack -> [matchBinop (s) (y, x) : stack, state, world]
+        esac
+    | LD (varName)  -> [state (varName) : stack, state, world]
+    | LDA (varName) -> [varName:stack, state, world]
+    | ST (varName) -> case stack of -- TODO: why we need to leave value on stack  ?
+          x:stack -> [stack, state <- [varName, x], world]
+        esac
+    | STI -> case stack of
+          v:ref:stack -> [v:stack, state <- [ref, v], world]
+        esac
+    | CONST (c)    -> [c:stack, state, world]
+    | LABEL (s)    -> same_cfg
+    | DROP -> case stack of
+          v : stack -> [stack, state, world]
+        esac
+    | DUP -> case stack of 
+          v : stack -> [v:v:stack, state, world]
+        esac
+    esac 
+  }
+
+  case insns of
+      {}        -> same_cfg
+    | JMP (l):_ -> eval (env, same_cfg, env.fromLabel (l))
+    | CJMP (c, l):insns -> 
+      case stack of x:st -> 
+        if (case c of "z" -> (x == 0) | "nz" -> (x != 0) esac)
+        then eval (env, [st, state, world], env.fromLabel (l))
+        else eval (env, [st, state, world], insns)
+        fi
+      esac
+    | insn:insns -> eval (env, evalInsn (env, same_cfg, insn), insns)
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -98,9 +158,97 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
--- Compiles an expression into a stack machine code.
--- Takes an expression, returns a list of stack machine
--- instructions.
-public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+
+fun doN (state, run, as, f) {
+  case foldl (
+    fun ([state, results], a) {
+      case run (state, a) of
+        [state, r] -> [state, r : results]
+      esac
+  }, [state, {}], as) of
+    [state, results] -> [state, f (reverse (results))]
+  esac
 }
+
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
+-- instructions.
+public fun compileSM (expr) {
+  fun compile (env, expr) {
+    case expr of
+      Assn (ref, expr)       -> doN (env, compile, {ref, expr}, fun ({refCode, exprCode}) { 
+                                    refCode 
+                                <+> exprCode 
+                                <+  STI })
+    | Seq (expr1, expr2)      -> doN (env, compile, {expr1, expr2}, fun ({c1, c2}) {c1 <+> c2})
+    | Skip                    -> [env, {}]
+    | Read (varName)          -> [env, {} <+ READ <+ ST (varName)]
+    | Write (expr)            -> doN (env, compile, {expr}, fun ({code}) {code <+  WRITE})
+    | If (cond, expr1, expr2) -> 
+      case genLabels (env, 2) of
+        [elseLab, endLab, env] -> doN (env, compile, {cond, expr1, expr2}, fun ({condCode, thenCode, elseCode}) {
+                                    condCode 
+                                <+  CJMP ("z", elseLab) 
+                                <+> thenCode 
+                                <+  JMP (endLab) 
+                                <+  LABEL (elseLab) 
+                                <+> elseCode
+                                <+  LABEL (endLab) })
+      esac
+    | While   (cond, body)    -> 
+      case genLabels (env, 2) of
+        [loopLab, cmpLab, env] -> doN (env, compile, {cond, body}, fun ({condCode, bodyCode}) {
+                                  {} <+  JMP (cmpLab)
+                                     <+  LABEL (loopLab) 
+                                     <+> bodyCode
+                                     <+  LABEL (cmpLab)
+                                     <+> condCode 
+                                     <+  CJMP ("nz", loopLab) })
+      esac
+    | DoWhile (body, cond)    -> 
+      case genLabels (env, 1) of
+        [loopLab, env] -> doN (env, compile, {cond, body}, fun ({condCode, bodyCode}) { 
+                          {} <+  LABEL (loopLab) 
+                             <+> bodyCode 
+                             <+> condCode 
+                             <+  CJMP ("nz", loopLab) })
+      esac
+
+    | Var (s)           -> [env, {} <+ (LD (s))]
+    | Const (c)         -> [env, {} <+ (CONST (c))]
+    | Binop (s, le, re) -> doN (env, compile, {le, re}, fun ({codeL, codeR}) {
+                           {} <+> codeL 
+                              <+> codeR 
+                              <+  BINOP (s) })
+    | Ref (x)           -> [env, {} <+ LDA (x)]
+    | Ignore (e)        -> doN (env, compile, {e}, fun ({code}) { code <+ DROP })
+    esac
+  }
+
+  getBuffer (compile (initCompEnv (), expr) [1])
+}
+
+-- TESTS
+
+-- var e = Binop (">", Var ("x"), Const (0));
+-- var stmt = While (e, Seq (Assn ("res", Binop ("*", Var ("res"), Var ("n"))), Assn ("x", Const (43))));
+-- var stmt = Seq (Assn ("n", Const (2)), Seq (Assn ("k", Const (10)), Seq (Assn ("res", Const (1)), Seq (While (Binop (">", Var ("k"), Const (0)), Seq (Assn ("res", Binop ("*", Var ("res"), Var ("n"))), Assn ("k", Binop ("-", Var ("k"), Const (1))))), Write (Var ("res"))))));
+
+-- printf ("-- START --\n%s-- END --\n", compileSM (stmt).showSM)
+
+-- var insns = {CONST (0), ST ("s"), READ, ST ("n"), CONST (1), ST ("p"), JMP ("L1"), LABEL ("L0"), CONST (2), ST ("c"), CONST (1), ST ("f"), JMP ("L3"), LABEL ("L2"), LD ("p"), LD ("c"), BINOP ("%"), CONST (0), BINOP ("!="), ST ("f"), LD ("c"), CONST (1), BINOP ("+"), ST ("c"), LABEL ("L3"), LD ("c"), LD ("c"), BINOP ("*"), LD ("p"), BINOP ("<="), LD ("f"), BINOP ("&&"), CJMP ("nz", "L2"), LD ("f"), CJMP ("z", "L4"), LD ("n"), CONST (1), BINOP ("-"), ST ("n"), JMP ("L5"), LABEL ("L4"), LABEL ("L5"), LD ("p"), CONST (1), BINOP ("+"), ST ("p"), LABEL ("L1"), LD ("n"), CONST (0), BINOP (">"), CJMP ("nz", "L0")};
+--   CONST (2), ST ("n"), 
+--   CONST (10), ST ("k"), 
+--   CONST (1), ST ("res"), 
+--   JMP ("L1"), 
+-- LABEL ("L0"), 
+--     LD ("res"), LD ("n"), BINOP ("*"), ST ("res"), 
+--     LD ("k"), CONST (1), BINOP ("-"), ST ("k"), 
+-- LABEL ("L1"), 
+--   LD ("k"), CONST (0), BINOP (">"),
+--   CJMP ("nz", "L0"), 
+--   LD ("res"), WRITE};
+-- printf ("-- START --\n%s-- END --\n", insns.showSM);
+-- printf ("%s", evalSM ({1000}, insns).string);
+
+-- skip
