@@ -79,7 +79,7 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -94,9 +94,155 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun evalExprVar (c@[st, w], Var (varName)) {
+  [c, lookup (st, varName)]
+}
+
+fun evalExprRef (c, Ref (varName)) {
+  [c, varName]
+}
+
+fun evalExprConst (c, Const (value)) {
+  [c, value]
+}
+
+fun evalExprBinop (c, Binop (op, expr0, expr1)) {
+  case eval (c, expr0) of
+    [c, l] ->
+    case eval (c, expr1) of
+      [c, r] -> [c,
+      case op of
+        "+"  -> l + r |
+        "-"  -> l -  r |
+        "*"  -> l *  r |
+        "/"  -> l /  r |
+        "%"  -> l %  r |
+        "==" -> l == r |
+        "!=" -> l != r |
+        "<"  -> l <  r |
+        "<=" -> l <= r |
+        ">"  -> l >  r |
+        ">=" -> l >= r |
+        "&&" -> l && r |
+        "!!" -> l !! r |
+        _    -> failure  ("eval Binop is not supported\n")
+      esac]
+    esac
+  esac
+}
+
+fun evalExprAssn (c, Assn (refExp, valueExp)) {
+  case eval (c, refExp) of
+    [c, ref] ->
+    case eval (c, valueExp) of
+      [c@[st, w], value] -> [[st <- [ref, value], w], value]
+    esac
+  esac
+}
+
+fun evalExprSeq (c, Seq (left, right)) {
+  case eval (c, left) of
+    [c, _] -> eval (c, right)
+  esac
+}
+
+fun evalExprRead (c@[st, w], Read (refExp)) {
+  case eval (c, refExp) of
+    [c, ref] ->
+    case readWorld (w) of
+      [value, w] -> [[st <- [ref, value], w], Void]
+    esac
+  esac
+}
+
+fun evalExprWrite (c, Write (valueExp)) {
+  case eval (c, valueExp) of
+    [c@[st, w], value] -> [[st, writeWorld (value, w)], Void]
+  esac
+}
+
+fun evalExprIf (c, If (cond, ifBr, elseBr)) {
+  case eval (c, cond) of
+    [c, 0] -> eval (c, elseBr) |
+    [c, _] -> eval (c, ifBr)
+  esac
+}
+
+fun evalExprWhile (c, While (cond, body)) {
+  case eval (c, cond) of
+    [c, 0] -> [c, Void] |
+    [c, _] ->
+    case eval (c, body) of
+      [c, _] -> evalExprWhile (c, While (cond, body))
+    esac
+  esac
+}
+
+fun evalExprDoWhile (c, DoWhile (body, cond)) {
+  case eval (c, body) of
+    [c, _] -> evalExprWhile (c, While (cond, body))
+  esac
+}
+
+fun evalExprIgnore (c, Ignore (expr)) {
+  case eval (c, expr) of
+    [c, _] -> [c, Void]
+  esac
+}
+
+fun evalScope (c@[st, w], Scope (defs, expr)) {
+  case enterScope (st) of
+    st ->
+    case eval(
+      foldl (fun ([st, w], def) {
+        case def of
+          Var (vars) -> [addNames (st, vars), w] |
+          Fun (name, args, body) -> [addFunction (st, name, args, body), w]
+        esac
+      }, [st, w], defs),
+      expr) of
+      [[st, w], value] -> [[leaveScope (st), w], value]
+    esac
+  esac
+}
+
+fun evalCall (c@[st, w], Call (name, argExprs)) {
+  checkFun (st, name);
+  case evalList (c, argExprs) of
+    [c@[stPar, w], args] ->
+    case lookup (stPar, name) of
+      Fun (argNames, expr) ->
+      case enterFunction (stPar) of
+        st ->
+        case eval (foldl (fun ([st, w], [argName, argValue]) {
+                            [addName (st, argName, argValue), w]
+                          }, [st, w], zip (argNames, args)),
+                   expr) of
+          [[st, w], value] -> [[leaveFunction (stPar, getGlobal (st)), w], value]
+        esac
+      esac
+    esac
+  esac
+}
+
+fun eval (c@[st,w], expr) {
+  case expr of
+    Var   (_)       -> evalExprVar      (c, expr) |
+    Ref   (_)       -> evalExprRef      (c, expr) |
+    Const (_)       -> evalExprConst    (c, expr) |
+    Binop (_, _, _) -> evalExprBinop    (c, expr) |
+    Assn (_, _)     -> evalExprAssn     (c, expr) |
+    Seq (_, _)      -> evalExprSeq      (c, expr) |
+    Skip            -> [c, Void]                  |
+    Read (_)        -> evalExprRead     (c, expr) |
+    Write (_)       -> evalExprWrite    (c, expr) |
+    If (_, _, _)    -> evalExprIf       (c, expr) |
+    While (_, _)    -> evalExprWhile    (c, expr) |
+    DoWhile (_, _)  -> evalExprDoWhile  (c, expr) |
+    Ignore (_)      -> evalExprIgnore   (c, expr) |
+    Scope (_, _)    -> evalScope        (c, expr) |
+    Call (_, _)     -> evalCall         (c, expr)
+  esac
 }
 (* End *)
 
