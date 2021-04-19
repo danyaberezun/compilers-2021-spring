@@ -120,9 +120,14 @@ var primary    = memo $ eta syntax (
                                                                                                             | Some (args) -> assertValue (a, Call (x, args))
                                                                                                             esac
                                                                                                          }} |
-(* Assignment *)
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
-(* End *)
+   inbr[s("("), scopeExpr, s(")")] |
+   loc=pos kSkip {fun (a){assertVoid(a, Skip, loc)}} |
+    loc=pos kRead  x=inbr[s("("), exp, s(")")] {fun (a){assertVoid (a, Read (x (Ref)), loc)}} |
+    loc=pos kWrite e=inbr[s("("), exp, s(")")] {fun (a){assertVoid (a, Write (e (Val)), loc)}} | 
+  
+   controlFlow  
+      ),
+
       basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
                                                   fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
@@ -153,5 +158,44 @@ var primary    = memo $ eta syntax (
                                      ),                                    
       exp        = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
 
+var elseStmt = memo $ eta syntax (
+   loc=pos kFi {fun (a){Skip}} |
+   kElse s2=exp kFi {fun (a){s2(a)}} |
+   kElif e=exp kThen s1=exp s2=elseStmt {fun (a){If (e(Val), s1(a), s2(a))}}
+  ),
+
+ controlFlow = memo $ eta syntax (
+	  loc=pos kWhile e=exp kDo s=scopeExpr kOd {fun (a){assertVoid(a, While (e (Val), s (Void)), loc)}} | 
+	  loc=pos kIf e=exp kThen s1=scopeExpr s2=elseStmt {fun (a){If (e (Val), s1 (a), s2(a))}} |
+
+    loc=pos kDo s=scopeExpr kWhile e=exp kOd {genDoWhileScope(s, e, loc) } |
+
+    loc=pos kFor s1=scopeExpr s[","] e=exp s[","] s2=exp kDo s3=scopeExpr kOd {genForScope(s1, e, s2, s3, loc)}
+);
+
+fun genForScope(s1, e, s2, s3, loc){
+  fun genExpr(exp1, exp2, a){
+    assertVoid(a, Seq (exp1, While (e(Val), Seq (exp2, s2(Void) ))), loc)
+  }
+
+  case s1(Void) of 
+    Scope (defs1, exp1) ->
+      case s3(Void) of 
+        Scope (defs2, exp2) -> fun (a) { Scope (defs1+++defs2, genExpr(exp1, exp2, a))}
+      | exp2 -> fun (a) { Scope (defs1, genExpr(exp1, exp2, a)) }
+      esac
+  | exp1 ->
+      case s3(Void) of 
+        Scope (defs2, exp2) -> fun (a) { Scope (defs2, genExpr(exp1, exp2, a))}
+      | exp2 -> fun (a) { genExpr(exp1, exp2, a) }
+      esac
+  esac
+}
+fun genDoWhileScope (s, e, loc){
+  case s(Void) of 
+    Scope (def, exp) -> fun (a){ Scope (def, assertVoid(a, Seq (exp, While (e(Val), exp)), loc)) }
+  | exp -> fun (a){ assertVoid(a, Seq (exp, While (e(Val), exp)), loc) }
+  esac
+}
 -- Public top-level parser
 public parse = syntax (s=scopeExpr {s (Void)});

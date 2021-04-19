@@ -95,8 +95,94 @@ fun evalList (c, exprs) {
 }
 
 (* Assignment *)
+
+fun initScope(s, d){
+--  case d of
+--    Var (x) :tl -> initScope(addNames (s, x), tl)
+--  | Fun (f, args, body) :tl -> initScope(addFunction (s, f, args, body), tl)
+--  | _ -> s
+--  esac
+  while size(d) > 0 do
+    s := case d[0] of 
+           Var (x) -> addNames (s, x)
+         | Fun (f, args, body) -> addFunction (s, f, args, body)
+         esac;
+    d := d.tl
+  od;
+  s
+}
+
+fun initFunArgs (s, argsNames, args){
+--  case [argsNames, args] of
+--    [argName:t1, arg:t2] -> initFunArgs( addName(s, argName, arg), t1, t2 )
+--  | [0, 0] -> s
+--  esac
+  while size(args) >0 do
+    s := addName(s, argsNames[0], args[0]);
+    argsNames := argsNames.tl;
+    args := args.tl
+  od;
+  s
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Const (z) -> [c, z]
+  | Var (x) -> [c, lookup(s, x)]
+  | Ref (x) -> [c, x]
+  | Binop (op, l, r) -> 
+      case evalList (c, {l, r}) of
+        [c@[s,w], {l1, r1}] -> [c, binop (op, l1, r1)]
+      esac
+  | Skip -> [c, Void]
+  | Assn (l, r) ->
+      case evalList (c, {l, r}) of
+        [c@[s,w], {l,r}] -> [[s <- [l, r], w], r]
+      esac 
+  | Read (x) ->
+      var n;
+      n := readWorld(w);
+      [[s <- [eval (c, x)[1], n[0]], n[1]], Void]
+  | Write (e) ->
+      case eval (c, e) of
+        [[s,w], e] -> [[s, writeWorld (e, w)], Void] 
+      esac
+  | Seq (s1, s2) -> 
+      case evalList (c, {s1, s2}) of
+        [c, {v1, v2}] -> [c, v2]
+      esac
+  | Ignore (e) -> [ eval (c, e)[0], Void]
+
+  | While (exp, st) ->
+      case eval (c, exp) of
+        [c, v] -> if (v != 0) then eval (eval (c, st)[0], expr) else [c, Void] fi
+      esac
+
+  | If (e, s1, s2) ->
+      case eval (c, e) of
+        [c, v] -> if (v != 0) then eval (c, s1) else eval (c, s2) fi 
+      esac
+
+
+
+  | Scope (defs, expr) ->
+      s := enterScope (s);
+      s := initScope (s, defs);
+      case eval ([s,w], expr) of
+        [[s,w], r] -> [[leaveScope (s), w], r]
+      esac
+  | Call (f, args) ->  
+    case lookup (s, f) of Fun (argsNames, expr) ->
+    case evalList (c, args) of [[s, w], args] ->
+    case initFunArgs(enterFunction (s), argsNames, args) of s ->
+      case eval ([s, w], expr) of 
+        [[s,w], r] -> [ [leaveFunction(c[0], getGlobal(s)), w], r]
+      esac
+    esac
+    esac
+    esac
+
+  esac
 }
 (* End *)
 
@@ -104,5 +190,23 @@ fun eval (c@[s, w], expr) {
 public fun evalExpr (input, expr) {
   case eval ([emptyState (), createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
+  esac
+}
+
+public fun binop(bp, x, y){
+  case bp of
+    "+"  -> x +  y 
+  | "-"  -> x -  y 
+  | "*"  -> x *  y 
+  | "/"  -> x /  y 
+  | "%"  -> x %  y 
+  | "==" -> x == y 
+  | "!=" -> x != y 
+  | "<"  -> x <  y 
+  | "<=" -> x <= y 
+  | ">"  -> x >  y 
+  | ">=" -> x >= y 
+  | "&&" -> x && y 
+  | "!!" -> x !! y 
   esac
 }
