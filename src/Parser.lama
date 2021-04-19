@@ -105,6 +105,60 @@ fun distributeScope (expr, exprConstructor) {
   esac
 }
 
+-- Additional helpers --
+var comma = s (",");
+
+fun assertVoidWithCheck(v, loc) {
+	fun (a) { assertVoid (a, v, loc) }
+}
+
+var whileParser = memo $ eta syntax(
+	loc=pos kWhile expr=exp kDo body=scopeExpr kOd { 
+		assertVoidWithCheck (While (expr (Val), body (Void)), loc) 
+	}
+);
+
+var doWhileParser = memo $ eta syntax(
+	loc=pos kDo body=scopeExpr kWhile expr=exp kOd { 
+		assertVoidWithCheck ( 
+			distributeScope(
+				body (Void), fun (expression) { DoWhile (expression, expr (Val)) }
+			), loc
+		) 
+	}
+);
+
+var forParser	= memo $ eta syntax (
+	loc=pos kFor s1=scopeExpr comma expr=exp comma s2=exp kDo body=scopeExpr kOd { 
+		assertVoidWithCheck (
+			distributeScope (
+				s1 (Void), fun (expression) { Seq(expression, While(expr (Val), Seq (body (Void), s2 (Void)))) }
+			), loc
+		) 
+	}
+);
+
+var ifParser    = memo $ eta syntax(
+	kIf expr=exp kThen ifTrue=scopeExpr ifFalse=(elsePart)? kFi { ifHandler(expr, ifTrue, ifFalse) }
+);
+
+var elsePart 	= memo $ eta syntax (kElif expr=exp kThen ifTrue=scopeExpr ifFalse=(elsePart)? { ifHandler(expr, ifTrue, ifFalse) } |						   		  
+								 	-kElse scopeExpr
+						   		 	);
+
+fun handleOpt(some, attr) {
+	case some of
+		Some (value) -> value (attr)
+	|	_ -> assertVoid (attr, Skip)
+	esac	 
+}
+
+fun ifHandler(expr, ifTrue, ifFalse) {
+	fun (a) {If (expr (Val), ifTrue (a), handleOpt (ifFalse, a)) }
+}
+
+-- Additional helpers end --
+
 var primary    = memo $ eta syntax (
                                       -- decimal constant
                                       loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
@@ -120,10 +174,17 @@ var primary    = memo $ eta syntax (
                                                                                                             | Some (args) -> assertValue (a, Call (x, args))
                                                                                                             esac
                                                                                                          }} |
-(* Assignment *)
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
-(* End *)
-      basic      = memo $ eta (expr ({[Right, {[s (":="),
+									inbr [s ("("), scopeExpr, s (")")] 																|
+                                  	loc=pos kSkip { assertVoidWithCheck (Skip, loc) } 												|
+                                  	loc=pos kRead x=inbr[s("("), lident, s(")")]  { assertVoidWithCheck (Read (x), loc) } 			|
+							  	  	loc=pos kWrite expr=inbr[s("("), exp, s(")")]  { assertVoidWithCheck (Write (expr (Val)), loc) }|	
+							  	  	whileParser																						|
+							  	  	doWhileParser																					|	
+							  	  	forParser 																						|
+							  	  	ifParser
+                                  	);
+
+var basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
                                                   fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
                                                 }]}],
