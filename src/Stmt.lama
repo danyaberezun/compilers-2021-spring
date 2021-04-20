@@ -1,0 +1,44 @@
+-- Statement evaluator.
+
+import State;
+import Expr;
+import World;
+
+-- Evaluates a statement "stmt" in a configuration "c".
+-- A configuration is a pair of a state "s" and a world "w".
+-- Returns a final configuration (if any)
+--
+-- A statement is represented by a data structure of the following shape:
+--
+-- stmt = Assn    (string, expr)     |
+--        Seq     (stmt, stmt)       |
+--        Skip                       |
+--        Read    (string)           |
+--        Write   (expr)             |
+--        If      (expr, stmt, stmt) |
+--        While   (expr, stmt)       |
+--        DoWhile (stmt, expr)
+
+fun eval (c@[st, w], stmt) {
+  case stmt of
+    Assn    (vr, expr) 	         -> [st <- [vr, evalExpr (st, expr)], w]
+  | Seq     (stmt1, stmt2)       -> eval (eval (c, stmt1), stmt2)
+  | Skip					               -> c
+  | Read    (vr)                 -> case readWorld (w) of [x, w0] -> [st <- [vr, x], w0] esac
+  | Write   (expr) 			         -> [st, writeWorld (evalExpr (st, expr), w)]
+  | If      (expr, stmt1, stmt2) -> case evalExpr (st, expr) of
+                                      0 -> eval ([st, w], stmt2)
+                                    | _ -> eval ([st, w], stmt1)
+                                    esac
+  | While   (expr, stmt)         -> case evalExpr (st, expr) of
+                                      0 -> [st, w]
+                                    | _ -> eval (eval ([st, w], stmt), While (expr, stmt))
+                                    esac
+  | DoWhile (stmt, expr)         -> eval (eval ([st, w], stmt), While (expr, stmt))
+  esac
+}
+
+-- Evaluates a program with a given input and returns an output
+public fun evalStmt (input, stmt) {
+  eval ([emptyState, createWorld (input)], stmt).snd.getOutput
+}

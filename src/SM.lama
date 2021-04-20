@@ -59,9 +59,30 @@ fun fromLabel (env, lab) {
 
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
-fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+
+fun eval (env, c@[s, st, w], insns) {
+  case insns of
+    READ : tl           -> case readWorld (w) of [x, w0] -> eval (env, [x : s, st, w0], tl) esac
+  | WRITE : tl          -> case s of value : rest -> eval (env, [rest, st, writeWorld (value, w)], tl) esac
+  | BINOP (op) : tl     -> case s of rExpr : lExpr : rest -> eval (env, [binOp (op, lExpr, rExpr) : rest, st, w], tl) esac
+  | LD    (vr) : tl     -> eval (env, [st (vr) : s, st, w], tl)
+  | LDA   (vr) : tl     -> eval (env, [vr : s, st, w], tl)
+  | ST    (vr) : tl     -> case s of value : rest -> eval (env, [rest, st <- [vr, value], w], tl) esac
+  | STI : tl            -> case s of value : vr : rest -> eval (env, [value : rest, st <- [vr, value], w], tl) esac
+  | CONST (const) : tl  -> eval (env, [const : s, st, w], tl)
+  | LABEL (s) : tl      -> eval (env, c, tl)
+  | JMP   (l) : tl      -> eval (env, c, fromLabel (env, l))
+  | CJMP  (c, l) : tl   -> case s of
+      0 : tail -> eval (env, [tail, st, w], if compare (c, "z") == 0  then fromLabel (env, l) else tl fi)
+    | _ : tail -> eval (env, [tail, st, w], if compare (c, "nz") == 0 then fromLabel (env, l) else tl fi)
+    esac
+  | DUP : tl            -> case s of value : rest -> eval (env, [value : s, st, w], tl) esac
+  | DROP : tl           -> case s of value : rest -> eval (env, [rest, st, w], tl) esac
+  | 0 -> c
+  esac
 }
+
+var env = initCompEnv();
 
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
@@ -98,9 +119,64 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+fun compileIf(expr1, expr2, expr3, env){
+  case expr3 of
+    Skip ->
+      var ls = genLabels(env, 1);
+      var comp = compileSMInner (ls.snd, expr2);
+      [comp.fst, compileSMInner(comp.fst, expr1).snd <+ CJMP ("z", ls.fst) <+> comp.snd <+ LABEL (ls.fst)]
+  | _    ->
+      var ls = genLabels(env, 2);
+      var comp2 = compileSMInner(ls[2], expr3);
+      var comp1 = compileSMInner(comp2.fst, expr2);
+      [comp1.fst, compileSMInner(comp1.fst, expr1).snd <+ CJMP ("nz", ls.fst) <+> comp2.snd <+ JMP (ls.snd) <+ LABEL (ls.fst) <+> comp1.snd <+ LABEL (ls.snd)]
+  esac
+}
+
+fun compileSMInner(env, stmt){
+  case stmt of
+    Assn   (vr, expr)         -> case vr of 
+        Ref (vr) -> [env, compileSMInner (env, expr).snd <+ DUP <+ ST (vr)]
+      | _ -> 
+        var comp1 = compileSMInner (env, vr);
+        var comp2 = compileSMInner (comp1.fst, expr);
+        [comp1.fst, comp1.snd <+> comp2.snd <+ STI]
+      esac
+  | Seq    (stmt1, stmt2)     ->
+      var comp1 = compileSMInner (env, stmt1);
+      var comp2 = compileSMInner (comp1.fst, stmt2);
+      [comp2.fst, comp1.snd <+> comp2.snd]
+  | Skip                      -> [env, emptyBuffer ()]
+  | Read   (vr)               -> case vr of
+        Ref (vr) -> [env, listBuffer ({READ, ST (vr)})]
+      | _ -> failure ("Read - Not Ref IN\n")
+      esac    
+  | Write  (expr)             -> [env, compileSMInner (env, expr).snd <+ WRITE]
+  | Ref    (vr)               -> [env, singletonBuffer (LDA (vr))]
+  | Var    (vr)               -> [env, singletonBuffer (LD (vr))]
+  | Const  (const)            -> [env, singletonBuffer (CONST (const))]
+  | Binop  (op, lExpr, rExpr) -> 
+      var comp1 = compileSMInner (env, lExpr);
+      var comp2 = compileSMInner (comp1.fst, rExpr);
+      [comp1.fst, comp1.snd <+> comp2.snd <+ BINOP (op)]
+  | Ignore (expr)             -> var comp = compileSMInner (env, expr);
+      [comp.fst, comp.snd <+ DROP]
+  | If (expr1, expr2, expr3)  -> compileIf (expr1, expr2, expr3, env)
+  | While  (c, stmt)          -> var ls = genLabels (env, 2); var comp = compileSMInner (ls[2], stmt);
+      [comp.fst, emptyBuffer () <+ JMP (ls.fst) <+ LABEL (ls.snd) <+> comp.snd <+ LABEL (ls.fst) <+> compileSMInner (comp.fst, c).snd <+ CJMP ("nz", ls.snd)]
+  | DoWhile(c, stmt) -> case env.genLabels(1) of
+        [l, newEnv] ->
+          var newData = compileSMInner (newEnv, c);
+          var comp = compileSMInner (newData.snd, stmt);
+          [singletonBuffer (LABEL (l)) <+> newData.fst <+> comp.fst <+ CJMP ("nz", l), comp.snd]
+      | _ -> failure("\n\nFTF:  %s\n\n", stmt.string)
+      esac
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compileSMInner (initCompEnv(), stmt).snd)
 }
