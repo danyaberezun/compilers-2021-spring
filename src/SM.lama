@@ -118,10 +118,55 @@ fun eval (env, w, insns) {
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+    fun evalInst (c@[stk, cstk, st, w], inst) {
+      var newc = 
+          case inst of
+            READ      -> case readWorld(w) of [n, w] -> [n:stk, cstk, st, w] esac
+          | WRITE     -> case stk of n:rest  -> [rest, cstk, st, writeWorld(n, w)] esac
+          | BINOP (s) -> 
+              case stk of 
+                y:x:rest  -> [evalOp (s, x, y):rest, cstk, st, w]
+              esac
+          | LD    (x) -> [lookup(st, x):stk, cstk, st, w]
+          | LDA   (x) -> [Ref(x):stk, cstk, st, w]
+          | ST    (x) -> case stk of v:rest -> assign (st, x, v); [stk, cstk, st, w] esac
+          | STI       -> case stk of v:Ref(x):rest -> assign (st, x, v); [v:rest, cstk, st, w] esac
+          | CONST (n) -> [n:stk, cstk, st, w]
+          | LABEL (_) -> c
+          | DROP      -> case stk of n:rest -> [rest, cstk, st, w] esac
+          | BEGIN (_, nArgs, nLocals) -> 
+              case take (stk, nArgs) of 
+                [nstk, args] -> 
+                var st = makeState (nArgs, nLocals);
+                foldl(fun (i, arg) {assign (st, Arg (i), arg); i+1}, 0, args);
+                [nstk, cstk, st, w]
+              esac
+          | GLOBAL (x)-> assign (st, Glb (x), 0); c
+          esac;
+
+      newc
   }
-  (* End *)
+  fun eval (c@[stk, cstk, st, w], insns) {
+    case insns of
+      {} -> c
+    | JMP (l) : _                -> eval (c, fromLabel (env, l))
+    | CJMP (cond, l) : insnsTail -> 
+        case stk of 
+          z:s -> if (compare(cond, "nz") == 0 && z != 0) !! (compare(cond, "z") == 0 && z == 0) 
+                 then eval ([s, cstk, st, w], fromLabel (env, l))
+                 else eval ([s, cstk, st, w], insnsTail)
+                 fi
+        esac
+    | CALL (f, _) : p -> eval ([stk, [st, p]: cstk, st, w], fromLabel (env, f))
+    | END : rest -> 
+        case cstk of
+          {} -> c
+        | [localState, newProgram] : rest -> eval([stk, rest, localState, w], newProgram)
+        esac
+    | inst : insnsTail -> eval(evalInst (c, inst), insnsTail)
+        
+    esac
+  }
   
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
@@ -348,7 +393,157 @@ fun addVars (env, names) {
 --    environment (use env.beginFun) and register arguments
 --    (use env.addArg).
 
+fun compileDefs (env, defs) {
+  foldl (fun ([env, globals, funs], decl) {
+    case decl of
+      Var (names) -> 
+        case addVars (env, names) of
+          env -> if (isGlobal (env)) 
+                 then [env, names +++ globals, funs] 
+                 else [env, globals, funs] 
+                 fi
+        esac
+    | f@Fun (name, args, body) -> 
+        case genFunLabel (env, name) of
+          [fLabel, env] -> 
+            case addFun (env, name, fLabel, size (args)) of
+              env -> [env, globals, Fun (fLabel, args, body) : funs] 
+            esac
+        esac
+    esac
+  }, [env, {}, {}], defs)
+}
+
 public fun compileSM (expr) {
-  failure ("compileSM not implemented\n")
+  fun compileBinop(env, op, l, r) {
+    case compile (env, l) of
+      [e1, c1] ->
+        case compile (e1, r) of
+          [e2, c2] -> [e2, c1 <+> c2 <+ BINOP (op)]
+        esac
+    esac
+  }
+
+  fun compileAssn(env, l, r){
+    case compile(env, l) of
+      [e1, c1] ->
+        case compile (e1, r) of
+          [e2, c2] -> [e2, c1 <+> c2 <+ STI]
+        esac
+    esac
+  }
+  fun compileSeq(env, stm1, stm2) {
+      case compile(env, stm1) of
+        [e1, c1] ->
+          case compile (e1, stm2) of
+            [e2, c2] -> [e2, c1 <+> c2]
+          esac
+      esac
+  }
+  fun compileIf(env, expr, ifT, ifF) {
+    case genLabels (env, 3) of
+        [ifStmt, thenStart, thenEnd, env] -> 
+          case compile (env, expr) of
+            [env, exprc] -> 
+              case compile(env, ifT) of
+                [env, tc] -> 
+                  case compile(env, ifF) of 
+                    [env, fc] -> 
+                            [env, exprc <+  CJMP ("z", thenStart) <+  LABEL (ifStmt) <+> tc <+  JMP (thenEnd) <+  LABEL (thenStart) <+> fc  <+ LABEL (thenEnd)]
+                esac
+            esac  
+        esac
+    esac 
+  }
+  fun compileWhile(env, expr, body) {
+    case genLabels (env, 2) of
+        [cond, endL, env] -> 
+          case compile(env, expr) of
+            [env, exprc] ->
+              case compile (env, body) of
+                [env, bodyc] -> [env, 
+                    singletonBuffer (LABEL (cond)) <+> exprc <+ 
+                              CJMP ("z", endL) <+> bodyc <+ 
+                              JMP (cond) <+ 
+                              LABEL (endL)]
+              esac
+          esac
+    esac
+  }
+  fun compileDoWhile(env, body, expr) {
+      case genLabel (env) of
+              [thenL, env] -> 
+                case compile(env, body) of
+                  [env, bodyc] ->
+                    case compile (env, expr) of
+                      [env, exprc]   -> [env,  singletonBuffer (LABEL (thenL)) <+> bodyc <+> exprc <+  CJMP ("nz", thenL)]
+                  esac
+              esac
+        esac
+  }
+
+  fun compileScope(env, defs, expr) {
+    case compileDefs (beginScope (env), defs) of
+      [env, globals, funs] -> 
+        var globalCommands = map ( fun (v) { GLOBAL (v) }, globals);
+        case foldl(fun (e, f@Fun (fLabel, args, body)) { rememberFun (e, fLabel, args, body) }, env, funs) of
+          env -> case compile (env, expr) of [env, code] -> [endScope (env), listBuffer (globalCommands) <+> code] esac
+        esac
+    esac
+  }
+  fun compileArgs (env, args) {
+    foldl(fun([e, code], arg) { 
+      case compile (e, arg) of [newEnv, argCode] -> [newEnv, code <+> argCode] esac 
+    }, [env, emptyBuffer ()], args)
+  }
+  fun compileCall(env, name, args){
+    case compileArgs (env, args) of
+      [env, argsCode] ->
+        case lookupFun (env, name) of
+          Fun (fLabel, nArgs) -> [env, argsCode <+ CALL (fLabel, nArgs)]
+        esac
+    esac
+  }
+  fun compileFun([env, acc], Fun (fLabel, args, body, state)) {
+    case compile (addArgs (beginFun (env, state), args), body) of 
+      [env, code] -> [env, acc <+> singletonBuffer (LABEL (fLabel)) <+ BEGIN (fLabel, args.size, getLocals (env)) <+> code <+ END] 
+    esac  
+  }
+  fun compileFuns ([funs, env]) {
+      case foldl(compileFun, [env, emptyBuffer ()], funs) of [env, acc] -> 
+        case getFuns (env) of 
+          [{}, _]     -> acc 
+        | [funs, env] -> acc <+> compileFuns ([funs, env]) 
+        esac
+      esac
+    }
+
+  fun compile(env, expression) {
+    case expression of
+        Const (value)           -> [env, singletonBuffer (CONST (value))]
+      | Var (x)                 -> [env, singletonBuffer (LD (lookupVar (env, x)))]
+      | Ref (x)                 -> [env, singletonBuffer (LDA (lookupVar (env, x)))]
+      | Binop (op, l, r)        -> compileBinop(env, op, l, r)
+      | Skip                    -> [env, emptyBuffer ()]
+      | Assn (l, r)             -> compileAssn(env, l, r)
+      | Read (x)                -> [env, singletonBuffer (READ) <+ ST (lookupVar (env, x)) <+ DROP]
+      | Write (expr)            -> case compile (env, expr) of [newEnv, code] -> [newEnv, code <+ WRITE] esac
+      | Seq (stm1, stm2)        -> compileSeq(env, stm1, stm2)
+      | If (expr, ifT, ifF)     -> compileIf(env, expr, ifT, ifF)
+      | While (expr, body)      -> compileWhile(env, expr, body)
+      | DoWhile (body, expr)    -> compileDoWhile(env, body, expr) 
+      | Ignore (expr)           -> case compile (env, expr) of [newEnv, code] -> [newEnv, code <+ DROP] esac
+      | Scope (defs, expr)      -> compileScope(env, defs, expr)
+      | Call (name, args)       -> compileCall(env, name, args)    
+    esac
+  }
+
+  
+
+  
+
+  case compile (initCompEnv (), expr) of
+    [env, code] -> getBuffer(singletonBuffer (LABEL ("main")) <+ BEGIN ("main", 0, getLocals (env)) <+> code <+ END <+> compileFuns (getFuns (env)))
+  esac
 }
 (* End *)
