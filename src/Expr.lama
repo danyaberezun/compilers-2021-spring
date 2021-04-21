@@ -63,8 +63,84 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+--fun eval (c@[s, w], expr) {
+--  failure ("evalExpr not implemented\n")
+
+fun prisv (a, x, [st, w]) {
+	var a1 = eval([st, w], a);
+	[[a1.fst[0] <- [a1.snd, x], a1.fst[1]], x]
+}
+
+fun read (a, [st, w]) {
+	var a1 = eval([st, w], a);
+	var res = readWorld(a1.fst[1]);
+	[a1.fst[0] <- [a1.snd, res[0]], res[1]] 
+}
+
+fun while_func(expr, stmt, c) {
+	var a1 = eval(c, expr);
+	c := a1.fst;
+	while a1.snd do 
+		c:=eval(c, stmt).fst;
+		a1 := eval(c, expr);
+		c := a1.fst 
+	od;
+	[c, Void]
+}
+
+fun do_while_func(expr, stmt, c) {
+	var a1;
+	do 
+		c:=eval(c, stmt).fst;
+		a1 := eval(c, expr);
+		c := a1.fst
+	while a1.snd 
+	od;
+	[c, Void]
+}
+
+fun eval (c, expr) {
+	case expr of
+		Skip -> --printf(" Skip "); 
+			[c, Void] |
+		Assn(a, expr1) -> --printf(" Assn "); 
+			var a1 = eval(c, expr1); prisv(a, a1.snd, a1.fst) |
+		Seq(expr1, expr2) -> --printf(" Seq "); 
+			eval(eval(c, expr1).fst, expr2) |
+		Read(a) -> --printf(" Read "); 
+			[read(a, c), Void] |
+		Write(expr1) -> --printf(" Write "); 
+			var a1 = eval(c, expr1); [[a1.fst[0], writeWorld(a1.snd, a1.fst[1])], Void] |
+		If(expr1, expr2, expr3) ->  var a1 = eval(c,expr1); if a1.snd then eval(a1.fst, expr2) else eval(a1.fst, expr3) fi |
+		While(expr1, expr2) -> while_func(expr1, expr2, c) |
+		DoWhile(expr2, expr1) -> do_while_func(expr1, expr2, c) |  
+		Const(a) -> --printf(" Const "); 
+			[c, a] |
+		Var(a) -> --printf(" Var ");
+			[c, c[0](a)] |
+		Ref(a) -> --printf(" Ref "); 
+			[c, a] |
+		Ignore(e) -> --printf(" Ignore "); 
+			[eval(c, e)[0], Void] |
+		Binop(a, expr1, expr2) ->
+			case a of
+				"+" -> var a1 = eval(c, expr1); [c, a1.snd + eval(a1.fst, expr2).snd] |
+				"-" -> var a1 = eval(c, expr1); [c, a1.snd - eval(a1.fst, expr2).snd] |
+				"*" -> var a1 = eval(c, expr1); [c, a1.snd * eval(a1.fst, expr2).snd] |
+				"/" -> var a1 = eval(c, expr1); [c, a1.snd / eval(a1.fst, expr2).snd] |
+				"%" -> var a1 = eval(c, expr1); [c, a1.snd % eval(a1.fst, expr2).snd] |
+				"<" -> var a1 = eval(c, expr1); [c, a1.snd < eval(a1.fst, expr2).snd] |
+				">" -> var a1 = eval(c, expr1); [c, a1.snd > eval(a1.fst, expr2).snd] |
+				"<=" -> var a1 = eval(c, expr1); [c, a1.snd <= eval(a1.fst, expr2).snd] |
+				">=" -> var a1 = eval(c, expr1); [c, a1.snd >= eval(a1.fst, expr2).snd] |
+				"==" -> var a1 = eval(c, expr1); [c, a1.snd == eval(a1.fst, expr2).snd] |
+				"!=" -> var a1 = eval(c, expr1); [c, a1.snd != eval(a1.fst, expr2).snd] |
+				"&&" -> var a1 = eval(c, expr1); [c, a1.snd && eval(a1.fst, expr2).snd] |
+				"!!" -> var a1 = eval(c, expr1); [c, a1.snd !! eval(a1.fst, expr2).snd]
+			esac |
+		_ -> failure("The expression is not recognized!")
+
+	esac
 }
 
 
