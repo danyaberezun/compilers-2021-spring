@@ -101,8 +101,127 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun evalAssn (c, Assn (expr1, expr2)) {
+  case evalList (c, {expr1, expr2}) of
+    [[s, w], {l, r}] -> [[s <- [l, r], w], r]
+  esac
+}
+
+fun evalBinop(c, Binop (op, expr1, expr2)) {
+  case evalList (c, {expr1, expr2}) of
+    [c, {l, r}] -> [c, evalOp(op, l, r)]
+  esac
+}
+
+fun evalSeq (c, Seq (stmt1, stmt2)) {
+  eval (eval (c, stmt1).fst, stmt2) 
+}
+
+fun evalRead ([state, world], Read (Ref (variable))) {
+  var readRes = readWorld (world);
+  [[state <- [variable, readRes[0]], readRes[1]], Void]
+}
+
+fun evalWrite (c, Write(expr)) {
+  case eval (c, expr) of
+    [[s, w], v] -> [[s, writeWorld(v, w)], Void]
+  esac
+}
+
+fun evalIf (conf, If(cond, thenExpr, elseExpr)) {
+  case eval (conf, cond) of
+    [c, v] -> if v then eval (c, thenExpr) else eval (c, elseExpr) fi
+  esac
+}
+
+fun evalWhile (conf, wh@While(cond, expr)) {
+  case eval (conf, cond) of
+    [c, v] -> if v then evalWhile((eval (c, expr)).fst, wh) else [c, Void] fi
+  esac
+}
+
+fun evalDoWhile (conf, DoWhile(expr, cond)) {
+  case eval(conf, expr) of
+    [c, _] -> evalWhile(c, While(cond, expr)) 
+  esac
+}
+
+fun evalIgnore (conf, Ignore (expr)) {
+  case eval (conf, expr) of
+    [c, _] -> [c, Void]
+  esac
+}
+
+fun evalScope (c@[st, w], Scope (defs, body)) {
+  st := enterScope(st);
+  while size(defs) > 0 do
+    st := case defs[0] of
+      Var (names)            -> addNames (st, names) |
+      Fun (name, args, body) -> addFunction (st, name, args, body)
+    esac;
+    defs := defs.tl
+  od;
+  --printf("%s\n", st.string);
+  --st := foldl(
+  --  fun (st, def) {
+  --    case def of
+  --      Var (names)            -> addNames (st, names) |
+  --      Fun (name, args, body) -> addFunction (st, name, args, body)
+  --    esac
+  --  }, enterScope(st), defs
+  --);
+  case eval ([st, w], body) of
+    [[st, w], v] -> [[leaveScope(st), w], v]
+  esac
+}
+
+fun evalCall(c@[st, w], Call(name, args)) {
+  checkFun (st, name);
+  case lookup (st, name) of 
+    Fun (argvars, body) ->
+      var globalState = st;
+      case evalList (c, args) of
+        [[st, w], values] ->
+          st := enterFunction(st);
+          while size(argvars) > 0 do
+            st := addName(st, argvars[0], values[0]);
+            argvars := argvars.tl;
+            values := values.tl
+          od;
+          --st := foldl(fun (st, pair) {
+          --              addName (st, pair.fst, pair.snd)
+          --            }, 
+          --            enterFunction(st), 
+          --            zip(argvars, values)
+          --            );
+          case eval ([st, w], body) of
+            [[st, w], v] -> 
+              [[leaveFunction(globalState, getGlobal(st)), w], v]
+          esac
+      esac
+  esac
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  --printf("%s\n", expr.string);
+  case expr of
+    Var (name)      -> [c, lookup (s, name)]
+  | Const (x)       -> [c, x]
+  | Ref   (name)    -> [c, name]
+  | Skip            -> [c, Void]
+  | Binop (_, _, _) -> evalBinop   (c, expr)
+  | Assn  (_, _)    -> evalAssn    (c, expr)
+  | Seq   (_, _)    -> evalSeq     (c, expr)
+  | Read  (_)       -> evalRead    (c, expr)
+  | Write (_)       -> evalWrite   (c, expr)
+  | If (_, _, _)    -> evalIf      (c, expr)
+  | While (_, _)    -> evalWhile   (c, expr)
+  | DoWhile (_, _)  -> evalDoWhile (c, expr)
+  | Ignore (_)      -> evalIgnore  (c, expr)
+  | Scope (_, _)    -> evalScope   (c, expr)
+  | Call (_, _)     -> evalCall    (c, expr)
+  | _               -> failure     ("Invalid expression type: %s in configuration %s\n", expr.string, c.string)
+  esac
 }
 
 

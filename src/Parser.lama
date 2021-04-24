@@ -120,8 +120,72 @@ var primary    = memo $ eta syntax (
                                                                                                             | Some (args) -> assertValue (a, Call (x, args))
                                                                                                             esac
                                                                                                          }} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
-      scopeExpr = memo $ eta syntax ($(failure ("scope expression parsing is not implemented\n"))),
+                                      inbr[s("("), scopeExpr, s(")")]                                         |
+                                      loc=pos kSkip                                                     {fun (a) {
+                                                                                                           assertVoid (a, Skip, loc)
+                                                                                                        }} |
+                                      loc=pos kRead x=inbr[s("("), exp, s(")")]                         {fun (a) {
+                                                                                                          assertVoid (a, Read (x (Ref)), loc)
+                                                                                                        }} |
+                                      loc=pos kWrite e=inbr[s("("), exp, s(")")]                        {fun (a) {
+                                                                                                          assertVoid (a, Write (e (Val)), loc)
+                                                                                                        }} |
+                                      kIf e=exp kThen s=scopeExpr kFi                                   {fun (a) {
+                                                                                                          If(e (Val), s (a), Skip)
+                                                                                                        }} |              
+                                      kIf e=exp kThen s1=scopeExpr s2=elsePart kFi                      {fun (a) {
+                                                                                                          If(e (Val), s1 (a), s2 (a))
+                                                                                                        }} |
+                                      loc=pos kWhile e=exp kDo s=scopeExpr kOd                          {fun (a) {
+                                                                                                          assertVoid (a, While (e (Val), s (Void)), loc)
+                                                                                                        }} |
+                                      loc=pos kDo s=scopeExpr kWhile e=exp kOd                          {fun (a) {
+                                                                                                          assertVoid (a, 
+                                                                                                                      distributeScope (s (Void),
+                                                                                                                      fun (sExp) {
+                                                                                                                        DoWhile (sExp, e (Val))
+                                                                                                                      }), 
+                                                                                                                      loc)
+                                                                                                                      
+                                                                                                        }} |       
+                                      loc=pos kFor init=scopeExpr s[","] cond=exp s[","] inc=exp kDo body=scopeExpr kOd     
+                                                                                                        {fun (a) {
+                                                                                                          assertVoid (a, 
+                                                                                                                      distributeScope(init (Void),
+                                                                                                                      fun (initExp) {
+                                                                                                                        Seq(initExp, 
+                                                                                                                            While(cond (Val), 
+                                                                                                                            Seq(body (Void), 
+                                                                                                                                inc (Void)))) 
+                                                                                                                      }),
+                                                                                                                      loc)
+                                                                                                        }} 
+                                      ),
+        elsePart = memo $ eta syntax (kElif e=exp  kThen s=scopeExpr                                    {fun (a) {
+                                                                                                          If(e (Val), s (a), Skip)
+                                                                                                        }} |
+                                      kElif e=exp kThen s1=scopeExpr s2=elsePart                        {fun (a) {
+                                                                                                          If(e (Val), s1 (a), s2 (a))
+                                                                                                        }} |
+                                      -kElse exp                                                      
+                                      ),
+      scopeExpr = memo $ eta syntax   (loc=pos decls=declaration* exprs=exp? {fun (a) {
+                                                                              case decls of
+                                                                                _:_ ->
+                                                                                  case exprs of
+                                                                                    Some (e) -> expandScope (decls, e(a)) |
+                                                                                    None     -> assertVoid (a, expandScope (decls, Skip), loc) 
+                                                                                  esac |
+                                                                                _ ->
+                                                                                  case exprs of
+                                                                                    Some (e) -> e(a) |
+                                                                                    None     -> assertVoid(a, Skip, loc) 
+                                                                                  esac
+                                                                              esac
+                                                                             }}),
+      declaration = memo $ eta syntax (kVar decls=list[syntax (lident (-s["="] e=basic {e (Val)})?)] s[";"] {Var(decls)} |
+                                       kFun ident=lident args=inbr[s("("), list0(lident), s(")")] body=inbr[s("{"), scopeExpr, s("}")] {Fun (ident, args, body(Weak))}
+                                      ),
       basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
                                                   fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
