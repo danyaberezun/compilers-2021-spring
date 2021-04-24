@@ -121,8 +121,137 @@ fun eval (env, w, insns) {
   }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun eval (configuration@[stack, contrStack, state, world], instructions) {
+    fun applyInstruction([stack, contrStack, state, world], instruction) {
+      -- printf("stev d%d %s\n  stck %s\n  stte %s\n  cstk %s\n", depth, instruction.string, stack.string, state.string, contrStack.string);
+      case instruction of
+        BINOP(operation) ->
+          case stack of
+            rhs:lhs:tail ->
+              stack := evalOp(operation, lhs, rhs) : tail
+          esac |
+
+        LD(variableName) ->
+          stack := lookup(state, variableName) : stack |
+        LDA(variableName) ->
+          stack := Ref(variableName) : stack |
+        ST(variableName) -> 
+          case stack of
+            value : _ ->
+              assign(state, variableName, value);
+              stack
+          esac |
+        STI ->
+          case stack of 
+            value : Ref(variableName) : tail ->
+              assign(state, variableName, value);
+              stack := value : tail
+          esac |
+        STA ->
+          case stack of
+            arr : value : index : tail ->
+              arr[index] := value;
+              stack := value : tail
+          esac |
+
+        CONST(value) -> 
+          stack := (value : stack) |
+        STRING(value) ->
+          stack := value : stack |
+        ARRAY(valuesN) ->
+          case take(stack, valuesN) of
+            [tail, values] ->
+              stack := listArray(values) : tail.tl -- Remove array size from stack by .tl (it is used in x86 to call Barray)
+          esac |
+        ELEM ->
+          case stack of 
+            index : arr : stackTail ->
+              stack := arr[index] : stackTail
+          esac |
+        GLOBAL(_) ->
+          skip |
+        DROP ->
+          case stack of
+            head : tail ->
+              stack := tail
+          esac |
+
+        BUILTIN(name, argsN) ->
+          case take(stack, argsN) of [newStack, vals] ->
+            case evalBuiltin(name, vals, world) of [value, newWorld] ->
+              stack := value : newStack;
+              world := newWorld
+            esac
+          esac |
+
+        CALL(_, _) -> skip |
+        BEGIN(_, _, _) -> skip |
+        END -> skip |
+        LABEL(_) -> skip |
+        JMP(_) -> skip |
+        CJMP(_, _) -> skip |
+        _ -> failure("Unknown instruction '" ++ string(instruction) ++ "' at stack unwrapping\n")
+      esac;
+
+      [stack, contrStack, state, world]
+    }
+
+    fun applyJumps([stack, contrStack, state, world], instruction : instructionsTail) {
+      case instruction of
+        JMP(labelName) ->
+          instructionsTail := env.fromLabel(labelName) |
+        CJMP(condition, labelName) ->
+          case stack of conditionValue : stackTail ->
+            stack := stackTail;
+            if (compare(condition, "nz") == 0 && conditionValue != 0) 
+            !! (compare(condition, "z")  == 0 && conditionValue == 0) then
+              instructionsTail := env.fromLabel(labelName)
+            fi
+          esac |
+
+        CALL(fName, argsN) ->
+          contrStack := [state, instructionsTail] : contrStack;
+          instructionsTail := env.fromLabel(fName) |
+        BEGIN(label, argsN, localsN) ->
+          case take(stack, argsN) of [tail, argVals] ->
+            stack := tail;
+            state := makeState(argsN, localsN);
+            for var i; i := 0, i < argsN, i := i+1 do
+              assign(state, Arg(i), argVals[0]);
+              argVals := argVals[1]
+            od
+          esac |
+        END ->
+          case contrStack of 
+            {} -> instructionsTail := {} |
+            [prevState, prevInstructions] : tail -> 
+              contrStack := tail;
+              state := prevState; 
+              instructionsTail := prevInstructions
+          esac |
+
+        _ -> skip        
+      esac;
+
+      [[stack, contrStack, state, world], instructionsTail]
+    }
+
+    while size(instructions) > 0 do
+      case instructions of instruction : _ ->
+        -- printf("stckeval %s\n", string(instruction));
+        configuration := applyInstruction(configuration, instruction);
+
+        -- Change remaining instructions if jmp to label occured or just get remaining ones
+        case applyJumps(configuration, instructions) of
+          [newConf, newInstr] -> 
+            configuration := newConf;
+            instructions  := newInstr
+        esac
+
+      esac
+    od;
+
+    configuration
   }
   
   
@@ -329,27 +458,178 @@ fun addVars (env, names) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
+-- Compiles an expression into a stack machine code.
+-- Takes an expression, returns a list of stack machine instructions
+fun compileExpr (expression) {
 
+  fun bindSymbols(defs) {
+    var globals = emptyBuffer();
+    environment := foldl(fun([env, globals], def) {
+      case def of
+        Var(vars) -> 
+          if isGlobal(env) then
+            globals := foldl(fun(buff, variable) { buff <+ GLOBAL(variable) }, globals, vars)
+          fi;
+          [env.addVars(vars), globals] |
+        Fun(name, args, body) ->
+          [case genFunLabel(env, name) of [fLabel, newEnv] ->
+            addFun(newEnv, name, fLabel, size(args))
+              -- .rememberFun(fLabel, args, body) -- Convenient, but fails 31 test - variables may be not bound yet.
+          esac, globals] |
+        _ -> failure("Can't bind symbol " ++ def.string ++ "\n")
+      esac
+    }, [environment, globals], defs);
+    globals := environment[1];
+    environment := environment[0];
 
--- Some guidelines for compiling functions and scopes.
---
--- 1. use env.beginScope/env.endScope properly;
--- 2. in each scope traverse the definitions twice:
---    a. first, add all bindings into symbolic state,
---       using end.addVar/env.addFun;
---    b. do not forget to generate GLOBAL instructions for
---       top-level variable declarations;
---    c. on the secord traversal add functions themselves for
---       future code generation (use env.rememberFun).
--- 3. the overall flow for codegeneration:
---    a. generate the code for thetopmost expression (the progrman itself);
---    b. take list of nested functions definitions via env.getFuns and
---       generate the code for each function;
---    c. repeat b. until no function definitions appear.
--- 4. when compiling functions, do not forget to create proper
---    environment (use env.beginFun) and register arguments
---    (use env.addArg).
+    -- Traverse again to rememberFun
+    environment := foldl(fun(env, def) {
+      case def of
+        Fun(name, args, body) ->
+          case lookupFun(env, name) of Fun(fLabel, _) ->
+            rememberFun(env, fLabel, args, body)
+          esac |
+        Var(_) -> env |
+        _ -> failure("Can't bind fun symbol " ++ def.string ++ "\n")
+      esac
+    }, environment, defs);
+
+    globals
+  }
+
+  fun compileExprAux(expression) {
+    -- case expression of 
+    --   Fun(l, a, b, s) -> printf("stex %s\n", string(Fun(l, a, b, "someState"))) |
+    --   _               -> printf("stex %s\n", string(expression))
+    -- esac;
+
+    case expression of 
+      -- Data kinds
+      Const(value) -> 
+        singletonBuffer(CONST(value)) |
+      Var(variableName) ->
+        singletonBuffer(LD (lookupVar(environment, variableName))) |
+      Ref(variableName) ->
+        singletonBuffer(LDA(lookupVar(environment, variableName))) |
+      Elem(arrExpr, indexExpr) ->
+        compileExprAux(arrExpr) <+> compileExprAux(indexExpr) <+ ELEM |
+      String(value) ->
+        singletonBuffer(STRING(value)) |
+      Array(valueExprs) ->
+        foldl(fun(buf, expr) { buf <+> compileExprAux(expr) }, singletonBuffer(CONST(size(valueExprs))), valueExprs) 
+          <+ ARRAY(size(valueExprs)) |
+
+      -- Expressions parsing
+      Seq (subexpression1, subexpression2) -> 
+        compileExprAux(subexpression1) <+> compileExprAux(subexpression2) |
+      Assn (Ref(variableName), expression) ->
+        compileExprAux(expression) <+ ST(lookupVar(environment, variableName)) |
+      Assn (ElemRef(arrExpr, arrIndexExpr), valueExpr) ->
+        compileExprAux(arrIndexExpr) <+> compileExprAux(valueExpr)
+          <+> compileExprAux(arrExpr) <+ STA |
+      Assn (destination, expression) ->
+        compileExprAux(destination) <+> compileExprAux(expression) <+ STI |
+      Binop(operation, subexpression1, subexpression2) ->
+        compileExprAux(subexpression1) <+> compileExprAux(subexpression2) 
+          <+ BINOP(operation) |
+
+      -- Flow control
+      While (condition, body) ->
+        case environment.genLabels(2) of 
+          [labelStart, labelBody, newEnv] ->
+            environment := newEnv;
+            singletonBuffer(JMP(labelStart)) <+ LABEL(labelBody) 
+              <+> compileExprAux(body) <+ LABEL(labelStart)
+              <+> compileExprAux(condition) <+ CJMP("nz", labelBody)
+        esac |
+      DoWhile(body, condition) ->
+        case environment.genLabels(1) of [labelBody, newEnv] ->
+          environment := newEnv;
+          singletonBuffer(LABEL(labelBody))
+            <+> compileExprAux(body)
+            <+> compileExprAux(condition) <+ CJMP("nz", labelBody)
+        esac |
+      If (condition, consequentExpr, alternativeExpr) ->
+        case environment.genLabels(2) of 
+          [labelAlternative, labelEnd, newEnv] -> 
+            environment := newEnv;
+            compileExprAux(condition)
+              <+ CJMP("z", labelAlternative)
+              <+> compileExprAux(consequentExpr)
+              <+ JMP(labelEnd) <+ LABEL(labelAlternative)
+              <+> compileExprAux(alternativeExpr)
+              <+ LABEL(labelEnd)
+        esac |
+      Call(fName, argExprs) ->
+        -- Evaluating arguments
+        foldl(fun(insns, argExpr) {
+          insns <+> compileExprAux(argExpr)
+        }, emptyBuffer(), argExprs)
+          <+
+        -- Calling
+        case fName of 
+          "read"   -> BUILTIN(fName, 0) |
+          "write"  -> BUILTIN(fName, 1) |
+          "length" -> BUILTIN(fName, 1) |
+          _ ->
+            case lookupFun(environment, fName) of Fun(fLabel, argsN) ->
+              CALL(fLabel, argsN)
+            esac
+        esac |
+
+      Scope(defs, expr) ->
+        var result;
+        if size(defs) == 0 then
+          compileExprAux(expr)
+        else
+          var globals;
+          environment := beginScope(environment);
+          globals := bindSymbols(defs);
+          result := globals <+> compileExprAux(expr);
+          environment := endScope(environment);
+          result 
+        fi |
+      Fun(fLabel, args, body, fState) ->
+        var bodyInsns;
+        environment := addArgs(beginFun(environment, fState), args);
+        bodyInsns := compileExprAux(body);
+        singletonBuffer(LABEL(fLabel))
+          <+ BEGIN(fLabel, size(args), getLocals(environment))
+          <+> bodyInsns
+          <+ END |
+      Ignore (expression) ->
+        compileExprAux(expression) <+ DROP |
+      Skip ->
+        emptyBuffer() |
+      _ -> failure ("Unknown expression in stack machine '" ++ string(expression) ++ "'\n")
+    esac
+  }
+
+  fun wrapInMainFun(instructions) {
+    singletonBuffer(LABEL("main")) <+ BEGIN("main", 0, getLocals(environment)) 
+      <+> instructions
+      <+ END
+  }
+
+  fun getFunsInsns([funs, env]) {
+    -- printf("Funs %s\n", funs.string);
+    environment := env;
+    foldl(fun(buffer, function){ buffer <+> compileExprAux(function) }, emptyBuffer(), funs)
+  }
+
+  environment := initCompEnv();
+  -- Add builtin functions
+  environment := foldl(addFun, beginScope(environment), {
+    Fun("read", {}),
+    Fun("write", {"x"}),
+    Fun("length", {"x"})
+  });
+
+  getBuffer(wrapInMainFun(compileExprAux(expression)) <+> getFunsInsns(getFuns(environment)))
+}
+
+var environment; -- Can't put it as local variable in the function above:(
 
 public fun compileSM (expr) {
-  failure ("compileSM not implemented\n")
+  compileExpr(expr)
 }
