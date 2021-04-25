@@ -67,10 +67,6 @@ fun initEvalEnv (insns) {
   }]
 }
 
--- Accessor function
-fun fromLabel (env, lab) {
-  env [0] (lab)
-}
 
 -- Stack machine interpreter. Takes an environment, a world and a program,
 -- returns a final output
@@ -117,12 +113,62 @@ fun eval (env, w, insns) {
   }
 
   -- Core interpreter: takes a configuration and a program, returns a configuration
+  -- Stack machine interpreter. Takes an SM-configuration and a program,
+  -- Core interpreter: takes a configuration and a program, returns a configuration
   (* Assignment *)
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun eval (c, insns) {
+    case insns of
+      READ : insns                       -> eval ([readWorld(c[3])[0]:c[0], c[1], c[2], readWorld(c[3])[1]], insns) |
+      WRITE : insns                      -> eval ([c[0].snd, c[1], c[2], writeWorld (c[0].fst, c[3])], insns) |
+      BINOP (op) : insns                 -> eval (funcBinop (op, c), insns) |
+      LABEL (hl) : insns                 -> eval (c, insns) |      
+      LDA (name) : insns                 -> eval ([Ref(name):c.fst, c.snd, c[2], c[3]], insns) |
+      STI : insns                        -> eval (funcSti(c[3], c[2], c[1], c[0]), insns) |
+      LD (name) : insns                  -> eval ([lookup(c[2],name):c[0], c[1], c[2], c[3]], insns) |
+      ST (name) : insns                  -> (assign(c[2], name, c[0].fst);
+					    eval ([c[0].snd, c[1], c[2], c[3]], insns)) |
+      CONST (value) : insns              -> eval ([value:c[0], c[1], c[2], c[3]], insns) |
+      JMP (hl) : insns                -> eval (c, env [0] (hl)) |
+      CJMP (cd, hl) : insns        	 -> case funcCJ (c, cd, hl, env, insns) of
+                                    		[c, insns] -> eval (c, insns)
+                                  		esac |
+      DROP : insns                       -> eval ([c[0].snd, c[1], c[2], c[3]], insns) |
+      DUP : insns                        -> eval ([c[0].fst:c[0].fst:c[0].snd, c[1], c[2], c[3]], insns)  |
+      GLOBAL (name) : insns              -> (assign (c[2], Glb (name), 0);
+					    eval ([c[0], c[1], c[2], c[3]], insns)) |
+      BEGIN (name, i, j) : insns -> (var mst = makeState (i, j);
+					     var tk = take (c[0], i);
+					     var l = c[0];
+    						case tk of
+      							[l, args] ->
+        						(foldl (fun (x, aVal) {
+          						assign (mst, Arg (x), aVal);
+          						x + 1
+        					}, 0, args);
+        					eval([l, c[2]:c[1], mst, c[3]], insns))
+    					    esac) |
+      END : insns                        -> (
+						var sn = c[1].snd;
+						var en = fun(c, sn){
+
+						case sn of
+      						{}             -> [[c[0], sn, c[1].fst, c[3]], {}]
+    						| j:sn -> [[c[0], sn, c[1].fst, c[3]], j]
+    					     esac};						
+					     case en(c, sn) of
+                                              [c, insns] -> eval (c, insns)
+                                            esac) |
+      CALL (name, i) : insns          -> eval ([c[0], insns:c[1], c[2], c[3]], env [0] (name)) |
+      unknown : insns                    -> failure ("Error in eval-no such expr\n") |
+      {}                                 -> c
+    esac
+  }
+  
+  fun funcSti (k, x, s, i:Ref (n):j) {
+  	assign (x, n, i);
+  	[i:j, s, x, k]
   }
   (* End *)
-  
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
 
@@ -323,32 +369,242 @@ fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
 }
 
+fun funcBinop (inc, [x1:x2:y, c, s, k]) {
+  var ex = case inc of
+    "+"  -> x2 +  x1 |
+    "-"  -> x2 -  x1 |
+    "*"  -> x2 *  x1 |
+    "/"  -> x2 /  x1 |
+    "%"  -> x2 %  x1 |
+    ">=" -> x2 >= x1 |
+    "&&" -> x2 && x1 |
+    "==" -> x2 == x1 |
+    "!=" -> x2 != x1 |
+    "<"  -> x2 <  x1 |
+    "<=" -> x2 <= x1 |
+    ">"  -> x2 >  x1 |
+    "!!" -> x2 !! x1 |
+    _    -> failure ("Failure at funcBinop - Incorrect expression for binop\n")
+  esac;
+  [ex:y, c, s, k]
+}
+
+
+fun funcCJ([s, k, ed, j], cd, l, e, sf) {
+  case case s of
+    0:s -> case cd of
+                 "z" -> [s, e [0] (l)] |
+				 _ -> [s, sf]
+                esac |
+    _:s -> case cd of
+				 "z" -> [s, sf] |
+                 _ -> [s, e [0] (l)]
+                 
+               esac
+  esac of
+    [s, in] -> [[s, k, ed, j], in]
+  esac
+}
+
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
+-- instructions.
+-- Takes an expression, returns a list of stack machine instructions
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
+-- instructions.
+-- Takes an expression, returns a list of stack machine instructions
+fun compileExpr (expr, env) {
+  case expr of
+    Var   (i)          -> [singletonBuffer (LD (lookupVar(env, expr[0]))), env] |
+    Const (i)          -> [singletonBuffer (CONST (expr[0])), env] |
+    Binop (i, j, y)    -> (case compileExpr (expr[1], env) of
+				[lIn, env] ->
+				case compileExpr (expr[2], env) of
+					[rIn, env] -> [lIn <+> rIn <+ BINOP (expr[0]), env]
+				esac
+		   esac) |
+    Ref (i)            -> [singletonBuffer (LDA (lookupVar (env, expr[0]))), env] |
+   
+    Assn  (Ref (i), j) -> (case compileExpr (expr[1], env) of
+    				[in, env] -> [in <+ DUP <+ ST (lookupVar(env, expr[0][0])), env]
+  			   esac) |
+
+    Seq   (i, j)       -> (case compileExpr (expr.fst, env) of
+    					[x1, env] -> case compileExpr (expr.snd, env) of
+                      					[x2, env] -> [x1 <+> x2, env]
+                    				   esac
+  		    	   esac) | 
+	While (i, j)       -> (case genLabels (env, 2) of
+    				[sta, cond, env] ->
+      				case compileExpr(expr[1], env) of
+        				[stmtInsns, env] ->
+        					case compileExpr (expr[0], env) of
+          					[exprInsns, env] -> [singletonBuffer (JMP (cond)) <+ LABEL (sta) <+> stmtInsns <+ LABEL (cond) <+>
+                               			exprInsns <+ CJMP ("nz", sta),  env]
+        					esac
+      					esac
+  				esac) |
+    DoWhile (i, j)     -> (case genLabel (env) of
+    				[sta, env] ->
+      					case compileExpr(expr[0], env) of
+        					[stmtInsns, env] ->
+        				case compileExpr (expr[1], env) of
+          					[exprInsns, env] -> [singletonBuffer (LABEL (sta)) <+> stmtInsns <+>
+                               			exprInsns <+ CJMP ("nz", sta),  env]
+        				esac
+      				esac
+  			  esac) |
+    Assn (i, j)        -> (case compileExpr (expr[0], env) of
+    				[rIns, env] ->
+    				case compileExpr (expr[1], env) of
+      					[in, env] -> [rIns <+> in <+ STI, env]
+    				esac
+  			   esac) |			  
+    If (i, j, y)       -> (case genLabel (env) of
+    				[th, env] ->
+      				case funcIf (expr, th, env) of
+        				[in, env] -> [in <+ LABEL (th), env]
+      				esac
+  			  esac) |
+    Skip               -> [{}, env]                      |
+    Read  (Ref (i))    -> [listBuffer ({READ, ST (lookupVar(env, expr[0][0]))}), env] |
+    Write (i)          -> (case compileExpr (expr[0], env) of
+    				[in, env] -> [in <+ WRITE, env]
+  			   esac) |
+
+    Ignore (i)         -> (case compileExpr (expr[0], env) of
+    				[exprInsns, env] -> [exprInsns <+ DROP, env]
+  			  esac) |
+    Scope (i, e)       -> (
+			var reg = fun(i, jArr){
+				foldl (fun (a, j) {
+					case j of
+					  Var (_) -> a
+					| Fun (name, args, body) ->
+					  case lookupFun (a, name) of
+						Fun (label, _) -> rememberFun (a, label, args, body)
+					  esac
+					esac
+				  }, jArr, i)
+			};
+			var defReg = fun(i, jArr) {
+				foldl (fun (a, j) {
+					case j of
+					  Var (names) -> addVars (a, names)
+					| Fun (name, args, body) ->
+					  case genLabel (a) of
+						[label, a] -> addFun (a, name, label, size (args))
+					  esac
+					esac
+				  }, jArr, i)
+			};
+			case reg (expr[0], defReg (expr[0], beginScope (env), env)) of
+				env ->
+				  case
+					case compileExpr (expr[1], env) of
+					  [insns, env] ->
+						(
+						var gl = fun(x, y){
+							  var insns = foldl (fun (buffer, def) {
+								case def of
+								  Var (names) -> foldl (fun (buffer, name) {
+												   buffer <+ GLOBAL (name)
+												 }, buffer, names)
+								| _ -> buffer
+								esac
+							  }, emptyBuffer (), x);
+							  [insns, y]
+						};
+						if isGlobal (env) then
+						  case gl (expr[0], env) of
+							[scopeInsns, env] -> [scopeInsns <+ LABEL ("main") <+ BEGIN ("main", 0, getLocals (env))
+																			   <+> insns <+ END,
+												  env]
+						  esac
+						else
+						  [insns, env]
+						fi)
+					esac of
+					[insns, env] ->
+					(
+					var envFun = fun (x){
+						  fun funcReg (y, x) {
+							case
+							  case getFuns (x) of
+								[functions, x] ->
+								[foldl (fun ([y, x], Fun (label, args, body, state)) {
+									var funcBody = fun (u, e, a, ars){
+										case compileExpr (u, e) of
+											[in, e] -> [singletonBuffer (LABEL (a)) <+ BEGIN (a, ars, getLocals (e)) <+> in <+ END, e]
+										esac
+								   };
+								   case funcBody (body, addArgs (beginFun (x, state), args), label, size (args)) of
+									 [yArgs, x] -> [y <+> yArgs, x]
+								   esac
+								 }, [y, x], functions), size (functions)]
+							  esac of
+							  [[y, x], nFuncs] -> 
+							  if nFuncs == 0 then
+								[y, x]
+							  else
+								funcReg (y, x)
+							  fi
+							esac
+						  }
+
+						  funcReg (emptyBuffer (), x)
+					};
+					if isGlobal (env) then 
+					  case envFun (env) of
+						[funcInsns, env] -> [insns <+> funcInsns, endScope (env)]
+					  esac
+					else 
+					  [insns, endScope (env)]
+					fi)
+				 esac
+			  esac)  |
+    Call (i, j)        -> (
+					var c = expr[0];
+					var b = expr[1];
+					case foldl (fun ([insns, env], argExpr) {
+         			case compileExpr (argExpr, env) of
+           			[argInsns, env] -> [insns <+> argInsns, env]
+         		   esac
+       				}, [emptyBuffer (), env], b) of
+    			   [insns, env] ->
+    			   case lookupFun (env, expr[0]) of
+      				Fun (c, b) -> [insns <+ CALL (c, b), env]
+    			   esac
+  			esac) |
+    _                  -> failure (sprintf("compileExpr for %s not implemented\n", string(expr)))
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-
-(* Assignment *)
-
--- Some guidelines for compiling functions and scopes.
---
--- 1. use env.beginScope/env.endScope properly;
--- 2. in each scope traverse the definitions twice:
---    a. first, add all bindings into symbolic state,
---       using end.addVar/env.addFun;
---    b. do not forget to generate GLOBAL instructions for
---       top-level variable declarations;
---    c. on the secord traversal add functions themselves for
---       future code generation (use env.rememberFun).
--- 3. the overall flow for codegeneration:
---    a. generate the code for thetopmost expression (the progrman itself);
---    b. take list of nested functions definitions via env.getFuns and
---       generate the code for each function;
---    c. repeat b. until no function definitions appear.
--- 4. when compiling functions, do not forget to create proper
---    environment (use env.beginFun) and register arguments
---    (use env.addArg).
-
-public fun compileSM (expr) {
-  failure ("compileSM not implemented\n")
+public fun compileSM (stmt) {
+  case compileExpr (stmt, initCompEnv()) of
+    [in, i] -> getBuffer (in)
+  esac
 }
-(* End *)
+
+fun funcIf (If (er, th, el), l, e) {
+  case genLabel (e) of
+    [st, e] ->
+      case compileExpr (th, e) of
+        [iTh, e] ->
+          case case el of
+                 If (i, j, y) -> funcIf (el, l, e) |
+                 _ -> compileExpr (el, e)
+               esac of
+            [iEl, e] ->
+            case compileExpr(er, e) of
+              [eIn, e] -> [eIn <+ CJMP ("nz", st) <+> iEl <+ JMP (l) <+
+                                  LABEL (st) <+> iTh, e]
+            esac
+          esac
+      esac
+  esac
+}
