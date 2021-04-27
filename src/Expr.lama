@@ -101,14 +101,128 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun prisv (a, x, [st, w]) {
+	var a1 = eval([st, w], a);
+	[[a1.fst[0] <- [a1.snd, x], a1.fst[1]], x]
+}
+
+fun read (a, [st, w]) {
+	var a1 = eval([st, w], a);
+	var res = readWorld(a1.fst[1]);
+	[a1.fst[0] <- [a1.snd, res[0]], res[1]] 
+}
+
+fun while_func(expr, stmt, c) {
+	var a1 = eval(c, expr);
+	c := a1.fst;
+	while a1.snd do 
+		c:=eval(c, stmt).fst;
+		a1 := eval(c, expr);
+		c := a1.fst 
+	od;
+	[c, Void]
+}
+
+fun do_while_func(expr, stmt, c) {
+	var a1;
+	do 
+		c:=eval(c, stmt).fst;
+		a1 := eval(c, expr);
+		c := a1.fst
+	while a1.snd 
+	od;
+	[c, Void]
+}
+
+fun makeScope(st, defs) {
+	case defs of 
+	d:dd ->
+	st := case d of
+		Var(e) -> addNames(st, e)|
+		Fun(a, e, b) -> addFunction(st, a, e, b)
+	esac;
+	makeScope(st, dd)
+	| 0 -> st
+	| d ->
+	st := case d of
+		Var(e) -> addNames(st, e)|
+		Fun(a, e, b) -> addFunction(st, a, e, b)
+	esac;
+	st
+	esac
+}
+
+fun eval (c, expr) {
+	case expr of
+		Skip -> [c, Void] |
+		Assn(a, expr1) -> var a1 = eval(c, expr1); --printf(" Assn "); 
+			prisv(a, a1.snd, a1.fst) |
+		Seq(expr1, expr2) -> eval(eval(c, expr1).fst, expr2) |
+		Read(a) -> --printf(" Read "); 
+			[read(a, c), Void] |
+		Write(expr1) -> var out; var a1 = eval(c, expr1); out := [[a1.fst[0], writeWorld(a1.snd, a1.fst[1])], Void]; --printf(" Write "); 
+			out |
+		If(expr1, expr2, expr3) ->  var a1 = eval(c,expr1); if a1.snd then eval(a1.fst, expr2) else eval(a1.fst, expr3) fi |
+		While(expr1, expr2) -> while_func(expr1, expr2, c) |
+		DoWhile(expr2, expr1) -> do_while_func(expr1, expr2, c) |  
+		Const(a) -> --printf(" Const "); 
+			[c, a] |
+		Var(a) -> --printf(" Var "); 
+			[c, lookup(c[0], a)] |
+		Ref(a) -> [c, a] |
+		Ignore(e) -> [eval(c, e)[0], Void] |
+		Binop(a, expr1, expr2) ->
+			case a of
+				"+" -> var a1 = eval(c, expr1); [c, a1.snd + eval(a1.fst, expr2).snd] |
+				"-" -> var a1 = eval(c, expr1); [c, a1.snd - eval(a1.fst, expr2).snd] |
+				"*" -> var a1 = eval(c, expr1); [c, a1.snd * eval(a1.fst, expr2).snd] |
+				"/" -> var a1 = eval(c, expr1); [c, a1.snd / eval(a1.fst, expr2).snd] |
+				"%" -> var a1 = eval(c, expr1); [c, a1.snd % eval(a1.fst, expr2).snd] |
+				"<" -> var a1 = eval(c, expr1); [c, a1.snd < eval(a1.fst, expr2).snd] |
+				">" -> var a1 = eval(c, expr1); [c, a1.snd > eval(a1.fst, expr2).snd] |
+				"<=" -> var a1 = eval(c, expr1); [c, a1.snd <= eval(a1.fst, expr2).snd] |
+				">=" -> var a1 = eval(c, expr1); [c, a1.snd >= eval(a1.fst, expr2).snd] |
+				"==" -> var a1 = eval(c, expr1); [c, a1.snd == eval(a1.fst, expr2).snd] |
+				"!=" -> var a1 = eval(c, expr1); [c, a1.snd != eval(a1.fst, expr2).snd] |
+				"&&" -> var a1 = eval(c, expr1); [c, a1.snd && eval(a1.fst, expr2).snd] |
+				"!!" -> var a1 = eval(c, expr1); [c, a1.snd !! eval(a1.fst, expr2).snd]
+			esac |
+		Scope (d, e) -> var st;  --printf(" Scope "); printf(" %s ", d.string); 
+			st := enterScope(c[0]); st := makeScope(st, d); case eval ([st, c[1]], e) of [[st, w], res] -> [[leaveScope(st), w], res] esac |
+		Call(f, args) -> case c of [st, w] -> 
+					checkFun (st, f);
+  					case lookup (st, f) of Fun (argvars, body) ->
+      						var globalState = st;
+      						case evalList (c, args) of [[st, w], values] ->
+          						st := enterFunction(st);
+          						while size(argvars) > 0 do
+            							st := addName(st, argvars[0], values[0]);
+            							argvars := argvars.tl;
+            							values := values.tl
+          						od;
+          						case eval ([st, w], body) of [[st, w], v] -> 
+              							[[leaveFunction(globalState, getGlobal(st)), w], v]
+          						esac
+      						esac
+  					esac 
+				esac |
+				--case lookup(c[0], f) of  Fun(argNames, expr) -> 
+				--	var c_curr = args[0];
+				--	var st = c_curr[0], wrld = c_curr[1];
+				--	var vals = args[1]; 
+				--	foldl (fun (st, z) {st.addName (z[0], z[1])}, st, zip(argNames, vals)); 
+				--	case eval ([st, wrld], expr) of [[st1, w], res] -> [[leaveFunction (c[0], getGlobal (st1)), w], res] esac
+				-- esac |
+		_ -> failure("The expression is not recognized!")
+
+	esac
 }
 
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
   case eval ([emptyState (), createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
+    [c, _] -> --printf(" Finished "); 
+	c.snd.getOutput
   esac
 }
