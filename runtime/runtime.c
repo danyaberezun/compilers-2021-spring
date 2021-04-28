@@ -63,7 +63,7 @@ void* Belem (void *p, int i) {
   return (void*) ((int*) a->contents)[i];
 }
 
-void* Bsta (int i, void *v, void *x) {
+void* Bsta (void *x, int i, void *v) {
   if (TAG(TO_DATA(x)->tag) == STRING_TAG)
     ((char*) x)[i] = (char) v;
   else ((int*) x)[i] = (int) v;
