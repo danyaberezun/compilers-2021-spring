@@ -50,13 +50,13 @@ public fun evalOp (op, l, r) {
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
+--			  Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)               |
 --        String  (string)             |
 --        Array   (expr list)          |
 --        Elem    (expr, expr)         |
---        ElemRef (expr, expr)         |
---        Builtin (string, expr list)
+--        ElemRef (expr, expr)
 
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
@@ -100,8 +100,72 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun defineDeclarations (state, decls) {
+	foldl (fun (s, decl) {
+		case decl of
+			Var (names) -> addNames (s, names)
+		|	Fun (name, args, body) -> addFunction (s, name, args, body)
+		esac
+	}, state, decls)
+}
+
+fun eval (c@[s, w], expression) {
+  case expression of
+		Const (value) -> [c, value]
+  | Var (x) -> [c, lookup (s, x)]      -- TODO checkVar (s, x); 
+  | Ref (x) -> [c, expression]
+  | Binop (op, l, r) -> case eval (c, l) of [c1, w] -> 
+                          case eval (c1, r) of [c2, v] -> [c2, evalOp (op, w, v)] esac 
+                        esac
+-- TODO evalList (too musch memory consumtion)
+--| Binop (op, l, r) -> case evalList (c, {l, r}) of [newC, {w, v}] -> [newC, evalOp(op, w, v)] esac
+  | Skip -> [c, Void]
+  | Assn (l, r) -> 
+			case evalList (c, {l, r}) of 
+				[[newS, newW], {Ref (x), v}] -> [[newS <- [x, v], newW], v] 
+			| [c, {ElemRef (arr, i), v}] -> arr[i] := v; [c, v] 
+			esac
+  | Seq (stm1, stm2) -> eval(eval(c, stm1)[0], stm2)
+  | If (expr, ifTrue, ifFalse) -> 
+			case eval(c, expr) 
+				of [newC, n] -> if (n != 0) then eval(newC, ifTrue) else eval(newC, ifFalse) fi
+			esac
+  | While (expr, body) -> 
+			case eval(c, expr) of 
+				[newC, n] ->  if (n != 0) 
+											then eval((*c'' = *) eval(newC, body)[0], expression)
+											else [newC, Void] 
+											fi
+			esac
+  | DoWhile (body, expr) -> eval(c, Seq (body, While(expr, body)))
+  | Scope (defs, expr) -> 
+			var scopeState = defineDeclarations (enterScope (s), defs);
+			case eval ([scopeState, w], expr) of
+				[c@[s, w], v] -> [[leaveScope (s), w], v]
+			esac
+  | Call (name, args) -> 
+		-- TODO checkFun (s, name)
+		case lookup (s, name) of         -- get fun signature 
+			Fun (params, body) ->
+				case evalList (c, args) of   -- evaluate args
+				[c1@[s1, w], values] -> 
+					case body of
+						External -> case evalBuiltin(name, values, w) of [result, newW] -> [[s, newW], result] esac 
+					| _ -> 
+						var stateInFun = enterFunction (s1);      -- enter new scope
+						var stateWithArgs = foldl(fun (s, pair@[name, value]) { addName (s, name, value) }, stateInFun, zip (params, values));
+						case eval ([stateWithArgs, w], body) of   -- evaluate body
+							[c2@[s2, w], result] -> [[leaveFunction (s, getGlobal (s2)), w], result]
+						esac
+					esac
+				esac
+		esac
+  | Ignore (expr) -> [eval (c, expr)[0], Void]
+  | String (string) -> [c, string]
+  | Array  (exprs) -> case evalList (c, exprs) of [c, list] -> [c, listArray(list)] esac
+  | Elem    (expr, index) -> case evalList (c, {expr, index}) of [c, {arr, i}] -> [c, arr [i]] esac
+  | ElemRef (expr, index) -> case evalList (c, {expr, index}) of [c, {arr, i}] -> [c, ElemRef (arr, i)] esac     
+  esac
 }
 
 
