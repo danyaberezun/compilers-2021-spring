@@ -86,7 +86,25 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
+fun processDeclarations(state, decls) {
+  -- foldl (fun (state, decl) {  
+  --   case decl of
+  --     Var (variables) -> addNames(state, variables) |
+  --     Fun (name, args, body) -> addFunction(state, name, args, body) |
+  --     _ -> failure ("Unknown declaration '" ++ string(decl) ++ "' appeared at evaluation\n")
+  --   esac
+  -- }, state, decls)
+
+  while size(decls) > 0 do
+    state := case decls.hd of 
+      Var (variables) -> addNames(state, variables) |
+      Fun (name, args, body) -> addFunction(state, name, args, body) 
+    esac;
+    decls := decls.tl
+  od; state
+}
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,8 +119,128 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (configuration@[state, world], expression) {
+  -- printf("evalexpr %s\n", expression.string);
+
+  case expression of
+    Const (value) ->
+      [configuration, value] |
+    Sexp(name, valueExprs) ->
+      case evalList(configuration, valueExprs) of
+        [configuration, values] ->
+          [configuration, Sexp(name, listArray(values))]
+      esac |
+    Var (variableName) -> 
+      [configuration, lookup(state, variableName)] |
+    Ref (x) ->
+      [configuration, Ref(x)] |
+    String(value) ->
+      [configuration, value] |
+    Array(valueExprs) ->
+      case evalList(configuration, valueExprs) of
+        [configuration, values] ->
+          [configuration, listArray(values)]
+      esac |
+    Elem(arrExpr, indexExpr) ->
+      case evalList(configuration, {arrExpr, indexExpr}) of
+        [configuration, {Sexp(_, arr), index}] ->
+          [configuration, arr[index]] |
+        [configuration, {arr, index}] ->
+          [configuration, arr[index]]
+      esac |
+    ElemRef(arrExpr, indexExpr) ->
+      case evalList(configuration, {arrExpr, indexExpr}) of
+        [configuration, {arr, index}] ->
+          [configuration, ElemRef(arr, index)]
+      esac |
+    Binop (operation, subexpression1, subexpression2) ->
+      case evalList(configuration, {subexpression1, subexpression2}) of 
+        [configuration, {lhs, rhs}] ->
+          [configuration, evalOp(operation, lhs, rhs)]
+      esac |
+    Assn (subexpression1, subexpression2) -> 
+      case evalList(configuration, {subexpression1, subexpression2}) of
+        [configuration, {ElemRef(arr, index), value}] ->
+          arr[index] := value;
+          [configuration, value] |
+        [[state, world], {Ref(varName), value}] ->
+          [[state <- [varName, value], world], value]
+      esac |
+    Seq (subexpression1, subexpression2) -> 
+      case eval(configuration, subexpression1) of
+        [configuration, _] ->
+          eval(configuration, subexpression2)
+      esac |
+    If (condition, consequentBody, alternativeBody) ->
+      case eval(configuration, condition) of
+        [configuration, 0] -> eval(configuration, alternativeBody) |
+        [configuration, _] -> eval(configuration, consequentBody)
+      esac |
+    While (condition, body) ->
+      case eval(configuration, condition) of 
+        [configuration, 0] -> [configuration, Bottom] |
+        _ ->
+          eval(eval(configuration, body)[0], expression)
+      esac |
+    DoWhile (body, condition) ->
+      case eval(eval(configuration, body)[0], condition) of
+        [configuration, 0] -> [configuration, Bottom] |
+        [configuration, _] -> eval(configuration, expression)
+      esac |
+    Scope(defs, expr) ->
+      if size(defs) == 0 then
+        eval(configuration, expr)
+      else
+        state := enterScope(state);
+        state := processDeclarations(state, defs);
+        case eval([state, world], expr) of
+          [[state, world], returnValue] ->
+            [[leaveScope(state), world], returnValue]
+        esac
+      fi |
+    Call("read", _) -> 
+      var result = readWorld(world);
+      [[state, result.snd], result.fst] |
+    Call("write", expr) -> 
+      case eval(configuration, expr[0]) of
+        [[state, world], value] -> [[state, writeWorld(value, world)], Bottom]
+      esac |
+    Call("length", expr) -> 
+      case eval(configuration, expr[0]) of
+        [[state, world], value] -> [configuration, evalBuiltin("length", {value}, world)[0]]
+      esac |
+    Call(name, argExprs) ->
+      -- checkFun(state, name); -- Increases memory requirements by some extent
+      case lookup(state, name) of Fun(argNames, body) ->
+        var previousState = state;
+        state := case evalList(configuration, argExprs) of [[state, world], argValues] ->
+          -- printf("%s\n", argValues.string);
+          state := enterFunction(state);
+          -- foldl(fun(state, [argName, argValue]) {
+          --   addName(state, argName, argValue)
+          -- }, state, zip(argNames, argValues)) -- A bit greater memory usage in comparison to the while code
+          while size(argNames) > 0 do
+            state := addName(state, argNames.hd, argValues.hd);
+            argNames := argNames.tl;
+            argValues := argValues.tl
+          od; state
+        esac;
+
+        case eval([state, world], body) of [[state, world], ret] ->
+          -- Add new global state into previous state
+          state := leaveFunction(previousState, getGlobal(state));
+          -- printf("-%s\n", argValues.string);
+          [[state, world], ret]
+        esac
+
+      esac |
+    Ignore (subexpression) ->
+      [eval(configuration, subexpression)[0], Bottom] |
+    Skip ->
+      [configuration, Bottom] |
+    _ ->
+      failure ("Unknown expression '" ++ string(expression) ++ "' appeared at evaluation\n")
+  esac
 }
 
 
