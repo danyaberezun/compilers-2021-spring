@@ -11,7 +11,7 @@ import Buffer;
 -- The registers: 
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
 
--- We can not freely operate with all register; only with 4 by now
+-- We can not freely opefrate with all register; only with 4 by now
 var nRegs = regs.length - 5;
 
 -- For convenience we define the following synonyms for the registers: 
@@ -85,6 +85,7 @@ fun insnString (insn) {
 
   case insn of
     Cltd               -> "\tcltd\n"
+  | Test  (s1, s2)     -> sprintf ("\ttest\t%s,\t%s\n", opndString (s1), opndString (s2))
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
   | IDiv  (s1)         -> sprintf ("\tidivl\t%s\n", opndString (s1))
   | Binop (op, s1, s2) -> sprintf ("\t%s\t%s,\t%s\n", binopString (op), opndString (s1), opndString (s2))
@@ -407,6 +408,35 @@ fun suffix (op) {
   esac
 }
 
+-- Commands to cast a value to boolean (nonzero - true, zero - false)
+fun castToBool (opnd) {
+    singletonBuffer(Test (eax, eax)) <+ Binop("cmp", opnd, eax) <+ Set (suffix("!="), "%al") <+> move (eax, opnd)  
+}
+
+fun binopWrap (op, x, y) {
+    move (x, eax) <+ Binop(op, eax, y) 
+}
+fun boolOp(op, x, y) {
+    move(L(0), eax) <+ Binop("cmp", x, eax) <+ Set(suffix("!="), "%al") <+> move(eax, x) <+> move(L(0), eax) <+ Binop("cmp", y, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, x, eax) <+> move(eax, y)
+}
+fun compileBinop(op, x, y) {
+    case op of
+     "+"  -> binopWrap(op, x, y)
+   | "-"  -> binopWrap(op, x, y)
+   | "*"  -> move(y, eax) <+ Binop(op, x, eax) <+> move(eax, y)
+   | "&&" -> boolOp(op, x, y)
+   | "!!" -> boolOp(op, x, y)
+   | "/"  -> move (y, eax) <+ Cltd <+ IDiv(x) <+> move(eax, y)
+   | "%"  -> move (y, eax) <+ Cltd <+ IDiv(x) <+> move(edx, y)
+   | ">"  -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "<"  -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "<=" -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | ">=" -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "==" -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   | "!=" -> binopWrap("cmp", x, y) <+> move (L (0), eax) <+ Set (suffix(op), "%al") <+> move (eax, y) 
+   esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -417,14 +447,62 @@ fun compile (env, code) {
         case i of
           READ ->
             case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
+              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
             esac             
         | WRITE ->
             case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
+              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
             esac
-        (* Assignment *)
-        
+        | CONST(n) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (L (n), s)]
+            esac
+        | LD (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+> move (env.loc (x), s)]
+            esac
+        | ST (x) ->
+            [env, code <+> move (env.peek, env.loc (x))]
+        | BINOP (op) ->
+            case env.pop2 of
+              [x, y, env] -> [env.push(y), code <+> compileBinop(op, x, y)]
+            esac
+        | LABEL (lab) ->  
+            [if isBarrier (env) then retrieveStack (env, lab) else env fi, code <+ Label (lab)]
+        | JMP (lab) -> 
+            [setBarrier(setStack (env, lab)), code <+ Jmp (lab)]
+        | CJMP (type, lab) -> 
+            case env.pop of
+              [v, env] -> [setStack (env, lab), code <+ Binop("cmp", L (0), v) <+ CJmp (type, lab)]
+            esac
+        | DROP ->
+            case env.pop of
+              [_, env] -> [env, code]
+            esac
+        | STI -> 
+            case env.pop2 of
+              [v, ref, env] -> [env.push(v), code <+> move (ref, eax) <+ Push (edx) <+> move (v, edx) <+> move (edx, I(0, eax)) <+ Pop (edx)]
+            esac
+        | LDA (x) ->
+            case env.allocate of
+              [s, env] -> [env, code <+ Lea(env.loc (x), eax) <+> move(eax, s)]
+            esac
+        | DUP ->
+            case env.pop of 
+              [v, env] -> [env.push(v).push(v), code]
+            esac
+        | BEGIN (fname, nargs, nlocal) -> 
+            [enterFunction(env, fname, nlocal), code <+> prologue (fname)]
+        | END ->
+            case epilogue (env) of 
+              [env, endCode] -> [env, code <+> endCode]
+            esac
+        | CALL (fname, nargs) ->
+            case call (env, fname, nargs) of
+              [env, callCode] -> [env, code <+> callCode]
+            esac
+        | GLOBAL (x) -> 
+            [env.addGlobal (x), code]
          -- Some guidelines for generating function calls:
          --
          -- 1. generate instructions to save live registers on the X86 stack (use
@@ -442,7 +520,6 @@ fun compile (env, code) {
          -- 2. generate epilogue for END instruction.
                
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
         esac
       }, [env, emptyBuffer ()], code)
   }
@@ -470,5 +547,36 @@ public fun compileX86 (args, code) {
                    ).stringcat);
                     
        system ({"gcc -g -m32 -o ", args.getBaseName, " ", runtime, " ", asmFile}.stringcat)
+  esac
+}
+
+fun call (env, fLabel, nA) {
+  case unzip $ map (fun (r) {[Push (r), Pop (r)]}, env.liveRegisters (nA)) of
+    [pushRegs, popRegs] ->
+      fun pushArgs (env, acc, n) {
+        case n of
+          0 -> [env, acc]
+        | n -> case env.pop of
+                 [x, env] -> pushArgs (env, Push (x) : acc, n - 1)
+               esac
+        esac
+      }
+
+      case pushArgs (env, {}, nA) of
+        [env, pushArgs] ->
+           case env.allocate of
+             [y, env] ->
+               [env, listBuffer (
+                       deepFlatten $
+                       {pushRegs,
+                        reverse (pushArgs),
+                        Call (fLabel),
+                        Binop ("+", L (wordSize * pushArgs.size), esp),
+                        reverse (popRegs),
+                        Mov (eax, y)}
+                     )
+               ]
+           esac
+      esac
   esac
 }
