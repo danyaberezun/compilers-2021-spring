@@ -6,6 +6,25 @@ import World;
 import Lexer;
 import Parser;
 
+-- An auxiliary function to perform arbitrary binary operation in LaMa
+public fun binOp (op, lExpr, rExpr) {
+  case op of
+    "+"  -> lExpr + rExpr
+  | "-"  -> lExpr - rExpr
+  | "*"  -> lExpr * rExpr
+  | "/"  -> lExpr / rExpr
+  | "%"  -> lExpr % rExpr
+  | "<"  -> lExpr < rExpr
+  | ">"  -> lExpr > rExpr
+  | "<=" -> lExpr <= rExpr
+  | ">=" -> lExpr >= rExpr
+  | "==" -> lExpr == rExpr
+  | "!=" -> lExpr != rExpr
+  | "&&" -> lExpr && rExpr
+  | "!!" -> lExpr !! rExpr
+  esac
+}
+
 -- As association map which maps "\otimes" into "\oplus"
 var ops = {
   ["+" , infix + ],
@@ -94,9 +113,74 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun initScope(s, d) {
+  while size(d) > 0 do
+    s := case d.fst of 
+           Var (x) -> addNames (s, x)
+         | Fun (f, args, body) -> addFunction (s, f, args, body)
+         esac;
+    d := d.tl
+  od;
+  s
+}
+
+fun initFunArgs (s, argsNames, args) {
+  while size(args) > 0 do
+    s := addName(s, argsNames.fst, args.fst);
+    argsNames := argsNames.tl;
+    args := args.tl
+  od;
+  s
+}
+
+public fun eval (c@[st, w], expr) {
+  case expr of
+    Assn (lExpr, rExpr) -> 
+      case evalList (c, {lExpr, rExpr}) of
+        [c@[st, w], {lExpr, rExpr}] -> [[st <- [lExpr, rExpr], w], rExpr]
+      esac
+  | Seq  (lExpr, rExpr) -> case evalList (c, {lExpr, rExpr}) of [c, {v1, v2}] -> [c, v2] esac
+  | Skip -> [c, Void]
+  | Read  (vr) -> case readWorld (w) of [x, w0] -> [[st <- [eval (c, vr).snd, x], w0], Void] esac
+  | Write (e)  -> case eval (c, e) of [[st, w], e] -> [[st, writeWorld (e, w)], Void] esac
+  | If (expr1, expr2, expr3) ->
+      case eval (c, expr1) of
+        [c, v] -> if (v != 0) then eval (c, expr2) else eval (c, expr3) fi 
+      esac
+  | While (exp, st) ->
+      case eval (c, exp) of
+        [c, v] -> if (v != 0) then eval (eval (c, st).fst, expr) else [c, Void] fi
+      esac
+  | DoWhile (body, cond) -> 
+      case eval (eval (c, body).fst, cond) of
+        [c, 0] -> [c, Bottom] |
+        [c, _] -> eval (c, expr)
+      esac 
+  | Var   (x) -> [c, lookup(st, x)]
+  | Ref   (x) -> [c, x]
+  | Const (z) -> [c, z]
+  | Binop (op, lExpr, rExpr) -> 
+      case evalList (c, {lExpr, rExpr}) of
+        [c@[st, w], {l1Expr, r1Expr}] -> [c, binOp (op, l1Expr, r1Expr)]
+      esac
+  | Scope (defs, expr) ->
+      st := enterScope (st);
+      st := initScope (st, defs);
+      case eval ([st, w], expr) of
+        [[st, w], r] -> [[leaveScope (st), w], r]
+      esac
+  | Call (f, args) ->  
+      case lookup (st, f) of Fun (argsNames, expr) ->
+        case evalList (c, args) of [[st, w], args] ->
+          case initFunArgs(enterFunction (st), argsNames, args) of st ->
+            case eval ([st, w], expr) of 
+              [[st, w], r] -> [[leaveFunction (c.fst, getGlobal (st)), w], r]
+            esac
+          esac
+        esac
+      esac
+  | Ignore (e) -> [eval (c, e).fst, Void]
+  esac
 }
 (* End *)
 
