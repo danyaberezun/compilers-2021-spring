@@ -217,7 +217,7 @@ The primitive $\primi{createLocal}{}$ is defined as follows:
     \trule{\withenv{P}{\trans{\inbr{s,\,s_c,\,\sigma,\,\primi{write}{z\,\omega}}}{p}{c^\prime}}}
           {\withenv{P}{\trans{\inbr{zs,\,s_c,\,\sigma,\,\omega}}{\llang{WRITE}\,p}{c^\prime}}}\ruleno{Write$_{SM}$}
   \]
-  \[ 
+  \[
     \trule{\withenv{P}{\trans{\inbr{s,\,s_c,\,\sigma,\,\omega}}{p}{c^\prime}}}
           {\withenv{P}{\trans{\inbr{xs,\,s_c,\,\sigma,\,\omega}}{[\llang{DROP}]p}{c^\prime}}}\ruleno{Drop$_{SM}$}
   \]
@@ -243,9 +243,9 @@ The primitive $\primi{createLocal}{}$ is defined as follows:
   \[
     \trule{\trans{\inbr{zs,\,s_c,\,\sigma[x\gets z],\,\omega}}{p}{c^\prime}}
           {\trans{\inbr{zs,\,s_c,\,\sigma,\,\omega}}{[\llang{ST $\;x$}]p}{c^\prime}}\ruleno{ST$_{SM}$}
-  \]          
+  \]
   \caption{Stack machine: state operations}
-  \label{sm_state}  
+  \label{sm_state}
 \end{figure}
 
 \begin{figure}
@@ -274,7 +274,7 @@ The primitive $\primi{createLocal}{}$ is defined as follows:
     \trule{z \ne 0,\quad\withenv{P}{\trans{\inbr{s,\,s_c,\,\sigma,\,\omega}}{p}{c^\prime}}}
           {\withenv{P}{\trans{\inbr{zs,\,s_c,\,\sigma,\,\omega}}{[\llang{CJMP$_z$ $\;l$}]p}{c^\prime}}}\ruleno{CJMP$_{z}^-$$_{SM}$}
   \]
-  \caption{Stack machine: control flow instructions}        
+  \caption{Stack machine: control flow instructions}
   \label{sm_control}
 \end{figure}
 

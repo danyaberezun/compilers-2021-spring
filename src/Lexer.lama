@@ -60,7 +60,7 @@ public rSkip        = createRegexp ("skip\\b", "skip"),
        rVar         = createRegexp ("var\\b", """var"""),
        rVal         = createRegexp ("val\\b", """val"""),
        rFun         = createRegexp ("fun\\b", """fun""");
-      
+
 var whiteSpace = token (rWhiteSpace);
 
 -- Public parsers for concrete tokens
@@ -79,7 +79,7 @@ public kSkip    = s (rSkip),
        kOd      = s (rOd),
        kFor     = s (rFor),
        kVar     = s (rVar),
-       kVal     = s (rVal),       
+       kVal     = s (rVal),
        kFun     = s (rFun),
        decimal  = s (rDecimal),
        chrlit   = syntax (x=s[rChar] {case substring (x, 1, x.length - 2) of
@@ -95,9 +95,9 @@ public kSkip    = s (rSkip),
                                             j := j + 1
                                         do
                                           x [j] := x [i];
-                                          i := i + if x[i] == '"' then 2 else 1 fi                                          
+                                          i := i + if x[i] == '"' then 2 else 1 fi
                                         od;
-                                        substring (x, 0, j)}), 
+                                        substring (x, 0, j)}),
        pos      = memo $ syntax (-whiteSpace loc),
        end      = memo $ syntax (-whiteSpace eof),
        uident   = s (rUident), 
@@ -113,7 +113,6 @@ public kSkip    = s (rSkip),
                                           esac)
                                      }
                                    }
-       
-                                ]);
 
+                                ]);
 
