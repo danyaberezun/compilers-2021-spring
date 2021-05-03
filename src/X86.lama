@@ -82,7 +82,7 @@ fun insnString (insn) {
     | I (n, x) -> sprintf ("%d(%s)", n, opndString (x))
     esac
   }
-
+	--printf("%s", insn.string);
   case insn of
     Cltd               -> "\tcltd\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
@@ -407,24 +407,72 @@ fun suffix (op) {
   esac
 }
 
+
+fun plusMinusMul(a, b, op) {
+  case a of
+    M(_) -> case b of
+      M(_) -> move(a, eax) <+ Binop(op, eax, b) |
+      _ -> singletonBuffer(Binop(op, a, b))
+    esac |
+    _ -> singletonBuffer(Binop(op, a, b))
+    esac 
+}
+
+
+fun command(a, b, op) {
+  case op of
+    "+" -> move(a, eax) <+ Binop(op, eax, b) |
+    "-" -> move(a, eax) <+ Binop(op, eax, b) |
+    "*" -> move(a, eax) <+ Binop(op, b, eax) <+> move(eax, b) |
+    "/" -> move(b, eax) <+ Cltd <+ IDiv(a) <+> move(eax, b) |
+    "%" -> move(b, eax) <+ Cltd <+ IDiv(a) <+> move(edx, b) |
+    "<" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    ">" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    "<=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    ">=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    "==" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    "!=" -> move(a, eax) <+ Binop("cmp", eax, b) <+> move(L(0), eax) <+ Set(suffix(op), "%al") <+> move(eax, b) |
+    "&&" -> move(L(0), eax) <+ Binop("cmp", a, eax) <+ Set(suffix("!="), "%al") <+> move(eax, a) <+> move(L(0), eax) <+ Binop("cmp", b, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, a, eax) <+> move(eax, b) |
+    "!!" -> move(L(0), eax) <+ Binop("cmp", a, eax) <+ Set(suffix("!="), "%al") <+> move(eax, a) <+> move(L(0), eax) <+ Binop("cmp", b, eax) <+ Set(suffix("!="), "%al") <+ Binop(op, a, eax) <+> move(eax, b)
+  esac
+
+}
+
+fun call (env, fLabel, nA) {
+  case unzip $ map (fun (r) {[Push (r), Pop (r)]}, env.liveRegisters (nA)) of
+    [pushRegs, popRegs] ->
+      fun pushArgs (env, acc, n) {
+        case n of
+          0 -> [env, acc]
+        | n -> case env.pop of
+                 [x, env] -> pushArgs (env, Push (x) : acc, n - 1)
+               esac
+        esac
+      }
+
+      case pushArgs (env, {}, nA) of
+        [env, pushArgs] ->
+           case env.allocate of
+             [y, env] ->
+               [env, listBuffer (
+                       deepFlatten $
+                       {pushRegs,
+                        reverse (pushArgs),
+                        Call (fLabel),
+                        Binop ("+", L (wordSize * pushArgs.size), esp),
+                        reverse (popRegs),
+                        Mov (eax, y)}
+                     )
+               ]
+           esac
+      esac
+  esac
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-	      [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
-            esac
-        (* Assignment *)
-        
+     
          -- Some guidelines for generating function calls:
          --
          -- 1. generate instructions to save live registers on the X86 stack (use
@@ -441,14 +489,67 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        (* End *)
+  foldl (
+    fun ([env, scode], i) {
+      var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
+      case i of
+        READ ->--printf(" READ ");
+          case env.allocate of
+            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+          esac             
+      | WRITE ->--printf(" WRITE ");
+          case env.pop of
+            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | CONST (n) -> --printf(" CONST ");
+          case env.allocate of 
+            [s, env] -> [env, code <+> move(L(n), s)]
+          esac
+      | LD (x) -> --printf(" LD ");
+          case env.allocate of
+            [s, env] -> [env, code <+> move(env.loc(x), s)]
+          esac
+      | ST (x) -> --printf(" ST "); 
+		[env, code <+> move(env.peek, env.loc(x))]
+          --case env.addGlobal(x).pop of
+          --  [s, env] -> [env.push(s), code <+> move(s, env.loc(x))]
+          --esac
+      | BINOP (op) -> 
+          case env.pop2 of
+            [a, b, env] -> [env.push(b), code <+> command(a, b, op)]
+          esac 
+      | LABEL (l) -> --printf(" LABEL "); 
+			[if env.isBarrier then retrieveStack(env, l) else env fi, code <+ Label (l)]
+      | JMP (l) -> --printf(" JMP "); 
+			[env.setStack(l).setBarrier, code <+ Jmp (l)]
+      | CJMP(c, l) -> --printf(" CJMP "); 
+			case env.pop of
+			[x, env] -> [env.setStack(l), code <+> move(x, eax) <+ Binop("-", L(0), eax) <+ CJmp(c, l)]
+			esac
+      | DROP -> --printf(" DROP "); 
+		case env.pop of
+                        [_, env] -> [env, code]
+                        esac
+      | STI  -> --printf(" STI "); 
+		case env.pop2 of
+            [s, t, env] -> [env.push(t), code <+> if memOpnd(t) then singletonBuffer(Mov(t, eax)) <+ Mov(s, edx) <+ Mov(edx, I (0, eax)) else singletonBuffer(Mov(s, eax)) <+ Mov(eax, I(0, t)) <+ Mov(eax, t) fi]
+          esac
+      | LDA (x) -> --printf(" LDA "); 
+		case env.allocate of
+            [s, env] -> if memOpnd(s) then [env, code <+ Lea(env.loc (x), eax) <+ Mov(eax, s)] else [env, code <+ Lea(env.loc(x), s)] fi
+          esac
+      | GLOBAL (x) -> [env.addGlobal(x), code] 
+      | BEGIN (f, nA, nL) -> --printf(" BEGIN "); 
+			[enterFunction(env, f, nL), code <+> prologue(f)]
+      | END -> --printf(" END "); 
+		case epilogue(env) of [env, endCode] -> [env, code <+> endCode] esac
+      | CALL (fLabel, nA) -> --printf(" CALL "); 
+		case call(env, fLabel, nA) of [env, callCode] -> [env, code <+> callCode] esac 
+      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
   }
 
-  compile (env, code) 
-}
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
 -- compiles the program into machine code, and compiles the machine code into an executable
