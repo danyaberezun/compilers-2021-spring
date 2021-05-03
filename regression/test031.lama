@@ -1,7 +1,6 @@
 fun test1 () {
   a := 3
 }
-
 fun test2 (b) {
   a := b
 }

@@ -83,7 +83,7 @@ var args = parseArgs (arrayList (sysargs).tl);
 -- The main part: parses input file, invokes interpreter/stack machine interpreter/x86
 -- code generator
 case parseString (syntax (parse -end), fread (args.getInFile)) of
-  Succ (program) -> 
+  Succ (program) ->
     peepAST (args, program);
     case args.getMode of
       Comp -> compileX86 (args, peepSM (args, compileSM (program)))
@@ -103,7 +103,6 @@ case parseString (syntax (parse -end), fread (args.getInFile)) of
              | SM  -> evalSM   (input, peepSM (args, compileSM (program)))
              esac) 
     esac
-    
 | x@Fail (err, line, col) ->   
    failure ("%s at %d:%d\n", err.hd, line, col)
 esac
