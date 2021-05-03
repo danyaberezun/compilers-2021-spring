@@ -71,6 +71,11 @@ void* Bsta (int i, void *v, void *x) {
   return v;
 }
 
+void* BstaOrder (void *x, int i, void *v) {
+  void* result = Bsta(i, v, x);
+  return result;
+}
+
 void Lwrite (int x) {
   printf ("%d\n", x);
 }

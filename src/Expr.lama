@@ -99,8 +99,161 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun executeWhile (c, cond, body) {
+  var condEvalResult = eval (c, cond);
+  var newC = condEvalResult.fst;
+  case condEvalResult.snd of
+    0 -> [c, Void]
+  | _ ->
+      var bodyEvalResult = eval (newC, body);
+      var finalC = bodyEvalResult.fst;
+      case bodyEvalResult.snd of
+        Void -> executeWhile (finalC, cond, body)
+      | _ -> failure ("While/DoWhile body must return Void")
+      esac
+  esac
+}
+
+fun addDefinitions (state, defs) {
+  case defs of
+    {} -> state
+  | curDef : otherDefs ->
+      var newState = case curDef of
+        Fun (funName, args, body) -> addFunction (state, funName, args, body)
+      | Var (varNames) -> addNames (state, varNames)
+      esac;
+      addDefinitions (newState, otherDefs)
+  esac
+}
+
+fun addArgs (state, argNames, args) {
+  case [argNames, args] of
+    [{}, {}] -> state
+  | [curName : otherNames, curArg : otherArgs] ->
+      var newState = addName (state, curName, Var (curArg));
+      addArgs (newState, otherNames, otherArgs)
+  esac
+}
+
+fun eval (c, expr) {
+  case expr of
+    Assn (refExpr, valueExpr) -> case evalList (c, {refExpr, valueExpr}) of
+      [[state, world], {Ref (varName), value}] ->
+        var newState = state <- [varName, Var (value)];
+        var newC = [newState, world];
+        [newC, value]
+    | [newC, {ElemRef (arr, idx), value}] ->
+        arr[idx] := value;
+        [newC, value]
+    esac
+  | Seq (beforeExpr, afterExpr) ->
+      case evalList (c, {beforeExpr, afterExpr}) of 
+        [newC, {Void, res}] -> [newC, res]
+      | _ -> failure ("First part of Seq must return Void") 
+      esac
+  | Skip -> [c, Void]
+  | If (cond, ifBody, elseBody) ->
+      var condEvalResult = eval (c, cond);
+      var newC = condEvalResult.fst;
+      case condEvalResult.snd of
+        0 -> eval (newC, elseBody)
+      | _ -> eval (newC, ifBody)
+      esac
+  | While (cond, body) -> executeWhile (c, cond, body)
+  | DoWhile (body, cond) ->
+      var bodyEvalResult = eval (c, body);
+      var newC = bodyEvalResult.fst;
+      case bodyEvalResult.snd of
+        Void -> executeWhile (newC, cond, body)
+      | _ -> failure ("DoWhile body must return Void")
+      esac
+  | Var (varName) ->
+      var state = c.fst;
+      var value = case lookup (state, varName) of
+        Var (varValue) -> varValue
+      | _ -> error ("Var expected")
+      esac;
+      [c, value]
+  | curRef@Ref (_) -> [c, curRef]
+  | Const (n) -> [c, n]
+  | Binop (op, aExpr, bExpr) ->
+      var aEvalRes = eval (c, aExpr);
+      var newC = aEvalRes.fst;
+      var a = aEvalRes.snd;
+
+      var bEvalRes = eval (newC, bExpr);
+      var finalC = bEvalRes.fst;
+      var b = bEvalRes.snd;
+
+      var res = evalOp (op, a, b);
+      [finalC, res]
+  | Scope (definitions, expr) -> 
+      if size (definitions) > 0 then
+        var state = c.fst;
+        var world = c.snd;
+
+        var stateWithDefs = enterScope (state).addDefinitions (definitions);
+        var cWithDefs = [stateWithDefs, world];
+
+        var evalRes = eval (cWithDefs, expr);
+        var newC = evalRes.fst;
+        var newState = newC.fst;
+        var newWorld = newC.snd;
+        var res = evalRes.snd;
+
+        var finalState = leaveScope (newState);
+        var finalC = [finalState, newWorld];
+        [finalC, res]
+      else
+        eval (c, expr)
+      fi
+  | Call (funName, argExprs) ->
+      var state = c.fst;
+      case lookup (state, funName) of
+        Fun (argNames, body) ->
+          var argsEvalRes = evalList (c, argExprs);
+          var newC = argsEvalRes.fst;
+          var newState = newC.fst;
+          var newWorld = newC.snd;
+          var args = argsEvalRes.snd;
+
+          case body of
+            External -> 
+              var evalRes = evalBuiltin (funName, args, newWorld);
+              var res = evalRes.fst;
+              var finalWorld = evalRes.snd;
+              var newC = [newState, finalWorld];
+              [newC, res]
+          | _ ->
+              var functionState = enterFunction (newState).addArgs (argNames, args);
+              var functionC = [functionState, newWorld];
+              var evalRes = eval (functionC, body);
+              var afterFunctionC = evalRes.fst;
+              var functionRes = evalRes.snd;
+              var afterFunctionState = afterFunctionC.fst;
+              var afterFunctionWorld = afterFunctionC.snd;
+
+              var finalState = leaveFunction (state, getGlobal (afterFunctionState));
+              var finalC = [finalState, afterFunctionWorld];
+              [finalC, functionRes]
+          esac
+      esac
+  | Ignore (expr) ->
+      var evalRes = eval (c, expr);
+      var newC = evalRes.fst;
+      [newC, Void]
+  | String (value) -> [c, value]
+  | Array (elemExprs) -> case evalList (c, elemExprs) of [newC, elems] ->
+      var curArr = listArray (elems); 
+      [newC, curArr]
+    esac
+  | Elem (arrExpr, idxExpr) -> case evalList (c, {arrExpr, idxExpr}) of 
+      [newC, {arr, idx}] -> [newC, arr[idx]]
+    esac
+  | ElemRef (arrExpr, idxExpr) -> case evalList (c, {arrExpr, idxExpr}) of 
+      [newC, {arr, idx}] -> [newC, ElemRef (arr, idx)]
+    esac
+  esac
 }
 
 
@@ -109,6 +262,7 @@ public fun evalExpr (input, expr) {
   case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
                                       .addName ("write",  Fun ({"a"}, External))
                                       .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
+    [[_, w], Void] -> getOutput (w)
+  | _ -> failure ("The whole program must return Void")
   esac
 }

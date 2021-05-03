@@ -129,7 +129,69 @@ var primary    = memo $ eta syntax (
                                                                                                             | Some (args) -> assertValue (a, Call (x, args))
                                                                                                             esac
                                                                                                          }} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
+	  loc=pos kSkip {
+	  	fun (expectedType) {
+	  		assertVoid (expectedType, Skip, loc)
+	  	}
+	  } |
+	  loc=pos kWhile condGetter=basic kDo bodyGetter=scopeExpr kOd {
+	  	fun (expectedType) {
+	  		var cond = condGetter (Val);
+	  		var body = bodyGetter (Void);
+	  		var res = While (cond, body);
+	  		assertVoid (expectedType, res, loc)
+	  	}
+	  } |
+	  loc=pos kDo bodyGetter=scopeExpr kWhile condGetter=basic kOd {
+	  	fun (expectedType) {
+	  		var cond = condGetter (Val);
+	  		distributeScope (bodyGetter (Void), fun (body) {
+						var resLoop = DoWhile (body, cond);
+						assertVoid (expectedType, resLoop, loc)
+				})
+	  	}
+	  } |
+	  loc=pos kFor initGetter=scopeExpr s[","] condGetter=basic s[","] stepGetter=basic kDo
+	  	bodyGetter=scopeExpr 
+	  kOd {
+	  	fun (expectedType) {
+				var cond = condGetter (Val);
+				var body = bodyGetter (Void);
+				var step = stepGetter (Void);
+				var loopBody = Seq (body, step);
+				var loop = While (cond, loopBody);
+				distributeScope (initGetter (Void), fun (init) {
+					var res = Seq (init, loop);
+					assertVoid (expectedType, res, loc)
+				})
+			}
+	  } |
+	  kIf condGetter=basic kThen thenGetter=exp elseGetter=elseParser {
+			fun (expectedType) {
+				var cond = condGetter (Val);
+				var thenBody = thenGetter (expectedType);
+				var elseBody = elseGetter (expectedType);
+				If (cond, thenBody, elseBody)
+			}
+		} |
+	  inbr[s("("), scopeExpr, s(")")]
+	),
+	elseParser = memo $ eta syntax (
+ 		kElif condGetter=exp kThen thenGetter=exp elseGetter=elseParser {
+ 			fun (expectedType) {
+ 				var cond = condGetter (Val);
+ 				var thenBody = thenGetter (expectedType);
+ 				var elseBody = elseGetter (expectedType);
+ 				If (cond, thenBody, elseBody)
+ 			}
+ 		} |
+    -kElse exp -kFi |
+    loc=pos kFi {
+    	fun (expectedType) {
+    		assertVoid (expectedType, Skip, loc)
+    	} 
+    }
+  ),
       basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
                                                   fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
