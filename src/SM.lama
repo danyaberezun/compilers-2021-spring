@@ -18,23 +18,18 @@ import Buffer;
 public fun showSMInsn (i) {
   -- Shows a location (a reference to function argument, local or global variable)
   fun showLoc (d) {
-    fun varity (f) {
-      if f then "var" else "val" fi
-    }
-    
     case d of
       Arg (i) -> sprintf ("arg[%d]", i)
     | Loc (i) -> sprintf ("loc[%d]", i)
-    | Glb (x) -> sprintf ("%s", x)
+    | Glb (x) -> x
     esac
   }
-  
+
   case i of
     BINOP  (s)       -> sprintf ("BINOP %s", s)
   | LD     (x)       -> sprintf ("LD %s", showLoc (x))
   | LDA    (x)       -> sprintf ("LDA %s", showLoc (x))
   | ST     (x)       -> sprintf ("ST %s", showLoc (x))
-  | STI              -> "STI"
   | SEXP   (s, n)    -> sprintf ("SEXP ""%s"", %d", s, n)
   | CONST  (n)       -> sprintf ("CONST %d", n)
   | LABEL  (s)       -> sprintf ("LABEL %s", s)
@@ -70,7 +65,7 @@ fun initEvalEnv (insns) {
             esac
           }
         }) $ [emptyMap (compare), insns];
-  
+
   [fun (l) {
      case findMap (map, l) of Some (insns) -> insns esac
   }]
@@ -85,8 +80,8 @@ fun fromLabel (env, lab) {
 -- returns a final output
 fun eval (env, w, insns) {
   -- Global state maps names of global variables to values
-  var globalState = ref (fun (x) {error (sprintf ("name ""%s"" is undefined", x), getLoc (x))});
-  
+  var globalState = ref (fun (x) {error (sprintf ("name ""%s"" is undefined (@ global state)", x), getLoc (x))});
+
   -- Make a fresh local state: a pair of arrays for arguments and local variables;
   -- takes the numbers of arguments and local variables respectively
   fun makeState (a, l) {
@@ -98,9 +93,8 @@ fun eval (env, w, insns) {
     case loc of
       Arg (i) -> args[i]
     | Loc (i) -> locs[i]
-    | Loc (i) -> locs[i]
     | Glb (x) -> deref (globalState) (x)
-    esac 
+    esac
   }
 
   -- Assigns a value to a location
@@ -126,12 +120,194 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
-  -- Core interpreter: takes a configuration and a program, returns a configuration
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun evalInsnRead ([stack, calls, st, w]) {
+    var readResult = readWorld (w);
+    [readResult[0]:stack, calls, st, readResult[1]]
   }
-  
-  
+
+  fun evalInsnWrite ([value:stack, calls, st, w]) {
+    [value:stack, calls, st, writeWorld (value, w)]
+  }
+
+  fun evalInsnLength ([value:stack, calls, st, w]) {
+    var l = case value of
+              Sexp (_, contents) -> contents.length
+            | _ -> value.length
+            esac;
+    [l:stack, calls, st, w]
+  }
+
+  fun evalInsnBinop ([b:a:stack, calls, st, w], op) {
+    var result = case op of
+      "+"  -> a +  b |
+      "-"  -> a -  b |
+      "*"  -> a *  b |
+      "/"  -> a /  b |
+      "%"  -> a %  b |
+      "==" -> a == b |
+      "!=" -> a != b |
+      "<"  -> a <  b |
+      "<=" -> a <= b |
+      ">"  -> a >  b |
+      ">=" -> a >= b |
+      "&&" -> a && b |
+      "!!" -> a !! b |
+      _    -> failure ("eval BINOP insn is not supported\n")
+    esac;
+    [result:stack, calls, st, w]
+  }
+
+  fun evalInsnLd ([stack, calls, st, w], varName) {
+    [lookup (st, varName):stack, calls, st, w]
+  }
+
+  fun evalInsnSt ([value:stack, calls, st, w], varName) {
+    assign (st, varName, value);
+    [stack, calls, st, w]
+  }
+
+  fun evalInsnLda ([stack, calls, st, w], varName) {
+    [Ref (varName):stack, calls, st, w]
+  }
+
+  fun evalInsnSti ([value:Ref (varName):stack, calls, st, w]) {
+    assign (st, varName, value);
+    [value:stack, calls, st, w]
+  }
+
+  fun evalInsnConst ([stack, calls, st, w], value) {
+    [value:stack, calls, st, w]
+  }
+
+  fun evalInsnDrop ([value:stack, calls, st, w]) {
+    [stack, calls, st, w]
+  }
+
+  fun evalInsnDup ([value:stack, calls, st, w]) {
+    [value:value:stack, calls, st, w]
+  }
+
+  fun evalCJmp([stack, calls, st, w], cond, label, env, suffix) {
+    case case stack of
+      0:stack -> case cond of
+                   "nz" -> [stack, suffix] |
+                   "z" -> [stack, fromLabel (env, label)]
+                  esac |
+      _:stack -> case cond of
+                   "nz" -> [stack, fromLabel (env, label)] |
+                   "z" -> [stack, suffix]
+                 esac
+    esac of
+      [stack, insns] -> [[stack, calls, st, w], insns]
+    esac
+  }
+
+  fun evalGlobal ([stack, calls, st, w], name) {
+    assign (st, Glb (name), 0);
+    [stack, calls, st, w]
+  }
+
+  fun evalBegin ([stack, calls, st, w], args, locals) {
+    var funcSt = makeState (args, locals);
+
+    case take (stack, args) of
+      [stack, argVals] ->
+        foldl (fun (idx, argVal) {
+          assign (funcSt, Arg (idx), argVal);
+          idx + 1
+        }, 0, argVals);
+        [stack, st:calls, funcSt, w]
+    esac
+  }
+
+  fun evalEnd ([stack, prevSt:calls, st, w]) {
+    case calls of
+      {}             -> [[stack, calls, prevSt, w], {}] -- main function
+    | retInsns:calls -> [[stack, calls, prevSt, w], retInsns]
+    esac
+  }
+
+  fun evalCall ([stack, calls, st, w], retInsns) {
+    [stack, retInsns:calls, st, w]
+  }
+
+  fun evalInsnString ([stack, calls, st, w], body) {
+    [body:stack, calls, st, w]
+  }
+
+  fun evalInsnElem ([index:container:stack, calls, st, w]) {
+    var cont  = case container of
+                  Sexp (_, contents) -> contents
+                | _ -> container
+                esac;
+    [cont[index]:stack, calls, st, w]
+  }
+
+  fun evalInsnSta ([stack, calls, st, w]) {
+    case stack of
+      s@value:Ref (varName):stack -> evalInsnSti ([s, calls, st, w])
+    | value:index:container:stack -> container[index] := value;
+                                     [value:stack, calls, st, w]
+    esac
+  }
+
+  fun evalInsnArray ([stack, calls, st, w], nElems) {
+    case take (stack, nElems) of
+      [stack, contents] -> [listArray(contents):stack, calls, st, w]
+    esac
+  }
+
+  fun evalInsnSexp ([stack, calls, st, w], name, nElems) {
+    case take (stack, nElems) of
+      [stack, contents] -> [Sexp (name, listArray(contents)):stack, calls, st, w]
+    esac
+  }
+
+  fun printEvalState (c@[st, cst, s, w], insns) {
+    printf("%s\n", string(insns));
+    printf("%s\n", string(st));
+    printf("%s\n", string(s))
+  }
+
+  -- Core interpreter: takes a configuration and a program, returns a configuration
+  (* Assignment *)
+  fun eval (c@[st, cst, s, w], insns) {
+    -- printEvalState(c, insns);
+    case insns of
+      BINOP (op) : insns                 -> eval (evalInsnBinop (c, op), insns) |
+      LD (name) : insns                  -> eval (evalInsnLd (c, name), insns) |
+      ST (name) : insns                  -> eval (evalInsnSt (c, name), insns) |
+      LDA (name) : insns                 -> eval (evalInsnLda (c, name), insns) |
+      CONST (value) : insns              -> eval (evalInsnConst (c, value), insns) |
+      JMP (label) : insns                -> eval (c, fromLabel (env, label)) |
+      CJMP (cond, label) : insns         -> case evalCJmp (c, cond, label, env, insns) of
+                                              [c, insns] -> eval (c, insns)
+                                            esac |
+      LABEL (label) : insns              -> eval (c, insns) |
+      DROP : insns                       -> eval (evalInsnDrop (c), insns) |
+      DUP : insns                        -> eval (evalInsnDup (c), insns)  |
+      GLOBAL (name) : insns              -> eval (evalGlobal (c, name), insns) |
+      BEGIN (name, args, locals) : insns -> eval (evalBegin (c, args, locals), insns) |
+      END : insns                        -> case evalEnd (c) of
+                                              [c, insns] -> eval (c, insns)
+                                            esac |
+      CALL (name, args) : insns          -> eval (evalCall (c, insns), fromLabel (env, name)) |
+      BUILTIN (name, args) : insns       -> case name of
+                                              "read"   -> eval (evalInsnRead (c), insns)
+                                            | "write"  -> eval (evalInsnWrite (c), insns)
+                                            | "length" -> eval (evalInsnLength (c), insns)
+                                            esac |
+      STRING (body) : insns              -> eval (evalInsnString (c, body), insns) |
+      ELEM : insns                       -> eval (evalInsnElem (c), insns) |
+      STA : insns                        -> eval (evalInsnSta (c), insns) |
+      ARRAY (nElems) : insns             -> eval (evalInsnArray (c, nElems), insns) |
+      SEXP (name, nElems) : insns        -> eval (evalInsnSexp (c, name, nElems), insns) |
+      unknown : insns                    -> failure (sprintf ("SM eval not implemented for %s\n", string(unknown))) |
+      {}                                 -> c
+    esac
+  }
+  (* End *)
+
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
 
@@ -147,7 +323,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
     [sprintf ("L%d", nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
   }
 
-  -- Adds a new function 
+  -- Adds a new function
   fun rememberFun (fLabel, args, body) {
     makeCompEnv (nLabels,
                  scopeDepth,
@@ -172,27 +348,24 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
     makeCompEnv (nLabels, scopeDepth, addName (state, name, Arg (nArgs)), nLocals, nArgs+1, functions)
   }
 
-  -- Adds a variable in the scope
+  -- Adds a local variable for the current function
   fun addVar (name) {
     if isGlobal ()
-    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name, true)), nLocals, nArgs, functions)
-    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals, true)), nLocals+1, nArgs, functions)
+    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name)), nLocals, nArgs, functions)
+    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals)), nLocals+1, nArgs, functions)
     fi
   }
 
-  -- Adds a value in the scope
-  fun addVal (name) {
-    if isGlobal ()
-    then makeCompEnv (nLabels, scopeDepth, addName (state, name, Glb (name, false)), nLocals, nArgs, functions)
-    else makeCompEnv (nLabels, scopeDepth, addName (state, name, Loc (nLocals, false)), nLocals+1, nArgs, functions)
-    fi
+  -- Adds a binding for a builtin
+  fun addBuiltin (name, nargs) {
+    makeCompEnv (nLabels, scopeDepth, addName (state, name, Blt (name, nargs)), nLocals, nArgs, functions)
   }
 
   -- Adds a binding for a function
   fun addFun (name, fLabel, nargs) {
     makeCompEnv (nLabels, scopeDepth, addName (state, name, Fun (fLabel, nargs)), nLocals, nArgs, functions)
   }
-  
+
   -- Enters a function
   fun beginFun (state) {
     makeCompEnv (nLabels, 2, enterFunction (state), 0, 0, functions)
@@ -203,29 +376,20 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
     [functions, makeCompEnv (nLabels, scopeDepth, state, nArgs, nLocals, {})]
   }
 
-  -- Lookups variable
+  -- Lookups a name of a variable
   fun lookupVar (name) {
     case lookup (state, name) of
-      Loc (i, true) -> Loc (i)
-    | Glb (x, true) -> Glb (x)
-    | _             -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+      Fun (_, _) -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+    | Blt (_, _) -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
+    | x          -> x
     esac
   }
 
-  -- Lookups value
-  fun lookupVal (name) {
-    case lookup (state, name) of
-      Loc (i, _) -> Loc (i)
-    | Glb (x, _) -> Glb (x)
-    | Arg (i)    -> Arg (i)
-    | _          -> error (sprintf ("the name ""%s"" does not designate a value", name), getLoc (name))
-    esac
-  }
-  
   -- Lookups a name of a function
   fun lookupFun (name) {
     case lookup (state, name) of
       x@Fun (_, _) -> x
+    | x@Blt (_, _) -> x
     | _            -> error (sprintf ("the name ""%s"" does not designate a function", name), getLoc (name))
     esac
   }
@@ -240,30 +404,30 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
      if isGlobal ()
      then [sprintf ("L%s", name),             makeCompEnv (nLabels  , scopeDepth, state, nLocals, nArgs, functions)]
      else [sprintf ("L%s_%d", name, nLabels), makeCompEnv (nLabels+1, scopeDepth, state, nLocals, nArgs, functions)]
-     fi 
+     fi
   }
 
   -- Checks if the current scope is a global
   fun isGlobal () {
     scopeDepth == 2
   }
-  
+
   [genLabel,
    rememberFun,
    beginScope,
    endScope,
    addArg,
    addVar,
-   addVal,
    beginFun,
    getFuns,
    lookupVar,
-   lookupVal,
    lookupFun,
    getLocals,
    genFunLabel,
    addFun,
-   isGlobal
+   isGlobal,
+   scopeDepthValue,
+   addBuiltin
   ]
 }
 
@@ -297,44 +461,44 @@ fun addVar (env, name) {
   env [5] (name)
 }
 
-fun addVal (env, name) {
-  env [6] (name)
-}
-
 fun beginFun (env, state) {
-  env [7] (state)
+  env [6] (state)
 }
 
 fun getFuns (env) {
-  env [8] ()
+  env [7] ()
 }
 
 fun lookupVar (env, name) {
-  env [9] (name)
-}
-
-fun lookupVal (env, name) {
-  env [10] (name)
+  env [8] (name)
 }
 
 fun lookupFun (env, name) {
-  env [11] (name)
+  env [9] (name)
 }
 
 fun getLocals (env) {
-  env [12] ()
+  env [10] ()
 }
 
 fun genFunLabel (env, name) {
-  env [13] (name)
+  env [11] (name)
 }
 
 fun addFun (env, name, fLabel, nargs) {
-  env [14] (name, fLabel, nargs)
+  env [12] (name, fLabel, nargs)
 }
 
 fun isGlobal (env) {
-  env [15] ()
+  env [13] ()
+}
+
+fun scopeDepthValue (env) {
+  env [14] ()
+}
+
+fun addBuiltin (env, Blt (name, nargs)) {
+  env [15] (name, nargs)
 }
 
 -- Helper function: generates n labels
@@ -351,6 +515,300 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+fun compileExprVar (Var (varName), env) {
+  [singletonBuffer (LD (lookupVar (env, varName))), env]
+}
+
+fun compileExprConst (Const (value), env) {
+  [singletonBuffer (CONST (value)), env]
+}
+
+fun compileExprRef (Ref (varName), env) {
+  [singletonBuffer (LDA (lookupVar (env, varName))), env]
+}
+
+fun compileExprBinop (Binop (op, expr0, expr1), env) {
+  case compileExpr (expr0, env) of
+    [leftInsns, env] ->
+    case compileExpr (expr1, env) of
+      [rightInsns, env] -> [leftInsns <+> rightInsns <+ BINOP (op), env]
+    esac
+  esac
+}
+
+fun registerDefs (defs, env) {
+  foldl (fun (env, def) {
+    case def of
+      Var (names) -> addVars (env, names)
+    | Fun (name, args, body) ->
+      case genLabel (env) of
+        [label, env] -> addFun (env, name, label, size (args))
+      esac
+    esac
+  }, env, defs)
+}
+
+fun compileGlobals (defs, env) {
+  var insns = foldl (fun (buffer, def) {
+    case def of
+      Var (names) -> foldl (fun (buffer, name) {
+                       buffer <+ GLOBAL (name)
+                     }, buffer, names)
+    | _ -> buffer
+    esac
+  }, emptyBuffer (), defs);
+  [insns, env]
+}
+
+fun registerFuncs (defs, env) {
+  foldl (fun (env, def) {
+    case def of
+      Var (_) -> env
+    | Fun (name, args, body) ->
+      case lookupFun (env, name) of
+        Fun (label, _) -> rememberFun (env, label, args, body)
+      esac
+    esac
+  }, env, defs)
+}
+
+fun compileFunBody (body, env, label, nArgs) {
+  case compileExpr (body, env) of
+    [insns, env] -> [singletonBuffer (LABEL (label)) <+ BEGIN (label, nArgs, getLocals (env)) <+> insns <+ END, env]
+  esac
+}
+
+fun compileEnvFuncs (env) {
+  fun compileRegistered (insns, env) {
+    case
+      case getFuns (env) of
+        [functions, env] ->
+        [foldl (fun ([insns, env], Fun (label, args, body, state)) {
+           case compileFunBody (body, addArgs (beginFun (env, state), args), label, size (args)) of
+             [funInsns, env] -> [insns <+> funInsns, env]
+           esac
+         }, [insns, env], functions), size (functions)]
+      esac of
+      [[insns, env], nFuncs] ->
+      if nFuncs == 0 then
+        [insns, env]
+      else
+        compileRegistered (insns, env)
+      fi
+    esac
+  }
+
+  compileRegistered (emptyBuffer (), env)
+}
+
+fun compileScope (Scope (defs, expr), env) {
+  case registerFuncs (defs, registerDefs (defs, beginScope (env), env)) of
+    env ->
+      case
+        case compileExpr (expr, env) of
+          [insns, env] ->
+            if isGlobal (env) then
+              case compileGlobals (defs, env) of
+                [scopeInsns, env] -> [scopeInsns <+ LABEL ("main") <+ BEGIN ("main", 0, getLocals (env))
+                                                                   <+> insns <+ END,
+                                      env]
+              esac
+            else
+              [insns, env]
+            fi
+        esac of
+        [insns, env] ->
+        if isGlobal (env) then
+          case compileEnvFuncs (env) of
+            [funcInsns, env] -> [insns <+> funcInsns, endScope (env)]
+          esac
+        else
+          [insns, endScope (env)]
+        fi
+     esac
+  esac
+}
+
+fun compileCall (Call (name, args), env) {
+  case foldl (fun ([insns, env], argExpr) {
+         case compileExpr (argExpr, env) of
+           [argInsns, env] -> [insns <+> argInsns, env]
+         esac
+       }, [emptyBuffer (), env], args) of
+    [insns, env] ->
+    case lookupFun (env, name) of
+      Fun (name, args) -> [insns <+ CALL (name, args), env]
+    | Blt (name, args) -> [insns <+ BUILTIN (name, args), env]
+    esac
+  esac
+}
+
+fun compileString (String (body), env) {
+  [singletonBuffer (STRING (body)), env]
+}
+
+fun compileElem (Elem (container, index), env) {
+  case compileExpr (container, env) of
+    [insnsCont, env] ->
+    case compileExpr (index, env) of
+      [insnsIdx, env] -> [insnsCont <+> insnsIdx <+ ELEM, env]
+    esac
+  esac
+}
+
+fun compileElemRef (ElemRef (container, index), env) {
+  case compileExpr (container, env) of
+    [insnsCont, env] ->
+    case compileExpr (index, env) of
+      [insnsIdx, env] -> [insnsCont <+> insnsIdx, env]
+    esac
+  esac
+}
+
+fun compileArray (Array (contentExpr), env) {
+  case foldl (fun ([insns, env], elemExpr) {
+         case compileExpr (elemExpr, env) of
+           [elemInsns, env] -> [insns <+> elemInsns, env]
+         esac
+       }, [emptyBuffer (), env], contentExpr) of
+    [insns, env] -> [insns <+ ARRAY (size (contentExpr)), env]
+  esac
+}
+
+fun compileSexp (Sexp (name, contentExpr), env) {
+  case foldl (fun ([insns, env], elemExpr) {
+         case compileExpr (elemExpr, env) of
+           [elemInsns, env] -> [insns <+> elemInsns, env]
+         esac
+       }, [emptyBuffer (), env], contentExpr) of
+    [insns, env] -> [insns <+ SEXP (name, size (contentExpr)), env]
+  esac
+}
+
+-- Takes an expression, returns a list of stack machine instructions
+fun compileExpr (expr, env) {
+  -- printf("%s\n", string(expr));
+  case expr of
+    Var   (_)                 -> compileExprVar         (expr, env) |
+    Const (_)                 -> compileExprConst       (expr, env) |
+    Ref (_)                   -> compileExprRef         (expr, env) |
+    Binop (_, _, _)           -> compileExprBinop       (expr, env) |
+    Assn  (Ref (_), _)        -> compileExprAssnRef     (expr, env) |
+    Assn  (ElemRef (_, _), _) -> compileExprAssnElemRef (expr, env) |
+    Assn (_, _)               -> compileExprAssn        (expr, env) |
+    Seq   (_, _)              -> compileExprSeq         (expr, env) |
+    Skip                      -> [{}, env]                          |
+    While (_, _)              -> compileExprWhile       (expr, env) |
+    DoWhile (_, _)            -> compileExprDoWhile     (expr, env) |
+    If (_, _, _)              -> compileExprIf          (expr, env) |
+    Ignore (_)                -> compileExprIgnore      (expr, env) |
+    Scope (_, _)              -> compileScope           (expr, env) |
+    Call (_, _)               -> compileCall            (expr, env) |
+    String (_)                -> compileString          (expr, env) |
+    Elem (_, _)               -> compileElem            (expr, env) |
+    ElemRef (_, _)            -> compileElemRef         (expr, env) |
+    Array (_)                 -> compileArray           (expr, env) |
+    Sexp (_, _)               -> compileSexp            (expr, env) |
+    _                         -> failure (sprintf ("compileExpr for %s not implemented\n", string(expr)))
+  esac
+}
+
+fun compileExprAssnRef (Assn (Ref (varName), expr), env) {
+  case compileExpr (expr, env) of
+    [insns, env] -> [insns <+ DUP <+ ST (lookupVar (env, varName)), env]
+  esac
+}
+
+fun compileExprAssnElemRef (Assn (ElemRef (container, index), expr), env) {
+  case compileExpr (container, env) of
+    [insnsCont, env] ->
+    case compileExpr (index, env) of
+      [insnsIdx, env] ->
+      case compileExpr (expr, env) of
+        [insnsVal, env] -> [insnsCont <+> insnsIdx <+> insnsVal <+ STA, env]
+      esac
+    esac
+  esac
+}
+
+
+fun compileExprAssn (Assn (refExpr, expr), env) {
+  case compileExpr (refExpr, env) of
+    [refInsns, env] ->
+    case compileExpr (expr, env) of
+      [insns, env] -> [refInsns <+> insns <+ STA, env]
+    esac
+  esac
+}
+
+fun compileExprSeq (Seq (stmt0, stmt1), env) {
+  case compileExpr (stmt0, env) of
+    [insns0, env] -> case compileExpr (stmt1, env) of
+                      [insns1, env] -> [insns0 <+> insns1, env]
+                    esac
+  esac
+}
+
+fun compileExprWhile (While (expr, stmt), env) {
+  case genLabels (env, 2) of
+    [start, cond, env] ->
+      case compileExpr(stmt, env) of
+        [stmtInsns, env] ->
+        case compileExpr (expr, env) of
+          [exprInsns, env] -> [singletonBuffer (JMP (cond)) <+ LABEL (start) <+> stmtInsns <+ LABEL (cond) <+>
+                               exprInsns <+ CJMP ("nz", start),  env]
+        esac
+      esac
+  esac
+}
+
+fun compileExprDoWhile (DoWhile (stmt, expr), env) {
+  case genLabel (env) of
+    [start, env] ->
+      case compileExpr(stmt, env) of
+        [stmtInsns, env] ->
+        case compileExpr (expr, env) of
+          [exprInsns, env] -> [singletonBuffer (LABEL (start)) <+> stmtInsns <+>
+                               exprInsns <+ CJMP ("nz", start),  env]
+        esac
+      esac
+  esac
+}
+
+fun compileExprIfExit (If (expr, stmtThen, stmtElse), exitLabel, env) {
+  case genLabel (env) of
+    [thenStart, env] ->
+      case compileExpr (stmtThen, env) of
+        [instThen, env] ->
+          case case stmtElse of
+                 If (_, _, _) -> compileExprIfExit (stmtElse, exitLabel, env) |
+                 _ -> compileExpr (stmtElse, env)
+               esac of
+            [instElse, env] ->
+            case compileExpr(expr, env) of
+              [exprInsns, env] -> [exprInsns <+ CJMP ("nz", thenStart) <+> instElse <+ JMP (exitLabel) <+
+                                  LABEL (thenStart) <+> instThen, env]
+            esac
+          esac
+      esac
+  esac
+}
+
+fun compileExprIf (ifStmt, env) {
+  case genLabel (env) of
+    [thenEnd, env] ->
+      case compileExprIfExit (ifStmt, thenEnd, env) of
+        [insns, env] -> [insns <+ LABEL (thenEnd), env]
+      esac
+  esac
+}
+
+fun compileExprIgnore (Ignore (expr), env) {
+  case compileExpr (expr, env) of
+    [exprInsns, env] -> [exprInsns <+ DROP, env]
+  esac
+}
+
 -- Helper function: adds a bunch of arguments
 fun addArgs (env, names) {
   foldl (fun (env, name) {addArg (env, name)}, env, names)
@@ -361,15 +819,22 @@ fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
 }
 
--- Helper function: adds a bunch of locals values
-fun addVals (env, names) {
-  foldl (fun (env, name) {addVal (env, name)}, env, names)
-}
-
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
+public fun compileSM (expr) {
+  var env = foldl (fun (env, bltDef) {
+    addBuiltin (env, bltDef)
+  }, beginScope (initCompEnv ()), {
+    Blt ("read", 0),
+    Blt ("write", 1),
+    Blt ("length", 1)
+  });
+  case compileExpr (expr, env) of
+    [insns, _] -> getBuffer (insns)
+  esac
 
+(* Assignment *)
 
 -- Some guidelines for compiling functions and scopes.
 --
@@ -390,7 +855,5 @@ fun addVals (env, names) {
 --    environment (use env.beginFun) and register arguments
 --    (use env.addArg).
 
-public fun compileSM (expr) {
-  failure ("compileSM not implemented\n")
 }
 
