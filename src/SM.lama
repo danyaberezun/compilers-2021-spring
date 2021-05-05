@@ -13,6 +13,8 @@ import Expr;
 import Builtins;
 import Buffer;
 
+
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -120,11 +122,100 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
-  -- Core interpreter: takes a configuration and a program, returns a configuration
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun binary_op([b:a:stack, cst, st, w], op){
+	var res = case op of
+		"+" -> a + b |
+		"-" -> a - b |
+		"*" -> a * b |
+		"/" -> a / b |
+		"%" -> a % b |
+		"<" -> a < b |
+		">" -> a > b |
+		"<=" -> a <= b |
+		">=" -> a >= b |
+		"==" -> a == b |
+		"!=" -> a != b |
+		"&&" -> a && b |
+		"!!" -> a !! b
+	esac;
+	[res:stack, cst, st, w]
   }
-  
+
+  fun read_op([stack, cst, st, w]) {
+	var res = readWorld(w);
+	[res[0]:stack, cst, st, res[1]]
+  }
+
+  fun write_op([s, cst, st, w]) {
+	case s of
+		a:stack -> [stack, cst, st, writeWorld(a, w)]
+	esac
+  }
+
+  fun ld_op(x, [stack, cst, st, w]) {
+	[st(x):stack, cst, st, w]
+  }
+
+  fun st_op(x, [a:stack, callstack, st, w]) {
+	[a:stack, callstack, st <- [x, a], w]
+  }
+
+
+  fun cjmp_op1 (c, l, env, [s:stack, callstack, state, world], insns) {
+	case c of 
+		"z" -> if s == 0 then  [[stack, callstack, state, world], fromLabel(env, l)] 
+				else [[stack, callstack, state, world], insns] 
+				fi |
+		"nz" -> if s != 0 then [[stack, callstack, state, world], fromLabel(env, l)] 
+				else [[stack, callstack, state, world], insns]
+				fi 
+	esac
+  }
+
+
+  -- Core interpreter: takes a configuration and a program, returns a configuration
+  (* Assignment *)
+  fun eval (c@[st, cst, s, w], i) {
+	var insns = i;
+	var context = c;
+	while insns != {} do
+		case insns of
+		ins1:ins2 ->
+			case ins1 of
+    			READ      -> context := read_op(context); insns := ins2
+  			| WRITE     -> context := write_op(context); insns:= ins2
+  			| BINOP (s) -> context := binary_op(context, s); insns := ins2
+  			| LD    (x) -> context := [lookup(context[2], x):context[0], context[1], context[2], context[3]]; insns := ins2    
+  			| ST    (x) -> assign(context[2], x, context[0].fst); context := [context[0], context[1], context[2], context[3]]; insns := ins2 
+  			| CONST (n) -> context := [n:context[0], context[1], context[2], context[3]]; insns := ins2
+			| JMP   (l) -> insns := fromLabel(env, l)
+			| CJMP  (cc, l) -> var out = cjmp_op1(cc, l, env, context, ins2); context := out[0]; insns := out[1]
+			| LABEL (l) -> insns := ins2
+			| DROP      -> case context[0] of s:state -> context := [state, context[1], context[2], context[3]]  esac; insns := ins2
+			| LDA   (l) -> context := [Ref(l):context[0], context[1], context[2], context[3]]; insns := ins2
+			| STI       -> case context of [a:Ref(b):stack, callstack, state, world] -> assign(context[2], b, a); context := [a:stack, callstack, state, world] esac; insns := ins2
+  			| CALL  (flabel, _) -> context := [context[0], [context[2], ins2]:context[1], context[2], context[3]]; insns := fromLabel(env, flabel)
+			| END -> case context[1] of {} -> insns := {} | [s, ins]:st -> context := [context[0], st, s, context[3]]; insns := ins esac
+			| BEGIN (_, a, l) -> case take(context[0], a) of [st, args] -> var ss = makeState(a, l); foldl(fun(i, arg){assign(ss, Arg(i), arg); i+1}, 0, args);
+						context := [st, context[1], ss, context[3]]; insns := ins2 esac
+			| GLOBAL (x) -> assign(context[2], Glb(x), 0); context := [context[0], context[1], context[2], context[3]]; insns := ins2
+			| BUILTIN (f, nArgs) -> case take(context[0], nArgs) of 
+							[st, args] -> var res = evalBuiltin(f, args, context[3]); 
+								      context := [res[0]:st, context[1], context[2], res[1]];
+								      insns := ins2
+						esac
+			| STRING (v) -> context := [v:context[0], context[1], context[2], context[3]]; insns := ins2 
+			| ARRAY (n) -> case take(context[0], n) of
+					[st, elems] -> case st of sz:st1 -> context := [listArray(elems):st1, context[1], context[2], context[3]]; insns := ins2
+				       esac esac
+			| ELEM -> case context of [i:arr:st, cst, s, w] -> context := [arr[i]:st, cst, s, w]; insns := ins2 esac
+			| STA -> case context[0] of arr:v:i:st -> arr[i] := v; context := [v:st, context[1], context[2], context[3]]; insns := ins2 esac 
+			esac
+ 		esac
+	od;
+	context
+  }
+  (* End *)
   
   eval ([{}, {}, makeState (0, 0), w], insns) [3].getOutput
 }
@@ -327,9 +418,44 @@ fun addVars (env, names) {
 }
 
 -- Compiles an expression into a stack machine code.
+-- Takes an expression, returns a list of stack machine instructions
+fun compileExpr (expr) {
+	case expr of
+		Const(a) -> singletonBuffer(CONST(a)) |
+		Var(a) -> singletonBuffer(LD(a)) |
+		Binop(a, expr1, expr2) -> compileExpr(expr1) <+> compileExpr(expr2) <+> singletonBuffer(BINOP(a)) |	
+		_ -> failure("The expression is not recognized!")
+	esac
+}
+
+
+fun ifSM(env, expr, stmt1, stmt2) {
+	var a0 = compileSMBuffer(expr, env);
+	var l1 = genLabel(a0[1]);
+	var l2 = genLabel(l1[1]);
+	var a3 = compileSMBuffer(stmt1, l2[1]);
+	var a4 = compileSMBuffer(stmt2, a3[1]);
+	[a0[0] <+ CJMP("z", l1[0]) <+> a3[0] <+ JMP(l2[0]) <+ LABEL(l1[0]) <+> a4[0] <+ LABEL(l2[0]), a4[1]]
+}
+
+fun whileSM(env, expr, stmt) {
+	var l1 = genLabel(env);
+	var a11 = compileSMBuffer(expr, l1[1]);
+	var l2 = genLabel(a11[1]);
+	var a3 = compileSMBuffer(stmt, l2[1]);
+	[singletonBuffer(LABEL(l1[0])) <+> a11[0] <+ CJMP("z", l2[0]) <+> a3[0] <+ JMP(l1[0]) <+ LABEL(l2[0]), a3[1]]
+}
+
+fun doWhileSM(env, expr, stmt) {
+	var l1 = genLabel(env);
+	var a2 = compileSMBuffer(stmt, l1[1]);
+	var a3 = compileSMBuffer(expr, a2[1]);
+	[singletonBuffer(LABEL(l1[0])) <+> a2[0] <+> a3[0] <+ CJMP("nz", l1[0]), a3[1]]	
+}
+
+-- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-
 
 -- Some guidelines for compiling functions and scopes.
 --
@@ -350,6 +476,110 @@ fun addVars (env, names) {
 --    environment (use env.beginFun) and register arguments
 --    (use env.addArg).
 
-public fun compileSM (expr) {
-  failure ("compileSM not implemented\n")
+public fun compileSMBuffer (stmt, env) {
+	case stmt of
+		Skip -> [emptyBuffer(), env] |
+		Assn(a, expr) -> case a of 
+				ElemRef(arr, i) -> var a1 = compileSMBuffer(arr, env), a2 = compileSMBuffer(i, a1.snd), a3 = compileSMBuffer(expr, a2.snd);
+				[a2.fst <+> a3.fst <+> a1.fst <+ STA, a3.snd] |
+				_ -> var a1 = compileSMBuffer(a, env), a2 = compileSMBuffer(expr, a1[1]); [a1[0] <+> a2[0] <+ STI, a2[1]] 
+				esac |
+		Seq(stmt1, stmt2) -> var a1 = compileSMBuffer(stmt1, env);
+				     var a2 = compileSMBuffer(stmt2, a1[1]);
+				     [a1[0] <+> a2[0], a2[1]] |
+		If(expr, stmt1, stmt2) -> ifSM(env, expr, stmt1, stmt2) |
+		While(expr, stmt1) -> whileSM(env, expr, stmt1) |
+		DoWhile(stmt1, expr) -> doWhileSM(env, expr, stmt1) | 
+		Const(a) -> [singletonBuffer(CONST(a)), env] |
+		Var(a) -> [singletonBuffer(LD(lookupVar(env, a))), env] |
+		Binop(a, expr1, expr2) -> var a1 = compileSMBuffer(expr1, env), a2 = compileSMBuffer(expr2, a1[1]); [a1[0] <+> a2[0] <+ BINOP(a), a2[1]] |
+		Ref(a) -> [singletonBuffer(LDA(lookupVar(env, a))), env] |
+		Ignore(a) -> var a1 = compileSMBuffer(a, env); [a1[0] <+ DROP, a1[1]] |	
+		Call(f, {}) -> case f of
+				"read" -> [singletonBuffer(BUILTIN(f, 0)), env] |
+				_ -> [case lookupFun(env, f) of Fun(fLabel, n) -> singletonBuffer(CALL(fLabel, n)) esac, env] 
+			       esac|
+		Call(f, args) -> 	var smBuffer = emptyBuffer();
+					while args != {} do
+						var a = args.fst;
+						var out = compileSMBuffer(a, env);
+						smBuffer := smBuffer <+> out.fst;
+						env := out.snd;
+						args := args.tl
+					od;
+					case f of
+						"write" -> [smBuffer <+ BUILTIN(f, 1) <+ CONST(0), env] |
+						"length" -> [smBuffer <+ BUILTIN(f, 1), env] |
+						_ -> [case lookupFun(env, f) of Fun(fLabel, n) -> smBuffer <+> singletonBuffer(CALL(fLabel, n)) esac, env]
+					esac |
+		Scope(defs, expr) -> 	case foldl	(fun([env, funcs, globalDefs], defs) {
+								case defs of
+									Var(ds) -> [addVars(env, ds), funcs, if env.isGlobal then listBuffer(map(fun(name){GLOBAL(name)}, ds)) else emptyBuffer() fi <+> globalDefs] |
+
+									Fun(name, args, body) -> case genFunLabel(env, name) of
+													[fLabel, env] -> [addFun(env, name, fLabel, args.size), 
+															[fLabel, args, body]:funcs, globalDefs] 
+												esac esac
+							}, [beginScope(env), {}, emptyBuffer()], defs
+							) 
+						of [env, funcs, globalDefs] -> 
+							case compileSMBuffer(expr, foldl(fun (env, [fLabel, args, body]){rememberFun(env, fLabel, args, body)}, env, funcs)) of 
+								[code, env] -> [globalDefs <+> code, endScope(env)] 
+							esac 
+					esac|
+		Array(expr_list) -> 	var len = expr_list.size, smBuffer = singletonBuffer(CONST(len));
+					while expr_list != {} do
+						var e = expr_list.fst;
+						var out = compileSMBuffer(e, env);
+						smBuffer := smBuffer <+> out.fst;
+						env := out.snd;
+						expr_list := expr_list.tl
+					od;
+					[smBuffer <+ ARRAY(len), env] |
+		String(st) -> 	[singletonBuffer(STRING(st)), env] |
+		Elem(arr, i) -> var out1 = compileSMBuffer(arr, env), out2 = compileSMBuffer(i, out1.snd);
+				[out1.fst <+> out2.fst <+ ELEM, out2.snd] |
+		_ -> failure("The statement %s is not recognised!", stmt.string)
+	esac
 }
+
+
+fun compileFunctions (env) {
+  fun iter (env, code, funclist) {
+    case funclist of
+    {}                                   -> case getFuns(env) of
+                                              [{}, env]    -> code
+                                            | [flist, env] -> iter (env, code, flist)
+                                            esac
+    | Fun (name, args, body, state):tail -> case compileSMBuffer (body, addArgs(beginFun (env, state), args)) of
+                                              [fcode, env] -> iter (env, code 
+                                                                         <+ LABEL (name) 
+                                                                         <+ BEGIN (name, args.size, getLocals(env))
+                                                                         <+> fcode
+                                                                         <+ END,
+                                                                         tail)
+                                            esac
+    esac
+  }
+  iter (env, {}, {})
+}
+
+
+public fun compileSM (stmt) {
+var env = initCompEnv();
+env := foldl (addFun, beginScope (env), {
+      Fun ("read", {}),
+      Fun ("write", {"x"}),
+      Fun ("length", {"x"})
+  });
+case compileSMBuffer (stmt, env) of
+    [code, env] -> var func = compileFunctions (env);  
+                   getBuffer(
+                       singletonBuffer (LABEL ("main")) 
+                       <+ BEGIN ("main", 0, getLocals (env)) 
+                       <+> code 
+                       <+ END
+                       <+> func)
+  esac
+}
+(* End *)
