@@ -100,8 +100,95 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun initScope(s, d){
+  while size(d) > 0 do
+    s := case d[0] of 
+           Var (x) -> addNames (s, x)
+         | Fun (f, args, body) -> addFunction (s, f, args, body)
+         esac;
+    d := d.tl
+  od;
+  s
+}
+
+fun initFunArgs (s, argsNames, args){
+  while size(args) >0 do
+    s := addName(s, argsNames[0], args[0]);
+    argsNames := argsNames.tl;
+    args := args.tl
+  od;
+  s
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Const (z) -> [c, z]
+  | Var (x) -> [c, lookup(s, x)]
+  | Ref (x) -> [c, x]
+  | Binop (op, l, r) -> 
+      case evalList (c, {l, r}) of
+        [c@[s,w], {l1, r1}] -> [c, binop (op, l1, r1)]
+      esac
+  | Skip -> [c, Void]
+  | Assn (l, r) ->
+      case evalList (c, {l, r}) of [c@[s,w], {l,r}] -> 
+      case l of
+        {x, i} -> x[i] := r; [c, r]
+      | _ ->  [[s <- [l, r], w], r]
+      esac
+      esac 
+  | Seq (s1, s2) -> 
+      case evalList (c, {s1, s2}) of
+        [c, {v1, v2}] -> [c, v2]
+      esac
+  | Ignore (e) -> [ eval (c, e)[0], Void]
+
+  | While (exp, st) ->
+      case eval (c, exp) of
+        [c, v] -> if (v != 0) then eval (eval (c, st)[0], expr) else [c, Void] fi
+      esac
+
+  | If (e, s1, s2) ->
+      case eval (c, e) of
+        [c, v] -> if (v != 0) then eval (c, s1) else eval (c, s2) fi 
+      esac
+
+  | Scope (defs, expr) ->
+      s := enterScope (s);
+      s := initScope (s, defs);
+      case eval ([s,w], expr) of
+        [[s,w], r] -> [[leaveScope (s), w], r]
+      esac
+  | Call (f, args) ->  
+      case lookup (s, f) of Fun (argsNames, expr) ->
+      case evalList (c, args) of [[s, w], args] ->
+      case initFunArgs(enterFunction (s), argsNames, args) of s ->
+      case expr of 
+        External -> 
+          case evalBuiltin(f, args, w) of 
+            [x, w] -> [[leaveFunction(c[0], getGlobal(s)), w] ,x]
+          esac
+      | _ ->    
+          case eval ([s, w], expr) of 
+            [[s,w], r] -> [ [leaveFunction(c[0], getGlobal(s)), w], r]
+          esac
+      esac
+      esac
+      esac
+      esac
+
+  | String (x) -> [c, x] 
+  | Elem (e1, e2) ->
+      case evalList(c, {e1, e2}) of 
+        [c, {e1, e2}] -> [c, e1[e2]]
+      esac
+  | ElemRef (e1, e2) -> evalList(c, {e1, e2}) 
+
+  | Array (list) -> 
+      case evalList(c, list) of
+        [c, list] -> [c, listArray(list)]
+      esac
+  esac
 }
 
 
@@ -111,5 +198,26 @@ public fun evalExpr (input, expr) {
                                       .addName ("write",  Fun ({"a"}, External))
                                       .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
+  esac
+}
+
+
+
+
+public fun binop(bp, x, y){
+  case bp of
+    "+"  -> x +  y 
+  | "-"  -> x -  y 
+  | "*"  -> x *  y 
+  | "/"  -> x /  y 
+  | "%"  -> x %  y 
+  | "==" -> x == y 
+  | "!=" -> x != y 
+  | "<"  -> x <  y 
+  | "<=" -> x <= y 
+  | ">"  -> x >  y 
+  | ">=" -> x >= y 
+  | "&&" -> x && y 
+  | "!!" -> x !! y 
   esac
 }
