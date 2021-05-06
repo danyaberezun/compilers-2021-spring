@@ -1,5 +1,5 @@
 -- Expression evaluator
-
+-- Alhasan Alkhaddour M4138c
 import List;
 import Array;
 import State;
@@ -39,8 +39,8 @@ public fun evalOp (op, l, r) {
 --
 -- A expression is represented by a data structure of the following shape:
 --
--- expr = Assn    (expr, expr)         |
---        Set     (string, expr)       |
+-- expr = Assn    (string, expr)       |
+
 --        Seq     (expr, expr)         |
 --        Skip                         |
 --        if      (expr, expr, expr)   |
@@ -85,7 +85,7 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -99,11 +99,110 @@ fun evalList (c, exprs) {
     [c, vals] -> [c, reverse (vals)]
   esac
 }
-
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun processDeclarations(state, decls) {
+  while size(decls) > 0 do
+    state := case decls.hd of 
+      Var (variables) -> addNames(state, variables) |
+      Fun (name, args, body) -> addFunction(state, name, args, body) 
+    esac;
+    decls := decls.tl
+  od; state
 }
 
+
+fun initScopeElements(st, d){
+  while size(d) > 0 do
+    st := case d[0] of 
+           Var (v) -> addNames (st, v)
+         | Fun (f, args, body) -> addFunction (st, f, args, body)
+         esac;
+    d := d.tl
+  od;
+  st
+}
+
+fun regArgs (st, argsNames, args){
+  while size(args) > 0 do
+    st := addName(st, argsNames[0], args[0]);
+    argsNames := argsNames.tl;
+    args := args.tl
+  od;
+  st
+}
+fun eval (c@[st, w], exprs) {
+  case exprs of
+      Assn (exp1, exp2) -> 
+        case evalList(c, {exp1, exp2}) of
+            [c, {ElemRef(lst, idx), v}] -> lst[idx] := v;
+                                          [c, v] 
+          | [[st, w], {Ref(x), v}]   ->    [[st <- [x, v], w], v]
+        esac 
+    | Seq (exp1, exp2) -> 
+        case eval(c, exp1) of
+          [c, _] -> eval(c, exp2)
+        esac 
+    | Skip -> [c, Bottom]
+    | If (cond, thenStmt, elseStmt) ->
+        case eval(c, cond) of
+            [c, 0] -> eval(c, elseStmt) 
+          | [c, _] -> eval(c, thenStmt)
+        esac 
+    | While (cond, stmt) ->
+        case eval(c, cond) of 
+            [c, 0] -> [c, Bottom] 
+          | _ -> eval(eval(c, stmt)[0], exprs)
+        esac 
+    | DoWhile (stmt, cond) ->
+          case eval(eval(c, stmt)[0], cond) of
+            [c, 0] -> [c, Bottom] 
+          | [c, _] -> eval(c, exprs)
+          esac  
+    | Var (v) -> [c, lookup(st, v)]  
+    | Ref (x) -> [c, Ref(x)]
+    | Const (n) -> [c, n]
+    | Binop (op, l, r) -> case eval (c, l) of [c1, w] -> 
+                            case eval (c1, r) of [c2, v] -> 
+                                  [c2, evalOp (op, w, v)] 
+                            esac 
+                          esac
+    | Ignore (exprs) -> [eval(c, exprs)[0], Bottom]
+    | Scope (defs, exprs) ->
+        st := enterScope (st);
+        st := initScopeElements (st, defs);
+        case eval ([st,w], exprs) of
+          [[st,w], r] -> [[leaveScope (st), w], r]
+        esac
+    | Call (f, args) ->  
+        case lookup (st, f) of Fun (argsNames, exprs) ->
+          case evalList (c, args) of [[st, w], args] ->
+            case regArgs(enterFunction (st), argsNames, args) of st ->
+              case exprs of External -> 
+                case evalBuiltin (f, args, w) of [e, w] ->
+                   [ [leaveFunction(c[0], getGlobal(st)), w], e]
+                esac 
+                          | _ ->
+                case eval ([st, w], exprs) of [[st,w], r] -> 
+                  [ [leaveFunction(c[0], getGlobal(st)), w], r]
+                esac
+              esac
+            esac
+          esac
+        esac   
+    | String(s) ->  [c, s]  
+    | Array(lst) ->
+        case evalList(c, lst) of 
+          [c, elmnts] -> [c, listArray(elmnts)]
+        esac 
+    | Elem(arr, idx) ->
+        case evalList(c, {arr, idx}) of 
+            [c, {arr, idx}] -> [c, arr[idx]]
+        esac 
+    | ElemRef(arr, idx) ->
+        case evalList(c, {arr, idx}) of
+          [c, {arr, idx}] -> [c, ElemRef(arr, idx)]
+        esac      
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
