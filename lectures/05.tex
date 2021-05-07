@@ -125,7 +125,7 @@ However, this to some extent sacrifices expressivity of the language for the eas
 but we cannot write
 
 \begin{lstlisting}
-   x := if c then 1 else 2 fi 
+   x := if c then 1 else 2 fi
 \end{lstlisting}
 
 \emph{et cetera}. This lack of the expressivity is compensated in some languages by extending the varirty of expressions (for example,
@@ -206,7 +206,7 @@ the following complete well-formed AST can be inferred:
   \begin{array}{cccl}
     \withenv{\Ref}{\llang{ref $\;x$}} & \withenv{\Val}{x}& \withenv{\Void}{\llang{ignore $\;x$}} & x \in \mathscr X\\
                                       & \withenv{\Val}{z}& \withenv{\Void}{\llang{ignore $\;z$}} & z \in \mathbb N \\
-                                      & \trule{\withenv{\Val}{l},\quad\withenv{\Val}{r}} 
+                                      & \trule{\withenv{\Val}{l},\quad\withenv{\Val}{r}}
                                               {\withenv{\Val}{l\oplus r}} &
                                         \trule{\withenv{\Val}{l},\quad\withenv{\Val}{r}}
                                               {\withenv{\Void}{\llang{ignore $\;l\oplus r$}}}    & \\
@@ -224,7 +224,7 @@ the following complete well-formed AST can be inferred:
   \end{array}
   \]
   \caption{Well-formed Expressions}
-  \label{well_formed}  
+  \label{well_formed}
 \end{figure}
 
 The top-level well-formedness condition for the while program $p$ (which is now a single expression) is
@@ -289,12 +289,12 @@ First we define an auxilliary relation "$\Rightarrow_*$":
 \setarrow{\xRightarrow}
 \begin{figure}[h]
   \setsubarrow{_*}
-  \[ 
-  \trans{c}{\epsilon}{\inbr{c,\,\epsilon}}\ruleno{Expr$^*_\epsilon$} 
+  \[
+  \trans{c}{\epsilon}{\inbr{c,\,\epsilon}}\ruleno{Expr$^*_\epsilon$}
   \]
-  \[ 
+  \[
   \trule{{\setsubarrow{}\trans{c}{e}{\inbr{c^\prime,\,v}}},\quad\trans{c^\prime}{\omega}{\inbr{c^{\prime\prime},\,\psi}}}
-        {\trans{c}{e\omega}{\inbr{c^{\prime\prime},\,v\psi}}}\ruleno{Expr$^*$} 
+        {\trans{c}{e\omega}{\inbr{c^{\prime\prime},\,v\psi}}}\ruleno{Expr$^*$}
   \]
 \end{figure}
 
@@ -325,7 +325,7 @@ The semantics for expressions is presented on Fig.~\ref{expr_semantics}.
 \[
 \trule{\inbr{z,\,\omega^\prime}=\primi{read}{\omega}}
       {\trans{\inbr{\sigma,\, \omega}}{\llang{read ($x$)}}{\inbr{\inbr{\sigma\,[x\gets z],\,\omega^\prime},\,\bot}}}\ruleno{Read}
-\]\vskip1mm 
+\]\vskip1mm
 \[
 \trule{\trans{\inbr{\sigma,\,\omega}}{e}{\inbr{\inbr{\sigma^\prime,\,\omega^\prime},\,v}}}
       {\trans{\inbr{\sigma,\, \omega}}{\llang{write ($e$)}}{\inbr{\inbr{\sigma^\prime,\, \primi{write}{v\, \omega^\prime}},\,\bot}}}\ruleno{Write}
@@ -345,7 +345,7 @@ The semantics for expressions is presented on Fig.~\ref{expr_semantics}.
       \ruleno{If-False}
 \]\vskip1mm
 \[
-\trule{\trans{c}{e}{\inbr{c^\prime,\,n}},\quad n\ne 0,\quad\trans{c^\prime}{S}{\inbr{c^{\prime\prime},\,v}},\quad\trans{c^{\prime\prime}}{\llang{while $\;e\;$ do $\;S\;$}}{c^{\prime\prime\prime}}}     
+\trule{\trans{c}{e}{\inbr{c^\prime,\,n}},\quad n\ne 0,\quad\trans{c^\prime}{S}{\inbr{c^{\prime\prime},\,v}},\quad\trans{c^{\prime\prime}}{\llang{while $\;e\;$ do $\;S\;$}}{c^{\prime\prime\prime}}}
       {\trans{c}{\llang{while $\;e\;$ do $\;S\;$}}{c^{\prime\prime\prime}}}
       \ruleno{While-True}
 \]\vskip1mm
@@ -393,7 +393,7 @@ The form of operational semantics is left unchanged; the semantics of additional
 \[
 \trule{\withenv{P}{\trans{\inbr{s,\,\theta}}{p}{c^\prime}}}
       {\withenv{P}{\trans{\inbr{xs,\,\theta}}{[\llang{DROP}]p}{c^\prime}}}\ruleno{DROP$_{SM}$}
-\]      
+\]
 \end{figure}
 
 \end{document}
