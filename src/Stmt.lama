@@ -16,8 +16,34 @@ import World;
 --        Read   (string)           |
 --        Write  (expr)             |
 
-fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+fun eval (c@[state, world], stmt) {
+  -- printf("\n    c = %s, stmt = %s\n", c.string, showStmt(stmt, "; "));
+  case stmt of
+    Assn(v, e)    ->
+    var n = evalExpr(state, e)
+    ;[state <- [v, n], world]
+  | Seq(lhs, rhs) -> eval(eval(c, lhs), rhs)
+  | Skip          -> c
+  | Read(x)    -> case readWorld(world) of [value, worldNew] -> [state <- [x, value], worldNew] esac
+  | Write(e)   ->
+    var eValue = evalExpr(state, e)
+    ;var worldNew = writeWorld(eValue, world)
+    ;[state, worldNew]
+  esac
+}
+
+public fun showStmt(stmt, sep) {
+  case stmt of
+    Assn(v, e)    -> sprintf("%s := %s", v.string, showExpr(e))
+  | Seq(lhs, rhs) -> sprintf("%s%s%s", showStmt(lhs, sep), sep, showStmt(rhs, sep))
+  | Skip          -> "skip"
+  | Read(vName)   -> sprintf("read%s", vName.string)
+  | Write(e)      -> sprintf("write%s", showExpr(e))
+  esac
+}
+
+public fun den_eval (c, stmt) {
+  eval(c, stmt)
 }
 
 -- Evaluates a program with a given input and returns an output
