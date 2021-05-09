@@ -347,6 +347,47 @@ fun suffix (op) {
   esac
 }
 
+fun compileSimpleBinopReg (op, x, y) {
+  case x of
+       R (_) -> singletonBuffer (Binop (op, x, y))
+    |  _ -> listBuffer ({
+          Mov (y, eax),
+          Binop(op, x, eax),
+          Mov (eax, y)
+      })
+  esac
+}
+
+fun compileSimpleBinop (code, op, x, y) {
+  code <+> compileSimpleBinopReg (op, x, y)
+}
+
+fun toBool(x) {
+  listBuffer ({Mov (L(0), eax), Binop("cmp", L(0), x), Set ("ne", "%al"), Mov (eax, x)})
+}
+
+fun compileBool(code, op, x, y) {
+  code <+> toBool (x) <+> toBool (y) <+> compileSimpleBinopReg (op, x, y)
+}
+
+fun compileDiv (code, op, x, y, reg) {
+  code <+> (move (y, eax) <+ Cltd <+ IDiv(x) <+> move(reg, y))
+}
+
+
+fun compileComp (code, op, x, y) {
+    code <+ Mov (x, edx) <+ Binop("cmp", edx, y) <+ Mov (L (0), eax) <+ Set (suffix (op), "%al") <+ Mov (eax, y)
+}
+
+fun addRegCode () {
+  listBuffer ({Push (ebx), Push (ecx), Push (esi), Push (edi)})
+}
+
+fun loadRegCode () {
+  listBuffer ({Pop (edi), Pop (esi), Pop (ecx), Pop (ebx)}) 
+}
+
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (env, code) {
@@ -357,17 +398,94 @@ fun compile (env, code) {
         case i of
           READ ->
             case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+               [s, env1] -> [env1, code <+> addRegCode () <+ Call ("Lread") <+> loadRegCode () <+ Mov (eax, s)]
             esac             
         | WRITE ->
             case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+              [s, env1] -> [env1, code <+> addRegCode () <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+> loadRegCode ()]
             esac
+        | BINOP (op) ->
+            case env.pop2 of
+              [x, y, envPop] -> (
+                var envNew = envPop.push (y);
+                case op of
+                  "+" -> [envNew, compileSimpleBinop (code, op, x, y)]
+                  | "-" -> [envNew, compileSimpleBinop (code, op, x, y)]
+                  | "*" -> [envNew, compileSimpleBinop (code, op, x, y)]
+                  | "/" -> [envNew,  compileDiv (code, op, x, y, eax)]
+                  | "%" -> [envNew,  compileDiv (code, op, x, y, edx)]
+                  | "&&" -> [envNew, compileBool (code, op, x, y)]
+                  | "!!" -> [envNew,  compileBool (code, op, x, y)]
+                  | "==" -> [envNew, compileComp (code, op, x, y)]
+                  | "!=" -> [envNew, compileComp (code, op, x, y)]
+                  | ">" -> [envNew, compileComp (code, op, x, y)]
+                  | "<" -> [envNew, compileComp (code, op, x, y)]
+                  | ">=" -> [envNew, compileComp (code, op, x, y)]
+                  | "<=" -> [envNew, compileComp (code, op, x, y)]
+                esac
+             )
+            esac
+        | LD (varName) -> (
+            case env.allocate of
+              [s, envNew] -> [envNew, code <+> move (envNew.loc(varName), s)]
+            esac
+          )
+        | ST (varName) -> ( 
+            var envWithVar = env.addGlobal (varName);   
+            case envWithVar.pop of 
+              [varValue, envNew] -> [envNew, code <+> move (varValue, envNew.loc (varName))]
+            esac
+          )
+        | CONST (n) ->
+            case env.allocate of
+              [s, envNew] -> [envNew, code <+> move (L(n), s)]
+            esac
+		| LABEL (label) -> (
+			if isBarrier (env)
+				then [retrieveStack (env, label), code <+ Label (label)]
+				else [env, code <+ Label (label)]
+			fi
+		)
+          
+		| JMP (label) -> (
+		  var env1 = setStack(env, label);
+		  var env2 = setBarrier(env1);
+          [env2, code <+ Jmp (label)]
+        )
+		| CJMP (cond, label) -> (
+          case env.pop of
+            [res, env1] -> (
+				var env2 = setStack(env1, label);
+				[env2, code <+ Binop("cmp", L (0), res) <+ CJmp(cond, label) ] 
+			)
+          esac
+        )
+		| DROP -> 
+			case pop (env) of 
+				[s1, envNew] -> [envNew, code]
+			esac
+		| DUP -> 
+			var value = peek (env);
+			case allocate (env) of 
+				[s, env1] -> [env1, code <+> move (value, s)]
+			esac
+		| LDA (varName) ->
+			case allocate (addGlobal (env, varName)) of 
+				[s, envNew] -> [envNew, code <+ Lea (envNew.loc(varName), eax) <+ Mov (eax, s)]
+			esac
+		| STI -> 
+			case pop2 (env) of 
+				[value, name, env1] -> 
+					case allocate (env1) of 
+						[s, env2] -> [env2, code <+ Mov (value, eax) <+ Mov (name, edx) <+ Mov (eax, I (0, edx)) <+ Mov (eax, s)]
+					esac
+			esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
-  }
 
+  }
+  
   compile (env, code) 
 }
 

@@ -86,6 +86,30 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+fun addDefinitions (state, deflist) {
+	case deflist of
+		def : othersdef -> (
+			case def of 
+					Var (name) -> addDefinitions(addNames(state, name), othersdef)
+				|	Fun (name, args, body) -> addDefinitions(addFunction(state, name, args, body), othersdef)
+			esac
+			
+		)
+		|	_ -> state
+	esac
+}
+
+fun addArgs (state, args, values) {
+	case [args, values] of
+			[arg:otherArgs, value:otherValues] -> (
+				var news = addName(state, arg, value);
+				addArgs (news, otherArgs, otherValues)
+			)
+		|	_ -> state
+	esac
+}
+
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
@@ -102,7 +126,107 @@ fun evalList (c, exprs) {
 }
 
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+	case expr of
+			Assn (expr1, expr2) -> 
+				case eval (c, expr1) of
+					[c1, Ref(name)] -> 
+						case eval (c1, expr2) of 
+							[c2@[st2, w2], value] ->
+								[[st2 <- [name, value], w2], value]
+						esac
+				esac
+		|	Seq (expr1, expr2) -> (
+		    var res =  eval (c, expr1);
+			eval(res[0], expr2)
+		)
+		|	Skip -> [c, None]
+		|	Read (expr) -> (
+			case eval (c, expr) of 
+				[c1@[st1, w1], Ref(name)] -> (
+					case readWorld(w1) of 
+						[value, w2] -> [[st1 <- [name, value], w2], None]
+					esac
+				)
+			esac
+		)
+		|	Write   (expr) -> (
+			case eval (c, expr) of 
+				[[st1, w1], value] -> (
+					var w2 = writeWorld (value, w1);
+					[[st1, w2], None]
+				)
+			esac
+		)
+		|	If      (cond, thenExpr, elseExpr) -> (
+			case eval (c, cond) of 
+					[c1, 0] -> eval (c1, elseExpr)
+				|	[c1, _] -> eval (c1, thenExpr)
+			esac
+		)
+		|	While   (cond, body) -> (
+			case eval (c, cond) of
+					[c1, 0] -> [c1, None]
+				|	[c1, _] -> (
+						var res = eval (c1, body);
+						eval (res[0], While (cond, body))
+					)
+			esac
+		)
+		|	DoWhile (body, cond) ->  (
+			var res = eval (c, body);
+			eval (res[0], While (cond, body))
+		)
+		|	Var     (name) -> [c, lookup(s, name)]
+		|	Ref     (name) -> [c, Ref(name)]
+		|	Const   (value) -> [c, value]
+		|	Binop   (op, expr1, expr2) -> (
+			case eval (c, expr1)of 
+				[c1, res1] -> (
+					case eval (c1, expr2) of
+						[c2, res2] -> [c2, evalOp (op, res1, res2)]
+					esac
+				)
+			esac
+		)
+		|	Scope (deflist, expr) -> (
+			var s0 = enterScope (s);
+			var s1 = addDefinitions  (s0, deflist);
+			var res = eval ([s1, w], expr);
+			case res of 
+				[newc, resVal] -> (
+					case newc of 
+						[s2, neww] -> (
+							var news = leaveScope (s2);
+							[[news, neww], resVal]
+						)
+					esac
+				)
+			esac
+		)
+		|	Call    (fname, exprlist)  -> (
+			case (lookup (s, fname)) of
+				Fun (args, body) -> (
+					var res = evalList (c, exprlist);
+					case res of 
+						[c1@[s1, w1], argsRes] -> (
+							var s2 = addArgs (enterFunction (s1) , args, argsRes);
+							var res2 = eval ([s2, w1], body);
+							case res2 of 
+								[c3@[s3, w3], funRes] -> (
+									var news = leaveFunction (s, getGlobal(s3));
+									[[news, w3], funRes]
+								)
+							esac
+						)
+					esac
+				)
+			esac
+		)	
+		|	Ignore  (expr) -> (
+				var res = eval(c, expr);
+				[res[0], None]
+			)
+	esac
 }
 
 
