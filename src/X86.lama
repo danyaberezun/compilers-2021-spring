@@ -7,13 +7,13 @@ import Buffer;
 import Fun;
 
 -- Assembler language interface
--- The registers: 
+-- The registers:
 var regs = ["%ebx", "%ecx", "%esi", "%edi", "%eax", "%edx", "%ebp", "%esp"];
 
 -- We can not freely operate with all register; only with 4 by now
 var nRegs = regs.length - 5;
 
--- For convenience we define the following synonyms for the registers: 
+-- For convenience we define the following synonyms for the registers:
 var ebx = R (0),
     ecx = R (1),
     esi = R (2),
@@ -26,37 +26,37 @@ var ebx = R (0),
 -- We need to know the word size to calculate offsets correctly
 var wordSize = 4;
 
--- We need to distinguish the following operand types: 
---    R (int)    -- hard register                    
---    S (int)    -- a position on the hardware stack 
---    M (string) -- a named memory location          
---    L (int)    -- an immediate operand             
+-- We need to distinguish the following operand types:
+--    R (int)    -- hard register
+--    S (int)    -- a position on the hardware stack
+--    M (string) -- a named memory location
+--    L (int)    -- an immediate operand
 
 -- Some x86 instruction (we do not need all of them):
---   Mov   (opnd, opnd)         -- copies a value from the first to the second operand  
---   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand   
+--   Mov   (opnd, opnd)         -- copies a value from the first to the second operand
+--   Binop (string, opnd, opnd) -- makes a binary operation; note, the first operand
 --                                 designates x86 operator, not the source language one
---   IDiv  (opnd)               -- x86 integer division, see instruction set reference 
---   Cltd                       -- see instruction set reference           
---   Set   (string, string)     -- sets a value from flags; the first operand is the   
+--   IDiv  (opnd)               -- x86 integer division, see instruction set reference
+--   Cltd                       -- see instruction set reference
+--   Set   (string, string)     -- sets a value from flags; the first operand is the
 --                                 suffix, which determines the value being set, the
---                                 the second --- (sub)register name 
+--                                 the second --- (sub)register name
 --   Push  (opnd)               -- pushes the operand on the hardware stack
 --   Pop   (opnd)               -- pops from the hardware stack to the operand
---   Call  (string)             -- calls a function by its name 
+--   Call  (string)             -- calls a function by its name
 --   Ret                        -- returns from a function
 --   Meta  (string)             -- metainformation (declarations, etc.)
-                                                               
+
 -- Machine instruction printer
 fun insnString (insn) {
-  
+
   fun binopString (op) {
     case op of
       "+"   -> "addl"
     | "-"   -> "subl"
     | "*"   -> "imull"
     | "&&"  -> "andl"
-    | "!!"  -> "orl" 
+    | "!!"  -> "orl"
     | "^"   -> "xorl"
     | "cmp" -> "cmpl"
     esac
@@ -70,7 +70,7 @@ fun insnString (insn) {
     | L (i) -> sprintf ("$%d", i)
     esac
   }
-  
+
   case insn of
     Cltd               -> "\tcltd\n"
   | Set   (suf, s)     -> sprintf ("\tset%s\t%s\n", suf, s)
@@ -101,12 +101,12 @@ fun makeEnv (stack, stackSlots, globals) {
   fun envString () {
     sprintf ("Stack     : %s\nStackSlots: %d\nGlobals   : %s\n", stack.string, stackSlots, elements (globals).string)
   }
-  
+
   -- Allocates a new position on the symbolic stack;
   -- returns a pair: a location for allocated item and
   -- an updated environment
   fun allocate () {
-    case 
+    case
       case stack of
         {}        -> [ebx, 0]
       | S (n) : _ -> [S (n+1), n+2]
@@ -146,7 +146,7 @@ fun makeEnv (stack, stackSlots, globals) {
   fun loc (name) {
     M (globalName (name))
   }
-  
+
   -- Gets a list of global variables from the environment
   fun getGlobals () {
     globals.elements
@@ -238,7 +238,7 @@ fun stackOpnd (opnd) {
   case opnd of
     S (_) -> true
   | _     -> false
-  esac      
+  esac
 }
 
 -- Checks if an operand resides in memory
@@ -280,12 +280,90 @@ fun compile (env, code) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
         READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
+          case allocate(env) of
+            [s, env1] -> [env1, code <+ Call ("Lread") <+ Mov (eax, s)]
+          esac
       | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          case pop(env) of
+            [s, env1] -> [env1, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+          esac
+      | BINOP (op) ->
+          case pop2(env) of
+            [right, left, env1] ->
+              case op of
+                "+"     -> [push (env1, right), code
+                                                        <+ Mov (right, eax)
+                                                        <+ Binop ("+", left, eax)
+                                                        <+ Mov (eax, right)]
+              | "-"     -> [push (env1, right), code
+                                                        <+ Mov (left, eax)
+                                                        <+ Binop ("-", right, eax)
+                                                        <+ Mov (eax, right)]
+              | "*"     -> [push (env1, right), code
+                                                        <+ Mov (right, eax)
+                                                        <+ Binop ("*", left, eax)
+                                                        <+ Mov (eax, right)]
+              | "/"     -> [push (env1, right), code
+                                                        <+ Mov (left, eax)
+                                                        <+ Cltd
+                                                        <+ IDiv (right)
+                                                        <+ Mov (eax, right)]
+              | "%"     -> [push (env1, right), code
+                                                        <+ Mov (left, eax)
+                                                        <+ Cltd
+                                                        <+ IDiv (right)
+                                                        <+ Mov (edx, right)]
+              | "=="    -> [push (env1, right), code
+                                                        <+ Binop ("cmp", right, left)
+                                                        <+ Mov (L (0), eax)
+                                                        <+ Set (suffix ("=="), "%al")
+                                                        <+ Mov (eax, right)]
+              | "!="    -> [push (env1, right), code
+                                                        <+ Binop ("cmp", right, left)
+                                                        <+ Mov (L (0), eax)
+                                                        <+ Set (suffix ("!="), "%al")
+                                                        <+ Mov (eax, right)]
+              | "<"     -> [push (env1, right), code
+                                                        <+ Binop ("cmp", right, left)
+                                                        <+ Mov (L (0), eax)
+                                                        <+ Set (suffix ("<"), "%al")
+                                                        <+ Mov (eax, right)]
+              | "<="    -> [push (env1, right), code
+                                                        <+ Binop ("cmp", right, left)
+                                                        <+ Mov (L (0), eax)
+                                                        <+ Set (suffix ("<="), "%al")
+                                                        <+ Mov (eax, right)]
+              | ">"     -> [push (env1, right), code
+                                                        <+ Binop ("cmp", right, left)
+                                                        <+ Mov (L (0), eax)
+                                                        <+ Set (suffix (">"), "%al")
+                                                        <+ Mov (eax, right)]
+              | ">="    -> [push (env1, right), code
+                                                        <+ Binop ("cmp", right, left)
+                                                        <+ Mov (L (0), eax)
+                                                        <+ Set (suffix (">="), "%al")
+                                                        <+ Mov (eax, right)]
+              | "&&"    -> [push (env1, right), code
+                                                        <+ Mov (right, eax)
+                                                        <+ Binop ("&&", left, eax)
+                                                        <+ Mov (eax, right)]
+              | "!!"    -> [push (env1, right), code
+                                                        <+ Mov (right, eax)
+                                                        <+ Binop ("!!", left, eax)
+                                                        <+ Mov (eax, right)]
+              esac
+          esac
+      | LD (x) ->
+           case allocate (env) of
+             [s, env1] -> [env1, code <+> move (env1.loc (x), s)]
+           esac
+      | ST (x) ->
+           case pop (addGlobal (env, x)) of
+             [s, env1] -> [env1, code <+> move (s, env.loc (x))]
+           esac
+      | CONST (n) ->
+          case allocate (env) of
+            [s, env1] -> [env1, code <+> move (L(n), s)]
           esac
       | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
@@ -297,7 +375,7 @@ fun compile (env, code) {
 public fun compileX86 (code) {
   case compile (initEnv (), code) of
     [env, code] ->
-       map (insnString, 
+       map (insnString,
             getBuffer $
               singletonBuffer (Meta ("\t.global\tmain\n")) <+>
               dataSection (listBuffer $ map (dataDef, getGlobals (env))) <+>
