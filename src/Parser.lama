@@ -74,7 +74,7 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
              esac
            },
            [{}, expr],
@@ -83,7 +83,7 @@ fun expandScope (defs, expr) {
 
   fun expandValDefs (defs, expr) {
     foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
            },
            [{}, expr],
            defs)
@@ -141,7 +141,42 @@ var primary    = memo $ eta syntax (
                                                                                                             | Some (args) -> assertValue (a, Call (x, args))
                                                                                                             esac
                                                                                                          }} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
+                                         -- skip
+                                 loc=pos -kSkip {fun (a) {assertVoid (a, Skip, loc)}} |
+                                  -- while
+                                 loc=pos -kWhile e=basic s=inbr[kDo, scopeExpr, kOd] {fun (a) {assertVoid (a, While (e (Val), s (Void)), loc)}} |
+                                  -- if
+                                 loc=pos -kIf e=basic -kThen s1=exp sn=elsePart? -kFi {fun (a) {
+                                                                                         case sn of
+                                                                                           Some (s2) -> 
+                                                                                             If (e (Val), s1 (a), s2 (a))
+                                                                                         | _ -> 
+                                                                                             assertVoid (a, If (e (Val), s1 (a), Skip), loc)
+                                                                                         esac
+                                                                                       }} |
+                                  -- do while
+                                 loc=pos -kDo s=scopeExpr -kWhile e=basic kOd {fun (a) {
+                                                                                 assertVoid (a, distributeScope (s (Void), 
+                                                                                 fun (s) {DoWhile (s, e (Val))}), loc)
+                                                                               }} |
+                                  -- for
+                                 loc=pos -kFor init=scopeExpr -s[","] cond=basic -s[","] step=basic s=inbr[kDo, scopeExpr, kOd] {fun (a) {
+                                    assertVoid (a, distributeScope (init (Void), fun (init) {Seq (init, While (cond (Val), Seq (s (Void), 
+                                    step (Void))))}), loc)
+                                  }} |
+                                 e=inbr[s("("), scopeExpr, s(")")] {fun (a) {e (a)}} 
+                                  --|$(failure ("the rest of primary parsing in not implemented\n"))
+                                ),
+      elsePart = memo $ eta syntax (
+                                    loc=pos -kElif e=exp -kThen s1=exp sn=elsePart? {fun (a) {
+                                                                                       case sn of 
+                                                                                         Some (s2) -> 
+                                                                                           If (e (Val), s1 (a), s2 (a))
+                                                                                       | _         -> 
+                                                                                           assertVoid (a, If (e (Val), s1 (a), Skip), loc)
+                                                                                       esac
+                                                                                     }} |
+                                    -kElse s2=exp {fun (a) {s2 (a)}}),
       basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
                                                   fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
