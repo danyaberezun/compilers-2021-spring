@@ -99,10 +99,123 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (m@[s, w], expr) {
+  case expr of
+      Var (i)          -> [m, case lookupVal (s, i) of Val (x) -> x esac] |
+      Binop (i, j, k) -> (
+		case eval (m, expr[1]) of
+				[m, x1] ->
+				case eval (m, expr[2]) of
+					[m, x2] -> [m,
+						case expr[0] of
+						"<"  -> x1 <  x2 |
+						"<=" -> x1 <= x2 |
+						">"  -> x1 >  x2 |
+						">=" -> x1 >= x2 |	
+						"%"  -> x1 %  x2 |
+						"/"  -> x1 /  x2 |
+						"==" -> x1 == x2 |
+						"+"  -> x1 + x2  |
+						"-"  -> x1 -  x2 |
+						"&&" -> x1 && x2 |
+						"!!" -> x1 !! x2 |
+						"*"  -> x1 *  x2 |
+						"!=" -> x1 != x2 |
+						_    -> failure  ("Failure in eval - no such binop \n")
+					esac]
+				esac
+		esac) |  
+      Ref (i)          -> [m, Ref (i)] |
+      Const (i)       -> [m, expr[0]] |
+      If (i, j, k)    -> (case eval (m, expr[0]) of
+						[m, 0] -> eval (m, expr[2]) |
+						[m, _] -> eval (m, expr[1])
+					  esac) |
+      Assn (i, j)      -> case evalList (m, {i, j}) of 
+			[m, {ElemRef (i, k), r}] 
+							-> i[k] := r; [m, r]|                        
+			[[o, p], {Ref (x), r}] 
+							-> [[o <- [x, Val (r)], p], r]
+
+                        esac |
+      Seq (i, j)      -> (case eval (m, expr[0]) of
+							[m, i] -> eval (m, expr[1])
+						esac) |
+      Skip            -> [m, Void]   |
+      While (i, j)    -> (case eval (m, expr[0]) of
+						[m, 0] -> [m, Void] |
+						[m, _] ->
+						case eval (m, expr[1]) of
+						  [m, _] -> funcWhile (m, While (expr[0], expr[1]))
+						esac
+					  esac) |
+      DoWhile (i, j)  -> (case eval (m, expr[0]) of
+						[m, _] -> funcWhile (m, While (expr[1], expr[0]))
+					  esac) |
+      Read (i)        -> (case eval (m, expr[0]) of
+						[m, ref] ->
+						case readWorld (m[1]) of
+						  [value, k] -> [[m[0] <- [ref, value], k], Void]
+						esac
+					  esac) |
+      Write (i)       -> (case eval (m, expr[0]) of
+						[m@[st, w], value] -> [[st, writeWorld (value, w)], Void]
+					  esac) |
+      Scope (i, j)    ->  (case enterScope (s) of
+    			s ->
+    			case eval(
+      				foldl (fun ([s,w], ver) {
+        			case ver of
+          				Var (v) -> [addNames (s, v), w] |
+          				Fun (l, h, y) -> [addFunction (s, l, h, y), w]
+        			esac
+      				}, [s, w], expr.fst),
+      			expr.snd) of
+      			[[s,w], numb] -> [[leaveScope (s), w], numb]
+    			esac
+  		esac) |
+      Call (i, j) ->  (case lookupFun(s, i) of 
+					Fun(o, crp) ->
+					  var l = s;
+					  case evalList(m, j) of 
+						[[ex, w], r] ->
+						  case crp of
+							External -> case evalBuiltin (i, r, w) of [n, w] -> [[ex, w], n] esac |
+							_ -> processExpr(ex, o, r, w, crp, l)
+						  esac
+					  esac
+					esac) |
+       Ignore (i)      -> case eval (m, i) of 
+                              [x, y] -> [x, Bottom]
+                          esac |
+       String (i)         -> [m, expr[0]] |
+       Elem (x, y)        -> (case eval (m, expr[0]) of
+								[m, i] -> 
+								  case eval (m, expr[1]) of
+									[m, j] -> [m, i[j]] 
+								  esac
+							  esac) |
+       ElemRef (x, y)     -> (case eval (m, expr[0]) of
+								[m, i] -> 
+								  case eval (m, expr[1]) of
+									[m, j] -> [m, ElemRef (i, j)] 
+								  esac
+							  esac) |
+       Array (i)          -> (case evalList (m, expr[0]) of
+								[m, value] -> [m, listArray (value)]
+							  esac)
+   esac
 }
 
+fun funcWhile (m, expr) {
+  var evRes = eval (m, expr[0]);
+  case evRes of
+	[m, 0] -> [m, Void] |
+	[m, _] -> (case eval (m, expr[1]) of
+        [m, _] -> funcWhile (m, While (expr[0], expr[1]))
+	esac)
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
@@ -111,4 +224,13 @@ public fun evalExpr (input, expr) {
                                       .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
     [c, _] -> c.snd.getOutput
   esac
+}
+
+fun processExpr(org, o, r, w, crp, l){
+    org := enterFunction(org);
+	while size(o) > 0 do org := addName(org, o[0], Val(r[0])); r := r.tl; o := o.tl od;
+    case eval([org, w], crp) of [[org, w], q] ->
+								org := leaveFunction(l, getGlobal (org));
+								[[org, w], q]
+							  esac
 }
