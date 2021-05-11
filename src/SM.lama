@@ -126,9 +126,165 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
+  fun assignArguments (state, argValues) {
+    fun go (curState, i, curArgValues) {
+      case curArgValues of
+        {} -> skip
+      | headValue : tailValues ->
+          assign (curState, Arg (i), headValue);
+          go (curState, i + 1, tailValues)
+      esac
+    }
+    go (state, 0, argValues)
+  }
+
+  fun evalSingleCommand (stack, callStack, state, world, insn, insnTail) {
+    case insn of
+      BINOP (op) -> case stack of y : x : tail ->
+        var res = evalOp (op, x, y);
+        var newStack = res : tail;
+        var newC = [newStack, callStack, state, world];
+        [newC, insnTail]
+      esac
+    | LD (varLoc) ->
+        var value = lookup (state, varLoc);
+        var newStack = value : stack;
+        var newC = [newStack, callStack, state, world];
+        [newC, insnTail]
+    | LDA (varLoc) ->
+        var newStack = Ref (varLoc) : stack;
+        var newC = [newStack, callStack, state, world];
+        [newC, insnTail]
+    | ST (varLoc) -> case stack of value : _ ->
+        var newC = [stack, callStack, state, world];
+        assign (state, varLoc, value);
+        [newC, insnTail]
+      esac
+    | CONST (n) ->
+        var newStack = n : stack;
+        var newC = [newStack, callStack, state, world];
+        [newC, insnTail]
+    | DUP -> case stack of head : tail ->
+        var newStack = head : head : tail;
+        var newC = [newStack, callStack, state, world];
+        [newC, insnTail]
+      esac
+    | DROP -> case stack of _ : newStack ->
+        var newC = [newStack, callStack, state, world];
+        [newC, insnTail]
+      esac
+    | GLOBAL (varName) ->
+        var newC = [stack, callStack, state, world];
+        var varLoc = Glb (varName);
+        assign (state, varLoc, 0);
+        [newC, insnTail]
+    | LABEL (label) ->
+        var newC = [stack, callStack, state, world];
+        [newC, insnTail]
+    | JMP (label) ->
+        var newC = [stack, callStack, state, world];
+        var to = fromLabel (env, label);
+        [newC, to]
+    | CJMP (tp, label) -> case stack of
+        top : newStack ->
+          var newC = [newStack, callStack, state, world];
+          var isNZ = case tp of
+            NZ -> 1
+          | Z -> 0
+          esac;
+          var jump = if isNZ == 1 && top != 0 !! isNZ == 0 && top == 0 then
+                        fromLabel (env, label)
+                      else
+                        insnTail
+                      fi;
+          [newC, jump]
+      esac
+    | CALL (functionLabel, argsCount) ->
+        var newCallStack = [state, insnTail] : callStack;
+        var newC = [stack, newCallStack, state, world];
+        var to = fromLabel (env, functionLabel);
+        [newC, to]
+    | BEGIN (_, argsCount, localsCount) -> 
+        var takeRes = take (stack, argsCount);
+        var newStack = takeRes.fst;
+        var argValues = takeRes.snd;
+        var newState = makeState (argsCount, localsCount);
+        var newC = [newStack, callStack, newState, world];
+        assignArguments (newState, argValues);
+        [newC, insnTail]
+    | END -> case callStack of
+        {} ->
+          var newC = [stack, callStack, state, world];
+          [newC, {}]
+      | [prevState, prevInsn] : prevCallStack ->
+          var newC = [stack, prevCallStack, prevState, world];
+          [newC, prevInsn]
+      esac
+    | STRING (value) ->
+        var newStack = value : stack;
+        var newC = [newStack, callStack, state, world];
+        [newC, insnTail]
+    | ARRAY (n) ->
+        var takeRes = take (stack, n + 1);
+        var newStack = takeRes.fst;
+
+        case takeRes.snd of
+          firstArg : arrayValues -> 
+            var finalStack = listArray (arrayValues) : newStack;
+            var newC = [finalStack, callStack, state, world];
+
+            if firstArg != n then
+              failure (sprintf (
+                "Error in ARRAY: %s expected, %s received/n",
+                n.string, firstArg.string
+              ))
+            fi;
+            
+            [newC, insnTail]
+        esac
+    | STA -> 
+        case stack of
+          value : Ref (varLoc) : stackTail ->
+            var newStack = value : stackTail;
+            var newC = [newStack, callStack, state, world];
+            assign (state, varLoc, value);
+            [newC, insnTail]
+        | value : idx : arr : stackTail ->
+            var newStack = value : stackTail;
+            var newC = [newStack, callStack, state, world];
+            arr[idx] := value;
+            [newC, insnTail]
+          esac
+    | ELEM -> case stack of idx : arr : stackTail ->
+        var newStack = arr[idx] : stackTail;
+        var newC = [newStack, callStack, state, world];
+        [newC, insnTail]
+      esac
+    | BUILTIN (functionName, argsCount) ->
+        var takeRes = take (stack, argsCount);
+        var newStack = takeRes.fst;
+        var args = takeRes.snd;
+
+        var evalRes = evalBuiltin (functionName, args, world);
+        var res = evalRes.fst;
+        var newWorld = evalRes.snd;
+
+        var finalStack = res : newStack;
+        var newC = [finalStack, callStack, state, newWorld];
+        [newC, insnTail]
+    esac
+  }
+
   -- Core interpreter: takes a configuration and a program, returns a configuration
-  fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+  fun eval (c@[stack, callStack, state, world], insns) {
+    case insns of
+      {} -> c
+    | insn : insnTail ->
+        var evalResult = evalSingleCommand (stack, callStack, state, world, insn, insnTail);
+        var newC = evalResult.fst;
+        var newInsnsTail = evalResult.snd;
+        eval (newC, newInsnsTail)
+    esac
   }
   
   
@@ -208,6 +364,7 @@ fun makeCompEnv (nLabels, scopeDepth, state, nLocals, nArgs, functions) {
     case lookup (state, name) of
       Loc (i, true) -> Loc (i)
     | Glb (x, true) -> Glb (x)
+    | Arg (i)       -> Arg (i)
     | _             -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
     esac
   }
@@ -390,6 +547,309 @@ fun addVals (env, names) {
 --    environment (use env.beginFun) and register arguments
 --    (use env.addArg).
 
+fun collectDefinitions (definitions) {
+  foldl (
+    fun ([curVars, curFuns], curDef) {
+      case curDef of
+        Var (varNames) -> [listBuffer (varNames) <+> curVars, curFuns]
+      | curFun@Fun(_, _, _) -> [curVars, curFun : curFuns]
+      esac
+    },
+    [emptyBuffer (), {}],
+    definitions
+  )
+}
+
+fun addAllFunctions (env, funs) {
+  foldl (
+    fun ([curEnv, curFuns], Fun (name, args, body)) {
+      var genRes = genFunLabel (curEnv, name);
+      var label = genRes.fst;
+      var envWithLabel = genRes.snd;
+      var newEnv = addFun (envWithLabel, name, label, size (args));
+      var newFuns = FunLabel (label, args, body) : curFuns;
+      [newEnv, newFuns]
+    },
+    [env, {}],
+    funs
+  )
+}
+
+fun rememberFuns (env, funs) {
+  case funs of
+    {} -> env
+  | FunLabel (funLabel, args, body) : tailFuns ->
+      var newEnv = rememberFun (env, funLabel, args, body);
+      rememberFuns (newEnv, tailFuns)
+  esac
+}
+
+fun processDefinitions (env, definitions) {
+  var collectRes = collectDefinitions (definitions);
+  var varNames = getBuffer (collectRes.fst);
+  var funs = collectRes.snd;
+
+  var newEnv = addVars (env, varNames);
+  var addRes = addAllFunctions (newEnv, funs);
+  var finalEnv = addRes.fst;
+  var addedFuns = addRes.snd;
+
+  if isGlobal (finalEnv) then
+    var globalCode = map (fun (varName) { GLOBAL (varName) }, varNames).listBuffer;
+    [finalEnv, globalCode, addedFuns]
+  else
+    [finalEnv, emptyBuffer (), addedFuns]
+  fi
+}
+
+fun concatCodes (codes) {
+  fun go (curCodes, result) {
+    case curCodes of
+      {} -> result
+    | headCode : tailCodes -> go (tailCodes, result <+> headCode)
+    esac
+  }
+  go (codes, emptyBuffer ())
+}
+
+fun compileSingleFun (env, Fun (functionLabel, args, body, state)) {
+  var envWithFun = beginFun (env, state);
+  var envWithArgs = addArgs (envWithFun, args);
+
+  var compileRes = compileSMBuf (envWithArgs, body);
+  var newEnv = compileRes.fst;
+  var bodyCode = compileRes.snd;
+
+  var localsCount = getLocals (newEnv);
+  var argsCount = size (args);
+  var resCode = singletonBuffer (LABEL (functionLabel)) <+
+                BEGIN (functionLabel, argsCount, localsCount) <+>
+                bodyCode <+
+                END;
+  [newEnv, resCode]
+}
+
+fun compileFunctions (env, funs) {
+  fun go (curEnv, curFuns, result) {
+    case curFuns of
+      {} -> [curEnv, result]
+    | curFun : tailFuns ->
+        var compileRes = compileSingleFun (curEnv, curFun);
+        var newEnv = compileRes.fst;
+        var curFunCode = compileRes.snd;
+        go (newEnv, tailFuns, result <+> curFunCode)
+    esac
+  }
+  go (env, funs, emptyBuffer ())
+}
+
+fun compileAllFunsctions (env) {
+  var resCode = emptyBuffer ();
+  var getFunsRes = getFuns (env);
+  var funs = getFunsRes.fst;
+  env := getFunsRes.snd;
+
+  while size (funs) > 0 do
+    var curCompileRes = compileFunctions (env, funs);
+
+    env := curCompileRes.fst;
+    resCode := resCode <+> curCompileRes.snd;
+
+    getFunsRes := getFuns (env);
+    funs := getFunsRes.fst;
+    env := getFunsRes.snd
+  od;
+  resCode
+}
+
+fun compileList (env, exprs) {
+  case exprs of
+    {} -> [env, {}]
+  | headExpr : tailExprs ->
+      var compileResult = compileSMBuf (env, headExpr);
+      var newEnv = compileResult.fst;
+      var code = compileResult.snd;
+
+      var tailResult = compileList (newEnv, tailExprs);
+      var finalEnv = tailResult.fst;
+      var codes = tailResult.snd;
+
+      [finalEnv, code : codes]
+  esac
+}
+
+fun compileSMBuf(env, stmt) {
+  case stmt of
+    Assn (refExpr, valExpr) -> 
+      case refExpr of
+        Ref (varName) ->
+          var varLoc = lookupVar (env, varName);
+
+          var compileRes = compileSMBuf (env, valExpr);
+          var newEnv = compileRes.fst;
+          var code = compileRes.snd;
+
+          var resCode = code <+
+                        ST (varLoc);
+          [newEnv, resCode]
+      | _ -> case compileList (env, {refExpr, valExpr}) of [newEnv, {refCode, valCode}] ->
+          var resCode = refCode <+>
+                        valCode <+
+                        STA;
+          [newEnv, resCode]
+        esac
+      esac
+    | Seq (aExpr, bExpr) -> case compileList (env, {aExpr, bExpr}) of [newEnv, {aCode, bCode}] ->
+        var resCode = aCode <+>
+                      bCode;
+        [newEnv, resCode]
+      esac
+    | Skip -> [env, emptyBuffer ()]
+    | If (cond, thenBody, elseBody) -> case compileList (env, {cond, thenBody, elseBody}) of
+        [newEnv, {condCode, thenCode, elseCode}] ->
+          var genResult = genLabels (newEnv, 2);
+          var elseLabel = genResult[0];
+          var exitLabel = genResult[1];
+          var finalEnv = genResult[2];
+
+          var resCode = condCode <+
+                        CJMP (Z, elseLabel) <+>
+                        thenCode <+
+                        JMP (exitLabel) <+
+                        LABEL (elseLabel) <+>
+                        elseCode <+
+                        LABEL (exitLabel);
+          [finalEnv, resCode]
+      esac
+  | While (cond, body) -> case compileList (env, {cond, body}) of 
+      [newEnv, {condCode, bodyCode}] ->
+        var genResult = genLabels (newEnv, 2);
+        var checkCondLabel = genResult[0];
+        var bodyLabel = genResult[1];
+        var finalEnv = genResult[2];
+
+        var resCode = singletonBuffer (JMP (checkCondLabel)) <+
+                      LABEL (bodyLabel) <+>
+                      bodyCode <+
+                      LABEL (checkCondLabel) <+>
+                      condCode <+
+                      CJMP (NZ, bodyLabel);
+        [finalEnv, resCode]
+    esac
+  | DoWhile (body, cond) -> case compileList (env, {body, cond}) of 
+      [newEnv, {bodyCode, condCode}] ->
+        var genResult = genLabel (newEnv);
+        var bodyLabel = genResult.fst;
+        var finalEnv = genResult.snd;
+
+        var resCode = singletonBuffer (LABEL (bodyLabel)) <+>
+                      bodyCode <+>
+                      condCode <+
+                      CJMP (NZ, bodyLabel);
+        [finalEnv, resCode]
+    esac
+  | Var (varName) ->
+      var varLoc = lookupVar (env, varName);
+      var resCode = singletonBuffer (LD (varLoc));
+      [env, resCode]
+  | Ref (varName) ->
+      var varLoc = lookupVar (env, varName);
+      var resCode = singletonBuffer (LDA (varLoc));
+      [env, resCode]
+  | Const (n) ->
+      var resCode = singletonBuffer (CONST (n));
+      [env, resCode]
+  | Binop (op, aExpr, bExpr) -> case compileList (env, {aExpr, bExpr}) of [newEnv, {aCode, bCode}] ->
+      var resCode = aCode <+>
+                    bCode <+
+                    BINOP (op);
+      [newEnv, resCode]
+    esac
+  | Ignore (expr) ->
+      var compileRes = compileSMBuf (env, expr);
+      var newEnv = compileRes.fst;
+      var code = compileRes.snd;
+
+      var resCode = code <+
+                    DROP;
+      [newEnv, resCode]
+  | String (value) ->
+      var resCode = singletonBuffer (STRING (value));
+      [env, resCode]
+  | Array (elemExprs) -> case compileList (env, elemExprs) of [newEnv, elemCodes] ->
+      var elemsCode = concatCodes (elemCodes);
+      var arraySize = size (elemExprs);
+      var arrSize = size (elemExprs);
+      var resCode = singletonBuffer (CONST (arrSize)) <+>
+                    elemsCode <+
+                    ARRAY (arraySize);
+      [newEnv, resCode]
+    esac
+  | Elem (arrExpr, idxExpr) -> case compileList (env, {arrExpr, idxExpr}) of
+      [newEnv, {arrCode, idxCode}] ->
+        var resCode = arrCode <+>
+                      idxCode <+
+                      ELEM;
+        [newEnv, resCode]
+    esac
+  | ElemRef (arrExpr, idxExpr) -> case compileList (env, {arrExpr, idxExpr}) of 
+      [newEnv, {arrCode, idxCode}] ->
+        var resCode = arrCode <+>
+                      idxCode;
+        [newEnv, resCode]
+    esac
+  | Call (functionName, argExprs) ->
+      var compileRes = compileList (env, argExprs);
+      var newEnv = compileRes.fst;
+      var argCodes = compileRes.snd;
+      var argsCode = concatCodes (argCodes);
+
+      var callCommand = case functionName of
+        "read" -> BUILTIN ("read", 0)
+      | "write" -> BUILTIN ("write", 1)
+      | "length" -> BUILTIN ("length", 1)
+      | "stringval" -> BUILTIN ("stringval", 1)
+      | _ -> case lookupFun (newEnv, functionName) of 
+          Fun (functionLabel, argsCount) -> CALL (functionLabel, argsCount)
+        esac
+      esac;
+
+      var resCode = argsCode <+
+                    callCommand;
+      [newEnv, resCode]
+  | Scope (definitions, expr) ->
+      var envWithScope = beginScope (env);
+      var defsProcessingRes = processDefinitions (envWithScope, definitions);
+
+      var newEnv = defsProcessingRes[0];
+      var globalCode = defsProcessingRes[1];
+      var labeledFuns = defsProcessingRes[2];
+
+      var envWithFuns = rememberFuns (newEnv, labeledFuns);
+      var compileRes = compileSMBuf (envWithFuns, expr);
+      var finalEnv = compileRes.fst;
+      var exprCode = compileRes.snd;
+      var envWithoutScope = endScope (finalEnv);
+
+      var resCode = globalCode <+>
+                    exprCode;
+      [envWithoutScope, resCode]
+  esac
+}
+
 public fun compileSM (expr) {
-  failure ("compileSM not implemented\n")
+  var initialEnv = beginScope (initCompEnv ());
+  var mainCompileRes = compileSMBuf (initialEnv, expr);
+  var newEnv = mainCompileRes.fst;
+  var mainCode = mainCompileRes.snd;
+
+  var localsCount = getLocals (newEnv);
+  var functionsCode = compileAllFunsctions (newEnv);
+
+  var resCode = singletonBuffer (LABEL ("main")) <+
+                BEGIN ("main", 0, localsCount) <+>
+                mainCode <+
+                END <+>
+                functionsCode;
+  getBuffer (resCode)
 }
