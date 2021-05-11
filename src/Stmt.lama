@@ -10,17 +10,50 @@ import World;
 --
 -- A statement is represented by a data structure of the following shape:
 --
--- stmt = Assn    (string, expr)     |
---        Seq     (stmt, stmt)       |
---        Skip                       |
---        Read    (string)           |
---        Write   (expr)             |
---        If      (expr, stmt, stmt) |
---        While   (expr, stmt)       |
---        DoWhile (stmt, expr)
+-- stmt = Assn   (string, expr)     |
+--        Seq    (stmt, stmt)       |
+--        Skip                      |
+--        Read   (string)           |
+--        Write  (expr)             |
+--        if     (expr, stmt, stmt) |
+--        While  (expr, stmt)       |
+--        Repeat (stmt, expr)
+
+fun funcDoWhile (c, stmt) {
+  case evalExpr (c.fst, stmt[1]) of
+    0 -> [c.fst, c.snd] |
+    _ -> eval (eval ([c.fst, c.snd], stmt[0]), While (stmt[1], stmt[0]))
+  esac
+}
 
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+  case stmt of
+	Read  (i)    -> (
+		[c.fst <- [i, readWorld (c.snd)[0]], readWorld (c.snd)[1]]
+	)|
+    Write (i)    -> (
+		[c.fst, writeWorld (evalExpr (c.fst, i), c.snd)]
+	) |
+    Assn  (nm, ex) -> (
+		[c.fst <- [nm, evalExpr (c.fst, ex)], c.snd]
+	)|
+    Seq   (st1, st2) -> (
+		eval (eval (c, st1), st2)
+	)|
+    If (i, x, y)   -> (
+		case evalExpr (c.fst, stmt[0]) of
+    		0 -> eval ([c.fst, c.snd], stmt[2]) |
+    		_ -> eval ([c.fst, c.snd], stmt[1])
+ 		 esac) |
+    While   (st1, st2) -> (
+		case evalExpr (c.fst, stmt[0]) of
+    		0 -> [c.fst, c.snd] |
+    		_ -> eval (eval ([c.fst, c.snd], stmt[1]), While (stmt[0], stmt[1]))
+  		esac) |
+    DoWhile (st1, st2) -> funcDoWhile (eval ([c.fst, c.snd], stmt[0]), stmt) |
+    Skip         -> c |
+    _ -> failure ("Failure in eval - Incorrect stmt func\n")
+  esac
 }
 
 -- Evaluates a program with a given input and returns an output
