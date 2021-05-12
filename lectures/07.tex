@@ -284,7 +284,11 @@ The primitive $\primi{createLocal}{}$ is defined as follows:
     \withenv{P}{\trans{\inbr{s,\,\epsilon,\,\sigma,\,\omega}}{[\llang{END}]p}{\inbr{s,\,\epsilon,\,\sigma,\,\omega}}}\ruleno{EndStop$_{SM}$}
   \]
   \[
+<<<<<<< HEAD
     \trule{\withenv{P}{\trans{\inbr{s,\,\epsilon,\,\inbr{\sigma_l,\,\sigma},\,\omega}}{q}{c^\prime}}}
+=======
+    \trule{\withenv{P}{\trans{\inbr{s,\,s_c,\,\inbr{\sigma_l,\,\sigma},\,\omega}}{q}{c^\prime}}}
+>>>>>>> A08-scopes-functions-sm-x86
           {\withenv{P}{\trans{\inbr{s,\,\inbr{\sigma_l,\,q}s_c,\,\inbr{\_,\,\sigma},\,\omega}}{[\llang{END}]p}{c^\prime}}}\ruleno{End$_{SM}$}
   \]
   \[

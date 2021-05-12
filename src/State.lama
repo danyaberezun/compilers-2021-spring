@@ -26,14 +26,14 @@ fun makeState (scopes) {
   }
   
   -- Makes and assignment in scopes
-  fun assign (name, vl) {
+  fun assign (name, v) {
     fun assignInScopes (scopes) {
       case scopes of
         {}         -> error (sprintf ("name ""%s"" is undefined", name), getLoc (name))
       | s : scopes ->
          case findMap (s, name) of
            None     -> s : assignInScopes (scopes)
-         | Some (_) -> addMap (s, name, vl) : scopes
+         | Some (_) -> addMap (s, name, v) : scopes
          esac
       esac    
     }
@@ -52,11 +52,11 @@ fun makeState (scopes) {
   }
 
   -- Adds a name into a scope
-  fun addName (name, vl) {
+  fun addName (name, v) {
     case scopes of
       s : scopes ->
        case findMap (s, name) of
-         None     -> makeState (addMap (s, name, vl) : scopes)
+         None     -> makeState (addMap (s, name, v) : scopes)
        | Some (_) -> error (sprintf ("duplicate ""%s"" name definition", name), getLoc (name))
        esac
     esac
@@ -118,8 +118,8 @@ public fun leaveScope (state) {
   state [3] ()
 }
 
-public fun addName (state, name, vl) {
-  state [4] (name, vl)
+public fun addName (state, name, v) {
+  state [4] (name, v)
 }
 
 public fun enterFunction (state) {
