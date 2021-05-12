@@ -13,6 +13,30 @@ import State;
 --        Const (int)                |
 --        Binop (string, expr, expr)
 
-public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+public fun evalBinop(op, lExpr, rExpr){
+	case op of
+	"+"		-> lExpr + rExpr	|
+	"-"		-> lExpr - rExpr	|	
+	"*"		-> lExpr * rExpr	|
+	"/"		-> lExpr / rExpr	|
+	"%"		-> lExpr % rExpr	|
+	"<"		-> lExpr < rExpr	|
+	">"		-> lExpr > rExpr	|
+	"<="	-> lExpr <= rExpr	|
+	">="	-> lExpr >= rExpr	|
+	"=="	-> lExpr == rExpr	|
+	"!="	-> lExpr != rExpr	|
+	"&&"	-> lExpr && rExpr	|
+	"!!"	-> lExpr !! rExpr	
+	esac
 }
+
+public fun evalExpr (st, expr) {
+	case expr of
+	Var(varName)			-> st(varName)						|
+	Const(constVal)			-> constVal							|
+	Binop(op,lExpr,rExpr)	-> evalBinop(op, evalExpr(st,lExpr), evalExpr(st,rExpr))
+	esac
+}
+
+
