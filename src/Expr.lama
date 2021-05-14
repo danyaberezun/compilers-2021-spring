@@ -13,6 +13,30 @@ import State;
 --        Const (int)                |
 --        Binop (string, expr, expr)
 
+public fun evalExprBinop (st, Binop(op, exp1, exp2)) {
+  case op of
+    "+"  -> evalExpr(st, exp1) +  evalExpr(st, exp2)
+  | "-"  -> evalExpr(st, exp1) -  evalExpr(st, exp2)
+  | "*"  -> evalExpr(st, exp1) *  evalExpr(st, exp2)
+  | "/"  -> evalExpr(st, exp1) /  evalExpr(st, exp2)
+  | "%"  -> evalExpr(st, exp1) %  evalExpr(st, exp2)
+  | "<"  -> evalExpr(st, exp1) <  evalExpr(st, exp2)
+  | ">"  -> evalExpr(st, exp1) >  evalExpr(st, exp2)
+  | "==" -> evalExpr(st, exp1) == evalExpr(st, exp2)
+  | "<=" -> evalExpr(st, exp1) <= evalExpr(st, exp2)
+  | ">=" -> evalExpr(st, exp1) >= evalExpr(st, exp2)
+  | "!=" -> evalExpr(st, exp1) != evalExpr(st, exp2)
+  | "&&" -> evalExpr(st, exp1) && evalExpr(st, exp2)
+  | "!!" -> evalExpr(st, exp1) !! evalExpr(st, exp2)
+  | _    -> failure ("Invalid binary operation!")
+  esac
+}
+
 public fun evalExpr (st, expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Var   (s)              -> st            (s)
+  | Const (x)              -> x
+  | Binop (op, exp1, exp2) -> evalExprBinop (st, expr)
+  | _                      -> failure       ("Invalid expression type!")
+  esac
 }
