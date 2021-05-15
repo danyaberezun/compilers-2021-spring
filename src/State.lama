@@ -94,7 +94,6 @@ fun makeState (scopes) {
       | _ : scopes -> findGlobal (scopes)
       esac
     }
-
     findGlobal (scopes)
   }
   
@@ -138,3 +137,4 @@ public fun getGlobal (state) {
 public fun emptyState () {
   makeState ({})
 }
+
