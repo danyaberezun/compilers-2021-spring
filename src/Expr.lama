@@ -44,7 +44,7 @@ public fun evalOp (op, l, r) {
 --        Set     (string, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
---        if      (expr, expr, expr)   |
+--        If      (expr, expr, expr)   |
 --        While   (expr, expr)         |
 --        Repeat  (expr, expr)         |
 --        Var     (string)             |
@@ -86,7 +86,7 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,9 +101,241 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun evalExprVar (c@[st, w], Var (varName)) {
+  [c, lookup (st, varName)]
 }
+
+fun evalExprRef (c, Ref (varName)) {
+  [c, Ref (varName)]
+}
+
+fun evalExprConst (c, Const (value)) {
+  [c, value]
+}
+
+fun evalExprBinop (c, Binop (op, expr0, expr1)) {
+  case eval (c, expr0) of
+    [c, l] ->
+    case eval (c, expr1) of
+      [c, r] -> [c,
+      case op of
+        "+"  -> l + r |
+        "-"  -> l -  r |
+        "*"  -> l *  r |
+        "/"  -> l /  r |
+        "%"  -> l %  r |
+        "==" -> l == r |
+        "!=" -> l != r |
+        "<"  -> l <  r |
+        "<=" -> l <= r |
+        ">"  -> l >  r |
+        ">=" -> l >= r |
+        "&&" -> l && r |
+        "!!" -> l !! r |
+        _    -> failure  ("eval Binop is not supported\n")
+      esac]
+    esac
+  esac
+}
+
+fun evalExprAssn (c, Assn (refExp, valueExp)) {
+  case eval (c, refExp) of
+    [c, ref] ->
+    case eval (c, valueExp) of
+      [c@[st, w], value] ->
+        case ref of
+          Ref (varName) -> [[st <- [varName, value], w], value]
+        | ElemRef (container, index) -> (
+            container[index] := value;
+            [c, value]
+          )
+        esac
+    esac
+  esac
+}
+
+fun evalExprSeq (c, Seq (left, right)) {
+  case eval (c, left) of
+    [c, _] -> eval (c, right)
+  esac
+}
+
+fun evalExprIf (c, If (cond, ifBr, elseBr)) {
+  case eval (c, cond) of
+    [c, 0] -> eval (c, elseBr) |
+    [c, _] -> eval (c, ifBr)
+  esac
+}
+
+fun evalExprWhile (c, While (cond, body)) {
+  case eval (c, cond) of
+    [c, 0] -> [c, Void] |
+    [c, _] ->
+    case eval (c, body) of
+      [c, _] -> evalExprWhile (c, While (cond, body))
+    esac
+  esac
+}
+
+fun evalExprDoWhile (c, DoWhile (body, cond)) {
+  case eval (c, body) of
+    [c, _] -> evalExprWhile (c, While (cond, body))
+  esac
+}
+
+fun evalExprIgnore (c, Ignore (expr)) {
+  case eval (c, expr) of
+    [c, _] -> [c, Void]
+  esac
+}
+
+fun evalScope (c@[st, w], Scope (defs, expr)) {
+  case enterScope (st) of
+    st ->
+    case eval(
+      foldl (fun ([st, w], def) {
+        case def of
+          Var (vars) -> [addNames (st, vars), w] |
+          Fun (name, args, body) -> [addFunction (st, name, args, body), w]
+        esac
+      }, [st, w], defs),
+      expr) of
+      [[st, w], value] -> [[leaveScope (st), w], value]
+    esac
+  esac
+}
+
+fun evalCall (c@[st, w], Call (name, argExprs)) {
+  lookupFun (st, name);
+  case evalList (c, argExprs) of
+    [c@[stPar, w], args] ->
+    case lookup (stPar, name) of
+      Fun (argNames, External) ->
+      case name of
+        "read"   -> evalBuiltinRead (c)
+      | "write"  -> evalBuiltinWrite (c, args[0])
+      | "length" -> evalBuiltinLength (c, args[0])
+      esac
+    | Fun (argNames, expr) ->
+      case enterFunction (stPar) of
+        st ->
+        case eval (foldl (fun ([st, w], [argName, argValue]) {
+                            [addName (st, argName, argValue), w]
+                          }, [st, w], zip (argNames, args)),
+                   expr) of
+          [[st, w], value] -> [[leaveFunction (stPar, getGlobal (st)), w], value]
+        esac
+      esac
+    esac
+  esac
+}
+
+fun evalExprStr (c, String (value)) {
+  [c, value]
+}
+
+fun evalExprElem (c, Elem (containerExpr, indexExpr)) {
+  case eval (c, containerExpr) of
+    [c, container] ->
+      container := case container of
+                     Sexp (_, contents) -> contents
+                   | contents -> contents
+                   esac;
+      case eval (c, indexExpr) of
+        [c, index] -> [c, container[index]]
+      esac
+  esac
+}
+
+fun evalExprElemRef (c, ElemRef (containerExpr, indexExpr)) {
+  case eval (c, containerExpr) of
+    [c, container] ->
+      case eval (c, indexExpr) of
+        [c, index] -> [c, ElemRef (container, index)]
+      esac
+  esac
+}
+
+fun evalExprArray (c, Array (exprList)) {
+  case evalList (c, exprList) of
+    [c, contents] -> [c, listArray (contents)]
+  esac
+}
+
+fun evalSexp (c, Sexp (literal, exprList)) {
+  case evalList (c, exprList) of
+    [c, contents] -> [c, Sexp (literal, listArray (contents))]
+  esac
+}
+
+fun match (scr, pattern) {
+  -- printf("scr: %s\npattern: %s\n", string(scr), string(pattern));
+  case pattern of
+    a@Sexp (pName, pCont) ->
+    case scr of
+      b@Sexp (name, cont) -> -- printf("a: %s\nb: %s\n", string(a), string(b));
+      case compare (pName, name) of
+         0 ->
+         case length(listArray(pCont)) == length(cont) of
+           0 -> 0
+         | _ ->  foldr (fun (prev, [l, r]) {
+                          prev && match (l, r)
+                        }, 1, zip (arrayList(cont), pCont))
+         esac
+      | _ -> 0
+      esac
+    | _ -> 0
+    esac
+  | Named (name, p) -> match (scr, p)
+  | Const (numeric) -> numeric == scr
+  | Wildcard -> 1
+  esac
+}
+
+fun evalCase (c, Case (scrutinee, branches)) {
+  case eval (c, scrutinee) of
+    [c, scr] -> (
+      var br = 0;
+      -- printf("brs: %s\n", string(branches));
+      br := foldr (fun (found, [pt, br]) {
+        case found of
+          0 -> if match (scr, pt) then br else 0 fi
+        | _ -> found
+        esac
+      }, 0, branches);
+      if br == 0 then
+       failure ("Match failure", scr)
+      fi;
+      eval (c, br)
+    )
+  esac
+}
+
+fun eval (c@[st,w], expr) {
+  -- printf("%s\n", string(expr));
+  case expr of
+    Var   (_)          -> evalExprVar       (c, expr) |
+    Ref   (_)          -> evalExprRef       (c, expr) |
+    Const (_)          -> evalExprConst     (c, expr) |
+    Binop (_, _, _)    -> evalExprBinop     (c, expr) |
+    Assn (_, _)        -> evalExprAssn      (c, expr) |
+    Seq (_, _)         -> evalExprSeq       (c, expr) |
+    Skip               -> [c, Void]                   |
+    If (_, _, _)       -> evalExprIf        (c, expr) |
+    While (_, _)       -> evalExprWhile     (c, expr) |
+    DoWhile (_, _)     -> evalExprDoWhile   (c, expr) |
+    Ignore (_)         -> evalExprIgnore    (c, expr) |
+    Scope (_, _)       -> evalScope         (c, expr) |
+    Call (_, _)        -> evalCall          (c, expr) |
+    String (_)         -> evalExprStr       (c, expr) |
+    Elem (_, _)        -> evalExprElem      (c, expr) |
+    ElemRef (_, _)     -> evalExprElemRef   (c, expr) |
+    Array (_)          -> evalExprArray     (c, expr) |
+    Sexp (_, _)        -> evalSexp          (c, expr) |
+    Case (_, _)        -> evalCase          (c, expr)
+  esac
+}
+(* End *)
 
 
 -- Evaluates a program with a given input and returns an output
