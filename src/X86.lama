@@ -410,6 +410,7 @@ fun epilogue (env) {
   then [env, singletonBuffer (Mov (ebp, esp)) <+ Pop (ebp) <+ Binop ("^", eax, eax) <+ Ret <+ metaDef]
   else case env.pop of
          [y, env] -> [env, singletonBuffer (Mov (ebp, esp)) <+ Pop (ebp) <+ Mov (y, eax) <+ Ret <+ metaDef]
+        --  [y, env] -> [env, singletonBuffer (Mov (y, eax)) <+ Mov (ebp, esp) <+ Pop (ebp) <+ Ret <+ metaDef]
        esac
   fi
 }
@@ -464,6 +465,88 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun fromFixedNum(l, r) {
+  singletonBuffer(Sar1(r)) <+ Sar1(l)
+}
+
+
+-- Returns buffer that contains X86 instructions to apply binary operation to specified arguments
+fun getX86OpBuffer(operation, lhs, rhs) {
+  -- Auxilary functions:
+  -- Makes operation and puts result in rhs. Works for +, *, and, or.
+  fun aux(operation, lhs, rhs) {
+    if memOpnd(lhs) && memOpnd(rhs) then
+      -- Memory-memory operations are not allowed
+      singletonBuffer(Mov(rhs, edx)) <+ Binop(operation, lhs, edx) <+ Mov(edx, rhs)
+    else 
+      singletonBuffer(Binop(operation, lhs, rhs))
+    fi
+  }
+  -- Performs operation (rhs op lhs)
+  fun auxInverted(operation, lhs, rhs) {
+    if memOpnd(lhs) && memOpnd(rhs) then
+      singletonBuffer(Mov(lhs, eax)) <+ Binop(operation, rhs, eax) <+ Mov(eax, rhs)
+    else 
+      singletonBuffer(Binop(operation, rhs, lhs)) <+ Mov(lhs, rhs)
+    fi
+  }
+  fun compare(operation, lhs, rhs) {
+    singletonBuffer(Mov(rhs, eax)) <+ Binop("cmp", eax, lhs)
+      <+ Mov(L(0), eax) <+ Set(suffix(operation), "%al") <+ Mov(eax, rhs)
+  }
+  fun logical(operation, lhs, rhs) {
+    singletonBuffer(Mov(L(0), edx)) <+> compare("<", edx, lhs) <+> compare("<", edx, rhs) 
+      <+> aux(operation, lhs, rhs)
+  }
+
+  fromFixedNum(lhs, rhs) 
+    <+> case operation of 
+      "+"  -> aux(operation, lhs, rhs) |
+      "-"  -> auxInverted(operation, lhs, rhs) |
+      "*"  -> auxInverted(operation, lhs, rhs) |
+      "/"  -> singletonBuffer(Mov(lhs, eax)) <+ Cltd <+ IDiv(rhs) <+ Mov(eax, rhs) |
+      "%"  -> singletonBuffer(Mov(lhs, eax)) <+ Cltd <+ IDiv(rhs) <+ Mov(edx, rhs) |
+      "==" -> compare(operation, lhs, rhs) |
+      "!=" -> compare(operation, lhs, rhs) |
+      "<"  -> compare(operation, lhs, rhs) |
+      "<=" -> compare(operation, lhs, rhs) |
+      ">"  -> compare(operation, lhs, rhs) |
+      ">=" -> compare(operation, lhs, rhs) |
+      "&&" -> logical(operation, lhs, rhs) |
+      "!!" -> logical(operation, lhs, rhs) |
+      _    -> failure("Unknown binary operation '%s'\n", string(operation))
+  esac <+> toFixedNum(rhs)
+}
+
+fun call (env, fLabel, argsN) {
+  var result = emptyBuffer();
+  var registersToSave = liveRegisters(env, argsN);
+  -- format: pushRegs pushArgs call popArgs popRegs saveResult
+
+  -- Push arguments
+  for var i; i := 0, i < argsN, i := i +1 do
+    result := case env.pop of [x, newEnv] ->
+                env := newEnv;
+                result <+ Push(x)
+              esac    
+  od;
+
+  -- Call and pop args
+  result := result <+ Call(fLabel) <+ Binop("+", L(wordSize * argsN), esp);
+
+  -- Registers save/load
+  result := foldl(fun(buff, reg) {
+    singletonBuffer(Push(reg)) 
+      <+> buff
+      <+ Pop(reg)
+  }, result, registersToSave);
+
+  -- Put result on symbolic stack
+  case allocate(env) of [s, env] ->
+    [env, result <+ Mov(eax, s)]
+  esac
+}
+
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
@@ -473,32 +556,95 @@ fun compile (env, code) {
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
 
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+        fun callWrapper(callableName, argsN) {
+            case call(env, callableName, argsN) of [env, funCode] ->
+              [env, code <+> funCode]
             esac
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
+        }
+
+        -- printf(envString(env));
+        -- printf("x86c %s\n", string(i));
+
+        case i of
+          BINOP(operation) ->
+            case pop2(env) of [rhs, lhs, env] ->
+              -- [env.push(rhs), code <+> getX86OpBuffer(operation, lhs, rhs)]
+              case allocate(env) of [s, env] ->
+                [env, code <+> getX86OpBuffer(operation, lhs, rhs) <+> move(rhs, s)]
+              esac
+            esac
+        | LD(variableName) -> 
+            case allocate(env) of -- .addGlobal(variableName)?
+              [s, env] -> [env, code <+> move(loc(env, variableName), s)] -- Does not work with <+ Mov, because memory-memory move is not allowed
+            esac
+        | LDA(variableName) ->
+            case allocate(env) of [s1, env] -> 
+              case allocate(env) of [s2, env] ->
+                [env, code <+ Lea(env.loc(variableName), eax) <+ Mov(eax, s1) <+ Mov(eax, s2)]
+              esac
+            esac
+        | ST(variableName) ->
+            [env, code <+> move(peek(env), loc(env, variableName))]
+        | STI ->
+            case pop2(env) of
+              [s, ref, env] -> 
+                -- ref may be located in stack, causing unallowed double addressing (-offset(%ebp)) when translating I(0, ref)
+                [push(env, s), code <+ Mov(ref, eax) <+ Mov(s, edx) <+ Mov(edx, I(0, eax))]
+            esac
+        | STA ->
+            callWrapper("Bsta", 3)
+        | CONST(value) -> 
+            case allocate(env) of
+              [s, env] -> [env, code <+ Mov(L(makeBox(value)), s)]
+            esac
+        | GLOBAL(x) ->
+            [addGlobal(env, x), code]
+        | STRING(value) ->
+            case addString(env, value) of [env, name] ->
+              case allocate(env) of [s, env] ->
+                case call(env, "Bstring", 1) of [env, funCode] ->
+                  [env, code <+> move(M("$" ++ name), s) <+> funCode]
+                esac
+              esac
+            esac
+        | ARRAY(valuesN) ->
+            callWrapper("Barray", valuesN+1)
+        | SEXP(name, valuesN) ->
+            case allocate(env) of [s, env] ->
+              case call(env, "Bsexp", valuesN+2) of [env, funCode] ->
+                [env, code <+> move(L(makeBox(tagHash(name))), s) <+> funCode]
+              esac
+            esac
+        | ELEM ->
+            callWrapper("Belem", 2)
+        | LABEL(labelName) ->
+            -- [env, code <+ Label(labelName)]
+            [if isBarrier(env) then retrieveStack(env, labelName) else env fi, code <+ Label(labelName)]
+        | JMP(labelName) ->
+            -- [env, code <+ Jmp(labelName)]
+            [setBarrier(setStack(env, labelName)), code <+ Jmp(labelName)]
+        | CJMP(condition, labelName) ->
+            case pop(env) of [value, env] ->
+              [setStack(env, labelName), code <+ Mov(L(makeBox(0)), eax) <+ Binop("cmp", eax, value) <+ CJmp(condition, labelName)]
+            esac
+        | BEGIN(fLabel, argsN, localsN) -> 
+            [enterFunction(env, fLabel, localsN), code <+> prologue(fLabel)]
+        | CALL (fLabel, argsN) ->
+            callWrapper(fLabel, argsN)
+        | BUILTIN("read", 0) ->
+            callWrapper("Lread", 0)
+        | BUILTIN("write", 1) ->
+            callWrapper("Lwrite", 1)
+        | BUILTIN("length", 1) ->
+            callWrapper("Llength", 1)
+        | END ->
+            case epilogue(env) of [newEnv, endCode] ->
+              [newEnv, code <+> endCode]
+            esac
+        | DROP ->
+            case pop(env) of [_, env] ->
+              [env, code]
+            esac
         | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
         esac
       }, [env, emptyBuffer ()], code)
