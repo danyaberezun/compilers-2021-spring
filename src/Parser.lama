@@ -182,6 +182,10 @@ fun reifyPatternBindings (matched, brs) {
   )
 }
 
+var else_fun = memo $ eta syntax (loc = pos kElif x=exp kThen y=scopeExpr 			{fun (a) {chainST({x(Val), y(a)}) => fun({x, y}){If (x, y, Skip)}}} |
+				  loc = pos kElif x=exp kThen y=scopeExpr z=else_fun		{fun (a) {chainST({x(Val), y(a), z(a)}) => fun({x, y, z}){If (x, y, z)}}} |
+				  kElse x=scopeExpr {x});
+ 
 var
   primary = memo $ eta syntax (
     -- array constant
@@ -193,6 +197,7 @@ var
     loc=pos x=strlit {
       fun (a) {assertValue (a, returnST $ String (x), loc)}
     } |
+
                                       
     -- character literal
     loc=pos x=chrlit {
@@ -226,8 +231,36 @@ var
                         esac, loc)}
     } |
   
-    $(failure ("the rest of primary parsing in not implemented\n"))),
+                                          inbr[s("("), scopeExpr, s(")")]  					 |
+                                  loc = pos kSkip 						{fun (a) {assertVoid (a, returnST $ Skip, loc)}} |
+				  loc = pos kIf x=exp kThen y=scopeExpr kFi 				{fun (a) {chainST({x(Val), y(a)}) => fun({x, y}) {If(x, y, Skip)}}} |
+				  loc = pos kIf x=exp kThen y=scopeExpr z=else_fun kFi 		{fun (a) {chainST({x(Val), y(a), z(a)}) => fun({x, y, z}){If(x, y, z)}}} |
+				  loc = pos kWhile x=exp kDo y=scopeExpr kOd				{fun (a) {assertVoid (a, chainST({x(Val), y(Void)}) => fun({x, y}) {While (x, y)}, loc)}} | 
+				  loc = pos kDo y=scopeExpr kWhile x=exp kOd				{fun (a) {assertVoid (a, chainST({x(Val), y(Void)}) => fun({x, y}) {distributeScope(y, fun(ys){DoWhile (ys, x)})}, loc)}} |
+				  loc = pos kFor x=scopeExpr s[","] y=exp s[","] z=exp kDo w=scopeExpr kOd	{fun (a) {assertVoid (a, chainST({x(Void), y(Val), z(Void), w(Void)}) => fun({x, y, z, w}){distributeScope(x, fun(xs) {Seq(xs, While (y, Seq(w, z)))})}, loc)}} |
+				  loc = pos kCase x=exp kOf y=cases kEsac {fun(a){
+										fun(state){
+											case unzip(y) of
+												[patterns, expressions] -> case chainST(x(Val) : map(fun(e) {e(a)}, expressions)) (state) of
+													[state, matched:expressions] -> case freshName(state) of
+														[state, name] -> [state, expandScope({Val({[name, matched]})}, Case(Val(name), reifyPatternBindings(name, zip(patterns, expressions))))]
+													esac
+												esac
+											esac
+										}
+									  }}
+				),
+
+  cases = memo $ eta syntax (p=pattern s["->"] se=scopeExpr s["|"] c=cases {[p, se] : c} |
+		      p=pattern s["->"] se=scopeExpr {{[p, se]}}
+			),
    
+  pattern = memo $ eta syntax (x=decimal {Decimal(stringInt(x))} |
+			x=inbr[s("("), list0(pattern), s(")")] {Array(x)} |
+			x=uident args=inbr[s("("), list0(pattern), s(")")]? {Sexp(x, case args of None -> {} | Some(args) -> args esac)} |
+			s["_"] {Wildcard} |
+			x=lident p=(-s["@"] pattern)? {Named(x, case p of None -> Wildcard | Some(p) -> p esac)}
+			),
 
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
@@ -316,6 +349,6 @@ var
      }
    }
   );
-
--- Public top-level parser
+    
+                                  -- Public top-level parser
 public parse = syntax (s=scopeExpr {s (Void) (emptyEnv ()) [1]});
