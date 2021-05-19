@@ -101,10 +101,209 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun evalAssn (c, Assn (expr1, expr2)) {
+  case evalList (c, {expr1, expr2}) of
+    [c@[s, w], {l, r}] -> 
+      case l of
+        ElemRef (arr, index) -> 
+          arr[index] := r;
+          [c, r]
+      | _ ->
+          [[s <- [l, r], w], r]
+      esac
+  esac
 }
 
+fun evalBinop(c, Binop (op, expr1, expr2)) {
+  case evalList (c, {expr1, expr2}) of
+    [c, {l, r}] -> [c, evalOp(op, l, r)]
+  esac
+}
+
+fun evalSeq (c, Seq (stmt1, stmt2)) {
+  eval (eval (c, stmt1).fst, stmt2) 
+}
+
+fun evalIf (conf, If(cond, thenExpr, elseExpr)) {
+  case eval (conf, cond) of
+    [c, v] -> if v then eval (c, thenExpr) else eval (c, elseExpr) fi
+  esac
+}
+
+fun evalWhile (conf, wh@While(cond, expr)) {
+  case eval (conf, cond) of
+    [c, v] -> if v then evalWhile((eval (c, expr)).fst, wh) else [c, Void] fi
+  esac
+}
+
+fun evalDoWhile (conf, DoWhile(expr, cond)) {
+  case eval(conf, expr) of
+    [c, _] -> evalWhile(c, While(cond, expr)) 
+  esac
+}
+
+fun evalIgnore (conf, Ignore (expr)) {
+  case eval (conf, expr) of
+    [c, _] -> [c, Void]
+  esac
+}
+
+fun evalScope (c@[st, w], Scope (defs, body)) {
+  case defs of
+    {} -> eval (c, body)
+  | _  ->
+      case eval ([foldl(
+                fun (st, def) {
+                  case def of
+                    Var (names)            -> addNames (st, names) 
+                  | Val (names)            -> addNames (st, names)
+                  | Fun (name, args, body) -> addFunction (st, name, args, body)
+                  esac
+                }, enterScope(st), defs),
+              w], body) of
+        [[st, w], v] -> [[leaveScope(st), w], v]
+      esac
+  esac
+}
+
+fun evalCall(c@[st, w], Call(name, args)) {
+  case lookup (st, name) of 
+    Fun (argvars, body) ->
+      var globalState = st;
+      case evalList (c, args) of
+        [[st, w], values] ->
+          case body of
+            External -> 
+              var result = evalBuiltin(name, values, w);
+              [[st, result.snd], result.fst]
+          | _ ->
+            case eval ([foldl(fun (st, pair) {
+                        addName (st, pair.fst, pair.snd)
+                      }, 
+                      enterFunction(st), 
+                      zip(argvars, values)), 
+                      w], body) of
+              [[st, w], v] -> 
+                [[leaveFunction(globalState, getGlobal(st)), w], v]
+            esac
+          esac
+      esac
+  esac
+}
+
+fun evalString (c, String (value)) {
+  [c, value]
+}
+
+fun evalArray (c, Array (explist))
+{
+  case evalList (c, explist) of
+    [c, values] -> [c, listArray (values)] 
+  esac
+}
+
+fun evalElem (c, Elem (arr, index)) {
+  case evalList (c, {arr, index}) of
+    [c, {arr, index}] -> 
+      case arr of 
+        Sexp (tag, arr) -> [c, arr[index]]
+      | _ -> [c, arr[index]]  
+      esac
+  esac
+}
+
+fun evalElemRef (c, ElemRef (arr, index)) {
+  case evalList (c, {arr, index}) of
+    [c, {arr, index}] -> 
+      case arr of
+        Sexp (tag, arr) -> [c, ElemRef(arr, index)]
+      | _ -> [c, ElemRef(arr, index)]
+      esac
+  esac
+}
+
+fun evalSet (c , Set(name, value)) {
+  case eval (c, value) of
+    ret@[[state, world], value] -> [[state <- [name, value], world], value]
+  esac
+}
+
+fun evalSexp (c, Sexp (tag, args)) {
+  case evalList (c, args) of
+    [c, values] -> [c, Sexp (tag, listArray (values))] 
+  esac
+}
+
+fun evalCase (c, Case (matched, branches)) {
+  fun matchLists (patternList, valueList) {
+    case [patternList, valueList] of
+      [p:pTail, v:vTail] -> 
+        if match (p, v) then
+          1 && matchLists(pTail, vTail)
+        else
+          0
+        fi
+    | [{}, {}] -> 1
+    | _ -> 0
+    esac
+  }
+
+  fun match (pattern, value) {
+    --printf("Matching %s and %s\n", pattern.string, value.string);
+    case [pattern, value] of
+      [Wildcard, _] -> 1
+    | [Decimal (x), v]  -> compare(x, v) == 0
+    | [Named (_, p), v] -> match (p, v)
+    | [Array (p), Array (v)] -> matchLists(p, arrayList(v)) 
+    | [Sexp (namep, p), Sexp (namev, v)] -> 
+        if compare (namep, namev) ==0 then matchLists(p, arrayList(v)) else 0 fi
+    | _ -> 0
+    esac
+  }
+
+  fun iter (c, tomatch, branches) {
+    case branches of
+      [pattern, branch]:tail ->
+        if match (pattern, tomatch) 
+        then eval (c, branch)
+        else iter (c, tomatch, tail)
+        fi
+    | {} -> failure ("Failed pattern matching")
+    esac
+  }
+  case eval (c, matched) of
+    [c, result] -> 
+      iter (c, result, branches)
+  esac
+}
+
+fun eval (c@[s, w], expr) {
+  --printf("%s\n", expr.string);
+  case expr of
+    Var (name)      -> [c, lookup (s, name)]
+  | Val (name)      -> [c, lookup (s, name)]
+  | Const (x)       -> [c, x]
+  | Ref   (name)    -> [c, name]
+  | Skip            -> [c, Void]
+  | Binop (_, _, _) -> evalBinop   (c, expr)
+  | Assn  (_, _)    -> evalAssn    (c, expr)
+  | Seq   (_, _)    -> evalSeq     (c, expr)
+  | If (_, _, _)    -> evalIf      (c, expr)
+  | While (_, _)    -> evalWhile   (c, expr)
+  | DoWhile (_, _)  -> evalDoWhile (c, expr)
+  | Ignore (_)      -> evalIgnore  (c, expr)
+  | Scope (_, _)    -> evalScope   (c, expr)
+  | Call (_, _)     -> evalCall    (c, expr)
+  | String (_)      -> evalString  (c, expr)
+  | Array (_)       -> evalArray   (c, expr)
+  | Elem (_, _)     -> evalElem    (c, expr)
+  | ElemRef (_, _)  -> evalElemRef (c, expr)
+  | Set (_, _)      -> evalSet     (c, expr)
+  | Sexp (_, _)     -> evalSexp    (c, expr)
+  | Case (_, _)     -> evalCase    (c, expr)
+  | _               -> failure     ("Invalid expression type: %s\n", expr.string, c.string)
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {

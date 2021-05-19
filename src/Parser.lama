@@ -225,10 +225,80 @@ var
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
-
+    inbr[s("("), scopeExpr, s(")")]                                         |
+    loc=pos kSkip                                                     {fun (a) {
+                                                                         assertVoid (a, returnST $ Skip, loc)
+                                                                      }} |
+    kIf e=exp kThen s1=scopeExpr s2=ifTail                            {fun (a) {
+                                                                        chainST({e (Val), s1 (a), s2 (a)}) => fun ({e, s1, s2}) {If(e, s1, s2)}
+                                                                      }} |
+    loc=pos kWhile e=exp kDo s=scopeExpr kOd                          {fun (a) {
+                                                                        assertVoid (a, chainST({e (Val), s (Void)}) => fun({e, s}) {While (e, s)}, loc)
+                                                                      }} |
+    loc=pos kDo s=scopeExpr kWhile e=exp kOd                          {fun (a) {
+                                                                        assertVoid (a, chainST({s (Void), e (Val)}) =>
+                                                                                    fun ({s, e}) {
+                                                                                      distributeScope (s,
+                                                                                      fun (sExp) {
+                                                                                        DoWhile (sExp, e)
+                                                                                    })}, 
+                                                                                    loc)
+                                                                      }} |       
+    loc=pos kFor init=scopeExpr s[","] cond=exp s[","] inc=exp kDo body=scopeExpr kOd     
+                                                                      {fun (a) {
+                                                                        assertVoid (a, 
+                                                                                    chainST({init (Void), cond (Val), body (Void), inc (Void)}) =>
+                                                                                    fun ({init, cond, body, inc}) {
+                                                                                    distributeScope(init,
+                                                                                    fun (initExp) {
+                                                                                      Seq(initExp, 
+                                                                                          While(cond, 
+                                                                                          Seq(body, 
+                                                                                              inc))) 
+                                                                                    })},
+                                                                                    loc)
+                                                                      }} |
+    kCase caseexpr=exp kOf caseslist=cases kEsac {fun (a) {
+                                                   fun (state) {
+                                                     case unzip (caseslist) of
+                                                       [patterns, branches] -> 
+                                                         case chainST (caseexpr (Val) : map (fun (br) {br (a)}, branches)) (state) of
+                                                           [state, matched : branches] ->
+                                                             case freshName (state) of
+                                                               [state, name] ->
+                                                                 [state, 
+                                                                  expandScope({Val ({[name, matched]})}, 
+                                                                              Case (Val (name), reifyPatternBindings (name, zip (patterns, branches))))] 
+                                                             esac
+                                                         esac
+                                                     esac
+                                                   }
+                                                 }}
+  ),
+  ifTail = memo $ eta syntax   (kElif e=exp kThen s1=scopeExpr s2=ifTail {fun (a) {
+                                                                             chainST({e (Val), s1 (a), s2 (a)}) =>
+                                                                             fun ({e, s1, s2}) {
+                                                                               If(e, s1, s2)
+                                                                           }}} |
+                                  -kElse scopeExpr -kFi |
+                                  loc=pos kFi {fun (a) {assertVoid (a, returnST $ Skip, loc)}}
+  ),
+  cases = memo $ eta syntax (pat=pattern s["->"] branch=scopeExpr s["|"] tail=cases {[pat, branch] : tail} |
+                             pat=pattern s["->"] branch=scopeExpr {{[pat, branch]}}
+  ),
+  pattern = memo $ eta syntax (d=decimal {Decimal (stringInt (d))} |
+                               name=lident pat=(-s["@"] pattern)? {case pat of
+                                                                    None -> Named (name, Wildcard)
+                                                                  | Some(pat) -> Named (name, pat)
+                                                                  esac
+                               } |
+                               x=uident args=inbr[s("("), list0(pattern), s(")")]? {case args of
+                                                                                      None        -> Sexp (x, {})
+                                                                                    | Some (args) -> Sexp (x, args)
+                                                                                    esac} |
+                               x=inbr[s("["), list0(pattern), s("]")] {Array (x)} |
+                               s["_"] {Wildcard} 
+  ),
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
                                  fun (a) {assertValue (a, l (Ref) =>> fun (l) {
@@ -316,6 +386,5 @@ var
      }
    }
   );
-
 -- Public top-level parser
 public parse = syntax (s=scopeExpr {s (Void) (emptyEnv ()) [1]});
