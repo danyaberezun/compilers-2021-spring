@@ -1,0 +1,114 @@
+-- Lexical analysis using Matcher
+
+import Matcher;
+import Ostap;
+import Fun;
+import Collection;
+import List;
+
+-- A hashtable to keep a source code location information.
+-- The keys in this table are some (boxed) values, and values are
+-- pairs [line, column]
+var srcTab = emptyHashTab (1024, hash, flatCompare);
+
+-- A custom combinator to additionally add location info
+public fun located (p) {
+  syntax(l=pos x=p {srcTab := addHashTab (srcTab, x, l); x})
+}
+
+-- Retrieves location info; fail if no info found
+public fun getLoc (s) {
+  case findHashTab (srcTab, s) of Some (loc) -> loc esac
+}
+
+-- A set of all keywords
+var keywords =
+   foldl (addSet,
+          emptySet (compare),
+          {"read",
+           "write",
+           "skip",
+           "if",
+           "then",
+           "else",
+           "elif",
+           "fi",
+           "while",
+           "do",
+           "od",
+           "for",
+           "var",
+           "fun"});
+
+-- Regular expression definitions
+public rWhiteSpace  = createRegexp ("\\(\\([ \n\r\t]*\\)\\|\\(--[^\n]*[ \n\r\t]*\\)\\)*", "whitespace"),
+       rDecimal     = createRegexp ("-?[0-9]+", "decimal constant"),
+       rLident      = createRegexp ("[a-z][a-z_A-Z0-9]*", "lowercase identifier"),
+       rRead        = createRegexp ("read\\b", """read"""),
+       rWrite       = createRegexp ("write\\b", """write"""),
+       rSkip        = createRegexp ("skip\\b", """skip"""),
+       rIf          = createRegexp ("if\\b", """if"""),
+       rThen        = createRegexp ("then\\b", """then"""),
+       rElse        = createRegexp ("else\\b", """else"""),
+       rElif        = createRegexp ("elif\\b", """elif"""),
+       rFi          = createRegexp ("fi\\b", """fi"""),
+       rWhile       = createRegexp ("while\\b", """while"""),
+       rDo          = createRegexp ("do\\b", """do"""),
+       rOd          = createRegexp ("od\\b", """od"""),
+       rFor         = createRegexp ("for\\b", """for"""),
+       rVar         = createRegexp ("var\\b", """var"""),
+       rFun         = createRegexp ("fun\\b", """for""");
+
+var whiteSpace = token (rWhiteSpace);
+
+-- Public parsers for concrete tokens
+-- Generic token parser; t is either a string or a regular expression
+public fun s (t) {memo $ syntax (-whiteSpace token[t])}
+
+-- Some individual tokens
+public kRead    = s (rRead),
+       kWrite   = s (rWrite),
+       kSkip    = s (rSkip),
+       kIf      = s (rIf),
+       kThen    = s (rThen),
+       kElse    = s (rElse),
+       kElif    = s (rElif),
+       kFi      = s (rFi),
+       kWhile   = s (rWhile),
+       kDo      = s (rDo),
+       kOd      = s (rOd),
+       kFor     = s (rFor),
+       kVar     = s (rVar),
+       kFun     = s (rFun),
+       decimal  = s (rDecimal),
+       pos      = memo $ syntax (-whiteSpace loc),
+       end      = memo $ syntax (-whiteSpace eof),
+       lident   = memo $ syntax (-whiteSpace located[
+                                   fun (k) {
+                                     fun (s) {
+                                       k (case s.matchRegexp (rLident) of
+                                            a@Succ (v, _) -> if memSet (keywords, v)
+                                                             then Fail ("lowercase identifier expected", s.getLine, s.getCol)
+                                                             else a
+                                                             fi
+                                          | a             -> a
+                                          esac)
+                                     }
+                                   }
+
+                                ]);
+
+(*
+         whiteSpace |> lift (fun (k) {
+                               fun (s) {
+                                 k (case s.matchRegexp (rLident) of
+                                      a@Succ (v, _) -> if memSet (keywords, v)
+                                                       then Fail ("lowercase identifier expected", s.getLine, s.getCol)
+                                                       else a
+                                                       fi
+                                    | a             -> a
+                                    esac)
+                                }
+                              });
+
+*)

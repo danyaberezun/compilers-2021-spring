@@ -1,20 +1,24 @@
 TESTS=$(sort $(basename $(wildcard test*.lama)))
 LOGS=$(TESTS:=.log)
 
-LAMAC=lamac
+LAMAC=../src/lama-impl
 RM=rm -rf
 
 .PHONY: check $(TESTS)
 
-check: $(TESTS)
+check: $(TESTS) expr_tests
 
 $(TESTS): %: %.lama
 	@echo $@
-	cpp -P -D PROGRAM_BODY="`tr -d '\n' < $<`" Embedding.meta > tmp.lama
-	$(LAMAC) -I ../src -o $@ tmp.lama
-	$(RM) tmp.lama
-	cat $@.input | ./$@ -i > $@.log && diff $@.log orig/$@.log
-	cat $@.input | ./$@ -s > $@.log && diff $@.log orig/$@.log
+	@ulimit -s -S 32768; cat $@.input | $(LAMAC) $@.lama -i > $@.log && diff $@.log orig/$@.log 
+#	@ulimit -s -S 32768; cat $@.input | $(LAMAC) $@.lama -s > $@.log && diff $@.log orig/$@.log
+#	$(LAMAC) $@.lama && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
+
+expr_tests:
+	make -C expressions
+	make -C deep-expressions
 
 clean:
-	$(RM) *.s *.i *~ $(LOGS) $(TESTS)
+	$(RM) *.s *.i *~ $(LOGS) $(TESTS) *.run *.sm
+	make -C expressions clean
+	make -C deep-expressions clean

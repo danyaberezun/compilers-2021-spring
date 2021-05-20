@@ -1,0 +1,400 @@
+\documentclass{article}
+
+\usepackage{amssymb, amsmath}
+\usepackage{alltt}
+\usepackage{pslatex}
+\usepackage{epigraph}
+\usepackage{verbatim}
+\usepackage{latexsym}
+\usepackage{array}
+\usepackage{comment}
+\usepackage{makeidx}
+\usepackage{listings}
+\usepackage{indentfirst}
+\usepackage{verbatim}
+\usepackage{color}
+\usepackage{url}
+\usepackage{xspace}
+\usepackage{hyperref}
+\usepackage{stmaryrd}
+\usepackage{amsmath, amsthm, amssymb}
+\usepackage{graphicx}
+\usepackage{euscript}
+\usepackage{mathtools}
+\usepackage{mathrsfs}
+\usepackage{multirow,bigdelim}
+\usepackage{subcaption}
+\usepackage{placeins}
+
+\makeatletter
+
+\makeatother
+
+\definecolor{shadecolor}{gray}{1.00}
+\definecolor{darkgray}{gray}{0.30}
+
+\def\transarrow{\xrightarrow}
+\newcommand{\setarrow}[1]{\def\transarrow{#1}}
+
+\def\padding{\phantom{X}}
+\newcommand{\setpadding}[1]{\def\padding{#1}}
+
+\def\subarrow{}
+\newcommand{\setsubarrow}[1]{\def\subarrow{#1}}
+
+\newcommand{\trule}[2]{\dfrac{#1}{#2}}
+\newcommand{\crule}[3]{\frac{#1}{#2},\;{#3}}
+\newcommand{\withenv}[2]{{#1}\vdash{#2}}
+\newcommand{\trans}[3]{{#1}\transarrow{\padding{\textstyle #2}\padding}\subarrow{#3}}
+\newcommand{\ctrans}[4]{{#1}\transarrow{\padding#2\padding}\subarrow{#3},\;{#4}}
+\newcommand{\llang}[1]{\mbox{\lstinline[mathescape]|#1|}}
+\newcommand{\pair}[2]{\inbr{{#1}\mid{#2}}}
+\newcommand{\inbr}[1]{\left<{#1}\right>}
+\newcommand{\highlight}[1]{\color{red}{#1}}
+\newcommand{\ruleno}[1]{\eqno[\scriptsize\textsc{#1}]}
+\newcommand{\rulename}[1]{\textsc{#1}}
+\newcommand{\inmath}[1]{\mbox{$#1$}}
+\newcommand{\lfp}[1]{fix_{#1}}
+\newcommand{\gfp}[1]{Fix_{#1}}
+\newcommand{\vsep}{\vspace{-2mm}}
+\newcommand{\supp}[1]{\scriptsize{#1}}
+\newcommand{\sembr}[1]{\llbracket{#1}\rrbracket}
+\newcommand{\cd}[1]{\texttt{#1}}
+\newcommand{\free}[1]{\boxed{#1}}
+\newcommand{\binds}{\;\mapsto\;}
+\newcommand{\dbi}[1]{\mbox{\bf{#1}}}
+\newcommand{\sv}[1]{\mbox{\textbf{#1}}}
+\newcommand{\bnd}[2]{{#1}\mkern-9mu\binds\mkern-9mu{#2}}
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\newcommand{\meta}[1]{{\mathcal{#1}}}
+\renewcommand{\emptyset}{\varnothing}
+\newcommand{\dom}[1]{\mathtt{dom}\;{#1}}
+\newcommand{\primi}[2]{\mathbf{#1}\;{#2}}
+
+\definecolor{light-gray}{gray}{0.90}
+\newcommand{\graybox}[1]{\colorbox{light-gray}{#1}}
+
+\lstdefinelanguage{lama}{
+keywords={read, write, skip,if,then,else,elif,fi,while,do,od,repeat,until,for,fun,local,public,return,import,length,
+string,case,of,esac,when,boxed,unboxed,string,sexp,array,infix,infixl,infixr,at,before,after,true,false,eta,lazy,ignore, ref},
+sensitive=true,
+basicstyle=\small,
+%commentstyle=\scriptsize\rmfamily,
+keywordstyle=\ttfamily\bfseries,
+identifierstyle=\ttfamily,
+basewidth={0.5em,0.5em},
+columns=fixed,
+fontadjust=true,
+literate={->}{{$\to$}}3,
+morecomment=[s][\ttfamily]{(*}{*)},
+morecomment=[l][\ttfamily]{--}
+}
+
+\lstset{
+mathescape=true,
+basicstyle=\small,
+identifierstyle=\ttfamily,
+keywordstyle=\bfseries,
+commentstyle=\scriptsize\rmfamily,
+basewidth={0.5em,0.5em},
+fontadjust=true,
+escapechar=!,
+language=lama
+}
+
+\sloppy
+
+\newcommand{\lama}{$\lambda\kern -.1667em\lower -.5ex\hbox{$a$}\kern -.1000em\lower .2ex\hbox{$\mathcal M$}\kern -.1000em\lower -.5ex\hbox{$a$}$\xspace}
+
+\theoremstyle{definition}
+
+\author{Dmitry Boulytchev}
+
+\begin{document}
+
+\section{Contorol Flow Expressions}
+
+The separation of control flow constructs into a distinctive category of statements is the easiest way to introduce them into a language.
+However, this to some extent sacrifices expressivity of the language for the ease of implementation: we can write
+
+\begin{lstlisting}
+   if c then x := 1 else x := 2 fi
+\end{lstlisting}
+
+but we cannot write
+
+\begin{lstlisting}
+   x := if c then 1 else 2 fi 
+\end{lstlisting}
+
+\emph{et cetera}. This lack of the expressivity is compensated in some languages by extending the varirty of expressions (for example,
+with ternary conditional expression in \texttt{C/C++}, etc.)
+
+Meanwhile implementing a ``rich'' assortment of expressions, including those for control flow constructs, is not a big deal. As a result
+the language becomes not only more expressive, but also more scalable as adding new features becomes easier.
+
+First, we join all constructs from statement category into expressions:
+
+\[
+\begin{array}{rcl}
+   \mathscr E & = & \mathscr X                                                            \\
+              &   & \mathbb N                                                             \\
+              &   & \mathscr E \otimes \mathscr E                                         \\
+              &   & \mbox{\lstinline|skip|}                                               \\
+              &   & \mathscr E \mbox{\lstinline|:=|} \;\mathscr E                         \\
+              &   & \mbox{\lstinline|read (|} \mathscr X \mbox{\lstinline|)|}             \\
+              &   & \mbox{\lstinline|write (|} \mathscr E \mbox{\lstinline|)|}            \\
+              &   & \mathscr E \mbox{\lstinline|;|} \mathscr E                            \\
+              &   & \llang{if $\;\mathscr E\;$ then $\;\mathscr E\;$ else $\;\mathscr E$} \\
+              &   & \llang{while $\;\mathscr E\;$ do $\;\mathscr E$}                      \\
+              &   & \llang{repeat $\;\mathscr E\;$ until $\;\mathscr E$}                  \\
+              &   & \llang{ref $\;\mathscr X$}                                            \\
+              &   & \llang{ignore $\;\mathscr E$}
+\end{array}
+\]
+
+The majority of of definitions left intact (but all statements are replaced into expressions); we added introduced two additional
+constructs (\llang{ignore}/\llang{ref}). These constructs will not have representation in concrete syntax; instead, they will be
+\emph{inferred}.
+
+The motivation for introducing these two additional constructs is as follows. With given abstract syntax we can, in theory, represent programs like
+
+\begin{lstlisting}
+   x + y := 3
+\end{lstlisting}
+
+or
+
+\begin{lstlisting}
+   x := while c do read (x) od
+\end{lstlisting}
+
+Both these examples are ill-formed: "\llang{x + y}" does not designate a mutable reference to assign to, and while-loop does not
+evaluate any value to assign. Additionally, in the following example
+
+\begin{lstlisting}
+   x := x
+\end{lstlisting}
+
+the syntactic role of "\llang{x}" in left and right side of assignment is different: while the left-side designates a reference to assign to,
+the right-side designates a dereferenced value.
+
+We can rule out such ill-formed expressions by a mean of their \emph{static semantics} (see Fig.~\ref{well_formed}). At the same time this static
+semantics can be used to \emph{infer} the placements of "\llang{ignore}" and "\llang{ref}" constructs (provided that these placements exist). For example,
+for an incomplete abstract syntax
+
+\begin{lstlisting}
+   x := y
+\end{lstlisting}
+
+the following complete well-formed AST can be inferred:
+
+\begin{lstlisting}
+   ref (x) := y
+\end{lstlisting}
+
+\emph{et cetera}.
+
+\newcommand{\Ref}{\primi{Ref}{}}
+\newcommand{\Val}{\primi{Val}{}}
+\newcommand{\Void}{\primi{Void}{}}
+
+\begin{figure}
+\renewcommand{\arraystretch}{2}
+\[
+  \begin{array}{cccl}
+    \withenv{\Ref}{\llang{ref $\;x$}} & \withenv{\Val}{x}& \withenv{\Void}{\llang{ignore $\;x$}} & x \in \mathscr X\\
+                                      & \withenv{\Val}{z}& \withenv{\Void}{\llang{ignore $\;z$}} & z \in \mathbb N \\
+                                      & \trule{\withenv{\Val}{l},\quad\withenv{\Val}{r}} 
+                                              {\withenv{\Val}{l\oplus r}} &
+                                        \trule{\withenv{\Val}{l},\quad\withenv{\Val}{r}}
+                                              {\withenv{\Void}{\llang{ignore $\;l\oplus r$}}}    & \\
+                                      &                  & \withenv{\Void}{\llang{skip}}         & \\
+                                      & \trule{\withenv{\Ref}{l},\quad\withenv{\Val}{r}}
+                                              {\withenv{\Val}{\llang{$l\;$ := $\; r$}}} &
+                                        \trule{\withenv{\Ref}{l},\quad\withenv{\Val}{r}}
+                                              {\withenv{\Void}{\llang{ignore ($l\;$ := $\; r$})}} & \\
+                                      &                  & \withenv{\Void}{\llang{read ($x$)}} & \\
+                                      &                  & \trule{\withenv{\Val}{e}}{\withenv{\Void}{\llang{write ($e$)}}} & \\[2mm]
+      \trule{\withenv{\Void}{s_1},\quad\withenv{a}{s_2}}{\withenv{a}{\llang{$s_1\;$;$\;s_2$}}}&
+      \trule{\withenv{\Val}{e},\quad\withenv{a}{s_1},\quad\withenv{a}{s_2}}{\withenv{a}{\llang{if $\;e\;$ then $\;s_1\;$ else $\;s_2$}}}&
+      \trule{\withenv{\Val}{e},\quad\withenv{\Void}{s}}{\withenv{\Void}{\llang{while $\;e\;$ do $\;s$}}}&       \\[2mm]
+       & \trule{\withenv{\Val}{e},\quad\withenv{\Void}{s}}{\withenv{\Void}{\llang{repeat $\;s\;$ until $\;e$}}} & &
+  \end{array}
+  \]
+  \caption{Well-formed Expressions}
+  \label{well_formed}  
+\end{figure}
+
+The top-level well-formedness condition for the while program $p$ (which is now a single expression) is
+
+\[
+\withenv{\Void}{p}
+\]
+
+and from now on we will consider only well-formed programs.
+
+\subsection{Concrete syntax}
+
+We also need to stipulate the details of concrete syntax:
+
+\begin{itemize}
+\item we treat assignment (\llang{:=}) and sequencing (\llang{;}) as right-associative binary operators;
+\item the precedence level of assignment is less than that for "\llang{!!}", and the precedence level of sequencing is less than that for
+  assignment;
+\item in the repeat-until construct "\llang{until}" has a higher precedence than "\llang{;}".
+\end{itemize}
+
+These rules can be demonstrated by the following examples:
+
+\begin{figure}[h]
+\begin{tabular}{ll}
+  syntactic form & meaning \\
+  \hline
+  \llang{x := y := 3}    & \llang{x := (y := 3)}      \\
+  \llang{x := y; y := z} & \llang{(x := y); (y := z)} \\
+  \llang{repeat read (x) until x != 0; write (x)} & \llang{(repeat read (x) until x != 0); write (x))}
+\end{tabular}
+\end{figure}
+
+\subsection{Semantics}
+
+The semantics for the language is given in the form of big-step operational semantics. Note, since we have only one syntactic category in principle we do
+not need different type of arrows; we however define an additional arrow "$\Rightarrow_*$" to denote the semantics of a list of expressions
+evaluated one after another.
+
+Another observation concerns the type of arrows. In previous case we had two arrows (one for expressions and another for statements) of different types.
+Now, however, we have a single syntactic category, which means that constructs which used to be expressions now have side effects, and
+constructs used to be statements now have values. Having said that, we denote the arrows as the following relations:
+
+\[
+\begin{array}{rcl}
+  \Rightarrow & \subseteq & \mathscr{C} \times \mathscr{E} \times (\mathscr{C}\times\mathscr{V})\\
+  \Rightarrow^* & \subseteq & \mathscr{C} \times \mathscr{E}^* \times (\mathscr{C}\times\mathscr{V}^*)
+\end{array}
+\]
+
+where $\mathscr{V}$ is the set of \emph{values}:
+
+\[
+\mathscr{V}=\mathbb{Z}\mid\primi{ref}{\mathscr{X}}\mid\bot
+\]
+
+Note, we need to extend the values from plain integer numbers, adding a "no-value" ($\bot$) and a
+reference to a variable ($\primi{ref}{}$).
+
+First we define an auxilliary relation "$\Rightarrow_*$":
+
+\setarrow{\xRightarrow}
+\begin{figure}[h]
+  \setsubarrow{_*}
+  \[ 
+  \trans{c}{\epsilon}{\inbr{c,\,\epsilon}}\ruleno{Expr$^*_\epsilon$} 
+  \]
+  \[ 
+  \trule{{\setsubarrow{}\trans{c}{e}{\inbr{c^\prime,\,v}}},\quad\trans{c^\prime}{\omega}{\inbr{c^{\prime\prime},\,\psi}}}
+        {\trans{c}{e\omega}{\inbr{c^{\prime\prime},\,v\psi}}}\ruleno{Expr$^*$} 
+  \]
+\end{figure}
+
+The semantics for expressions is presented on Fig.~\ref{expr_semantics}.
+
+\begin{figure}[t]
+\setsubarrow{}
+\[
+\trans{c}{z}{\inbr{c,\,z}}\ruleno{Const}
+\]
+\[
+\trans{\inbr{\sigma,\,\omega}}{x}{\inbr{\inbr{\sigma,\,\omega},\,\sigma\,x}}\ruleno{Var}
+\]
+\[
+\trans{c}{\llang{ref $\;x$}}{\inbr{c,\,\primi{ref}{x}}}\ruleno{Ref}
+\]
+\[
+\trule{\setsubarrow{_*}\trans{c}{lr}{\inbr{c^\prime,\,wv}}}
+      {\trans{c}{l\oplus r}{\inbr{c^\prime,\,w\otimes v}}}\ruleno{Binop}
+\]\vskip1mm
+\[
+\trans{c}{\llang{skip}}{\inbr{c,\,\bot}}\ruleno{Skip}
+\]
+\[
+\trule{\setsubarrow{_*}\trans{c}{lr}{\inbr{\inbr{\sigma,\,\omega},\,[\primi{ref}{x}][v]}}}
+      {\trans{c}{\llang{$l\;$ := $\;r$}}{\inbr{\inbr{\sigma\,[x\gets v],\,\omega},\,v}}}\ruleno{Assign}
+\]\vskip1mm
+\[
+\trule{\inbr{z,\,\omega^\prime}=\primi{read}{\omega}}
+      {\trans{\inbr{\sigma,\, \omega}}{\llang{read ($x$)}}{\inbr{\inbr{\sigma\,[x\gets z],\,\omega^\prime},\,\bot}}}\ruleno{Read}
+\]\vskip1mm 
+\[
+\trule{\trans{\inbr{\sigma,\,\omega}}{e}{\inbr{\inbr{\sigma^\prime,\,\omega^\prime},\,v}}}
+      {\trans{\inbr{\sigma,\, \omega}}{\llang{write ($e$)}}{\inbr{\inbr{\sigma^\prime,\, \primi{write}{v\, \omega^\prime}},\,\bot}}}\ruleno{Write}
+\]\vskip1mm
+\[
+\trule{\trans{c_1}{S_1}{\inbr{c^\prime,\,v}},\quad \trans{c^\prime}{S_2}{c_2}}
+      {\trans{c_1}{S_1\llang{;}S_2}{c_2}}\ruleno{Seq}
+\]\vskip1mm
+\[
+\trule{\trans{c}{e}{\inbr{c^\prime,\,n}},\quad n\ne 0,\quad \trans{c^\prime}{S_1}{c^{\prime\prime}}}
+      {\trans{c}{\llang{if $\;e\;$ then $\;S_1\;$ else $\;S_2\;$}}{c^{\prime\prime}}}
+      \ruleno{If-True}
+\]\vskip1mm
+\[
+\trule{\trans{c}{e}{\inbr{c^\prime,\,0}},\quad \trans{c^\prime}{S_2}{c^{\prime\prime}}}
+      {\trans{c}{\llang{if $\;e\;$ then $\;S_1\;$ else $\;S_2\;$}}{c^{\prime\prime}}}
+      \ruleno{If-False}
+\]\vskip1mm
+\[
+\trule{\trans{c}{e}{\inbr{c^\prime,\,n}},\quad n\ne 0,\quad\trans{c^\prime}{S}{\inbr{c^{\prime\prime},\,v}},\quad\trans{c^{\prime\prime}}{\llang{while $\;e\;$ do $\;S\;$}}{c^{\prime\prime\prime}}}     
+      {\trans{c}{\llang{while $\;e\;$ do $\;S\;$}}{c^{\prime\prime\prime}}}
+      \ruleno{While-True}
+\]\vskip1mm
+\[
+\trule{\trans{c}{e}{\inbr{c^\prime,\,0}}}
+      {\trans{c}{\llang{while $\;e\;$ do $\;S\;$}}{\inbr{c^\prime,\,\bot}}}
+      \ruleno{While-False}
+\]\vskip1mm
+\[
+\trule{\trans{c}{\llang{$S\;$; while $\;e\;$ == 0 do $\;S$}}{c^\prime}}
+      {\trans{c}{\llang{repeat $\;S\;$ until $\;e$}}{c^\prime}}\ruleno{Repeat}
+\]
+\caption{Big-step Operational Semantics for Expressions}
+\label{expr_semantics}
+\end{figure}
+
+\FloatBarrier
+\subsection{Stack Machine}
+
+Surprisingly (or, rather \emph{unsurprisingly}) the stack machine has to be improved only a little bit. Namely, we add the following instructions:
+
+\[
+\begin{array}{rcll}
+  \mathscr{I} & += & \llang{LDA $\;\mathscr X$} & \mbox{loading an address of a variable} \\
+              &    & \llang{STI}                & \mbox{storing by indirect address} \\
+              &    & \llang{DROP}               & \mbox{discard the top of the stack}
+\end{array}
+\]
+
+The form of operational semantics is left unchanged; the semantics of additional instructions is as follows:
+
+\setsubarrow{_\mathscr{SM}}
+\begin{figure}[h]
+\[
+\trule{\withenv{P}{\trans{\inbr{[\primi{ref}{x}]s,\,\theta}}{p}{c^\prime}}}
+      {\withenv{P}{\trans{\inbr{s,\,\theta}}{[\llang{LDA $\;x$}]p}{c^\prime}}}\ruleno{LDA$_{SM}$}
+\]
+\[
+\trule{\withenv{P}{\trans{\inbr{vs,\,\inbr{\sigma[x\gets v],\,\omega}}}{p}{c^\prime}}}
+      {\withenv{P}{\trans{\inbr{v[\primi{ref}{x}]s,\,\inbr{\sigma,\,\omega}}}{[\llang{STI}]p}{c^\prime}}}\ruleno{STI$_{SM}$}
+\]
+\[
+\trule{\trans{\inbr{zs,\,\inbr{\sigma[x\gets z],\,\omega}}}{p}{c^\prime}}{\trans{\inbr{zs,\, \inbr{\sigma,\,\omega}}}{[\llang{ST $\;x$}]p}{c^\prime}}\ruleno{ST$_{SM}$}
+\]
+\[
+\trule{\withenv{P}{\trans{\inbr{s,\,\theta}}{p}{c^\prime}}}
+      {\withenv{P}{\trans{\inbr{xs,\,\theta}}{[\llang{DROP}]p}{c^\prime}}}\ruleno{DROP$_{SM}$}
+\]
+      
+\end{figure}
+
+\end{document}

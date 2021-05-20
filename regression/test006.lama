@@ -1,14 +1,16 @@
-read ("x") >>
-read ("y") >>
-"z" ::= "x" < "y" >>
-write ("z") >>
-"z" ::= "x" <= "y" >>
-write ("z") >>
-"z" ::= "x" == "y" >>
-write ("z") >>
-"z" ::= "x" != "y" >>
-write ("z") >>
-"z" ::= "x" >= "y" >>
-write ("z") >>
-"z" ::= "x" > "y" >>
-write ("z")
+var x, y, z;
+
+read (x);
+read (y);
+z := x < y;
+write (z);
+z := x <= y;
+write (z);
+z := x == y;
+write (z);
+z := x != y;
+write (z);
+z := x >= y;
+write (z);
+z := x > y;
+write (z)

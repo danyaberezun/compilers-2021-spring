@@ -1,4 +1,6 @@
-read ("x") >>
-read ("y") >>
-"z" ::= "y" * "y" >>
-write ("x"+"z") 
+var x, y, z;
+
+read (x);
+read (y);
+z := y * y;
+write (x+z) 

@@ -1,0 +1,224 @@
+\documentclass{article}
+
+\usepackage{amssymb, amsmath}
+\usepackage{alltt}
+\usepackage{pslatex}
+\usepackage{epigraph}
+\usepackage{verbatim}
+\usepackage{latexsym}
+\usepackage{array}
+\usepackage{comment}
+\usepackage{makeidx}
+\usepackage{listings}
+\usepackage{indentfirst}
+\usepackage{verbatim}
+\usepackage{color}
+\usepackage{url}
+\usepackage{xspace}
+\usepackage{hyperref}
+\usepackage{stmaryrd}
+\usepackage{amsmath, amsthm, amssymb}
+\usepackage{graphicx}
+\usepackage{euscript}
+\usepackage{mathtools}
+\usepackage{mathrsfs}
+\usepackage{multirow,bigdelim}
+\usepackage{subcaption}
+\usepackage{placeins}
+
+\makeatletter
+
+\makeatother
+
+\definecolor{shadecolor}{gray}{1.00}
+\definecolor{darkgray}{gray}{0.30}
+
+\def\transarrow{\xrightarrow}
+\newcommand{\setarrow}[1]{\def\transarrow{#1}}
+
+\def\padding{\phantom{X}}
+\newcommand{\setpadding}[1]{\def\padding{#1}}
+
+\def\subarrow{}
+\newcommand{\setsubarrow}[1]{\def\subarrow{#1}}
+
+\newcommand{\trule}[2]{\frac{#1}{#2}}
+\newcommand{\crule}[3]{\frac{#1}{#2},\;{#3}}
+\newcommand{\withenv}[2]{{#1}\vdash{#2}}
+\newcommand{\trans}[3]{{#1}\transarrow{\padding{\textstyle #2}\padding}\subarrow{#3}}
+\newcommand{\ctrans}[4]{{#1}\transarrow{\padding#2\padding}\subarrow{#3},\;{#4}}
+\newcommand{\llang}[1]{\mbox{\lstinline[mathescape]|#1|}}
+\newcommand{\pair}[2]{\inbr{{#1}\mid{#2}}}
+\newcommand{\inbr}[1]{\left<{#1}\right>}
+\newcommand{\highlight}[1]{\color{red}{#1}}
+\newcommand{\ruleno}[1]{\eqno[\scriptsize\textsc{#1}]}
+\newcommand{\rulename}[1]{\textsc{#1}}
+\newcommand{\inmath}[1]{\mbox{$#1$}}
+\newcommand{\lfp}[1]{fix_{#1}}
+\newcommand{\gfp}[1]{Fix_{#1}}
+\newcommand{\vsep}{\vspace{-2mm}}
+\newcommand{\supp}[1]{\scriptsize{#1}}
+\newcommand{\sembr}[1]{\llbracket{#1}\rrbracket}
+\newcommand{\cd}[1]{\texttt{#1}}
+\newcommand{\free}[1]{\boxed{#1}}
+\newcommand{\binds}{\;\mapsto\;}
+\newcommand{\dbi}[1]{\mbox{\bf{#1}}}
+\newcommand{\sv}[1]{\mbox{\textbf{#1}}}
+\newcommand{\bnd}[2]{{#1}\mkern-9mu\binds\mkern-9mu{#2}}
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\newcommand{\meta}[1]{{\mathcal{#1}}}
+\renewcommand{\emptyset}{\varnothing}
+\newcommand{\dom}[1]{\mathtt{dom}\;{#1}}
+\newcommand{\primi}[2]{\mathbf{#1}\;{#2}}
+
+\definecolor{light-gray}{gray}{0.90}
+\newcommand{\graybox}[1]{\colorbox{light-gray}{#1}}
+
+\lstdefinelanguage{lama}{
+keywords={read, write, skip,if,then,else,elif,fi,while,do,od,repeat,until,for,fun,local,public,return,import,length,
+string,case,of,esac,when,boxed,unboxed,string,sexp,array,infix,infixl,infixr,at,before,after,true,false,eta,lazy},
+sensitive=true,
+basicstyle=\small,
+%commentstyle=\scriptsize\rmfamily,
+keywordstyle=\ttfamily\bfseries,
+identifierstyle=\ttfamily,
+basewidth={0.5em,0.5em},
+columns=fixed,
+fontadjust=true,
+literate={->}{{$\to$}}3,
+morecomment=[s][\ttfamily]{(*}{*)},
+morecomment=[l][\ttfamily]{--}
+}
+
+\lstset{
+mathescape=true,
+basicstyle=\small,
+identifierstyle=\ttfamily,
+keywordstyle=\bfseries,
+commentstyle=\scriptsize\rmfamily,
+basewidth={0.5em,0.5em},
+fontadjust=true,
+escapechar=!,
+language=lama
+}
+
+\sloppy
+
+\newcommand{\lama}{$\lambda\kern -.1667em\lower -.5ex\hbox{$a$}\kern -.1000em\lower .2ex\hbox{$\mathcal M$}\kern -.1000em\lower -.5ex\hbox{$a$}$\xspace}
+
+\theoremstyle{definition}
+
+\author{Dmitry Boulytchev}
+
+\begin{document}
+
+\section{Extended Stack Machine}
+
+In order to compile a language with structural control flow constructs into a program for the stack machine the latter has to be extended. First, we introduce a set of label names
+
+\[
+\mathscr L = \{l_1, l_2, \dots\}
+\]
+
+Then, we add three extra control flow instructions:
+
+\[
+\begin{array}{rcl}
+  \mathscr I & += & \llang{LABEL $\;\mathscr L$} \\
+             &   & \llang{JMP $\;\mathscr L$} \\
+  &   & \llang{CJMP$_x$ $\;\mathscr L$},\;\mbox{where $x\in\{\llang{nz}, \llang{z}\}$}
+\end{array}
+\]
+
+In order to give the semantics to these instructions, we need to extend the syntactic form of rules, used in the description of big-step operational smeantics. Instead of
+the rules in the form
+
+\setarrow{\xRightarrow}
+\setsubarrow{_{\mathscr{SM}}}
+
+\[
+\trule{\trans{c}{p}{c^\prime}}{\trans{c^\prime}{p^\prime}{c^{\prime\prime}}}
+\]
+
+we use the following form
+
+\[
+\trule{\withenv{\Gamma^\prime}{\trans{c}{p}{c^\prime}}}{\withenv{\Gamma}{\trans{c^\prime}{p^\prime}{c^{\prime\prime}}}}
+\]
+
+where $\Gamma, \Gamma^\prime$~--- \emph{environments}. The structure of environments can be different in different cases; for now environment is just a program. Informally,
+the semantics of control flow instructions can not be described in terms of just a current instruction and current configuration~--- we need to take the whole
+program into account. Thus, the enclosing program is used as an environment.
+
+Additionally, for a program $P$ and a label $l$ we define a subprogram $P[l]$, such that $P$ is uniquely represented as $p^\prime[\llang{LABEL $\;l$}]P[l]$.
+In other words $P[l]$ is a unique suffix of $P$, immediately following the label $l$ (if there are multiple (or no) occurrences of label $l$ in $P$, then $P[l]$ is
+undefined).
+
+All existing rules have to be rewritten~--- we need to formally add a $\withenv{P}{\dots}$ part everywhere. For the new instructions the rules are given on Fig.~\ref{bs_sm_cc}.
+
+\begin{figure}[t]
+  
+  \renewcommand{\arraystretch}{2}
+
+  \[\trule{\withenv{P}{\trans{c}{p}{c^\prime}}}{\withenv{P}{\trans{c}{[\llang{LABEL $\;l$}]p}{c^\prime}}}\ruleno{Label$_{SM}$}\]
+  \[\trule{\withenv{P}{\trans{c}{P[l]}{c^\prime}}}{\withenv{P}{\trans{c}{[\llang{JMP $\;l$}]p}{c^\prime}}}\ruleno{JMP$_{SM}$}\]
+  \[\trule{z\ne 0,\quad\withenv{P}{\trans{\inbr{s,\,\theta}}{P[l]}{c^\prime}}}{\withenv{P}{\trans{\inbr{zs,\,\theta}}{[\llang{CJMP$_{nz}$ $\;l$}]p}{c^\prime}}}\ruleno{CJMP$_{nz}^+$$_{SM}$}\]
+  \[\trule{z = 0,\quad\withenv{P}{\trans{\inbr{s,\,\theta}}{p}{c^\prime}}}{\withenv{P}{\trans{\inbr{zs,\,\theta}}{[\llang{CJMP$_{nz}$ $\;l$}]p}{c^\prime}}}\ruleno{CJMP$_{nz}^-$$_{SM}$}\]
+  \[\trule{z = 0,\quad\withenv{P}{\trans{\inbr{s,\,\theta}}{P[l]}{c^\prime}}}{\withenv{P}{\trans{\inbr{zs,\,\theta}}{[\llang{CJMP$_z$ $\;l$}]p}{c^\prime}}}\ruleno{CJMP$_{z}^+$$_{SM}$}\]
+  \[\trule{z \ne 0,\quad\withenv{P}{\trans{\inbr{s,\,\theta}}{p}{c^\prime}}}{\withenv{P}{\trans{\inbr{zs,\,\theta}}{[\llang{CJMP$_z$ $\;l$}]p}{c^\prime}}}\ruleno{CJMP$_{z}^-$$_{SM}$}\]  
+  \caption{Big-step operational semantics for extended stack machine}
+  \label{bs_sm_cc}
+\end{figure}
+
+Finally, the top-level semantics for the extended stack machine can be redefined as follows:
+
+\[
+\trule{\withenv{p}{\trans{\inbr{\epsilon,\,\inbr{\Lambda,\,\inbr{i,\,\epsilon}}}}{p}{\inbr{s, \inbr{\sigma,\,\omega}}}}}
+      {\sembr{p}_{\mathscr{SM}}\;i=\primi{out}{\omega}}
+\]
+
+\section{A Compiler for the Stack Machine}
+
+A compiler for the language with structural control flow into the stack machine can be given in the form of static semantics. Similarly to the big-step operational semantics, the
+compiler also operates on environment. For now, the environment allows us to generate fresh labels. Thus, a compiler specification for statements has the shape
+
+\[
+\sembr{p}_{\mathscr{S}}^{comp}\,\Gamma=\inbr{c,\,\Gamma^\prime}
+\]
+
+where $p$ is a source program, $\Gamma$, $\Gamma^\prime$~--- some environments, $c$~--- generated program for the stack machine. As we can see, the environment changes during the
+code generation, hence auxilliary semantic primitive $\sembr{\bullet}_{\mathscr{S}}^{comp}$. We need one primitive to operate on environments which allocates a number of fresh
+labels and returns a new environment:
+
+\[
+\primi{labels}\,\Gamma
+\]
+
+The number of labels allocated is determined by context.
+
+We give an example of compiler specification rule for the while-loop:
+
+\[
+\trule{\inbr{l_e,\,l_s,\,\Gamma^\prime}=\primi{labels}\,\Gamma,\quad\sembr{s}_{\mathscr{S}}^{comp}\,\Gamma^\prime=\inbr{c_s,\,\Gamma^{\prime\prime}}}
+      {\begin{array}{rcrll}
+          \sembr{\llang{while $\;e\;$ do $\;s\;$ od}}_{\mathscr{S}}^{comp}\,\Gamma & = &  \left<\right. & \llang{JMP $\;l_e$}&\\
+                                                                    &   &        & \llang{LABEL $\;l_s$}&\\
+                                                                    &   &        & c_s&\\
+                                                                    &   &        & \llang{LABEL $\;l_e$}&\\
+                                                                    &   &        & \sembr{e}^{comp}_{\mathscr{E}}&\\
+                                                                    &   &        & \llang{CJMP$_{nz}$ $\;l_s$},&\Gamma^{\prime\prime}\left.\right>
+       \end{array}}
+\]
+
+Note, the compiler for expressions is not changed and completely reused.
+
+Finally, the top-level compiler for the whole program can be defined as follows:
+
+\[
+\trule{\sembr{p}_{\mathscr{S}}^{comp}\,\Gamma_0=\inbr{c,\,\_}}
+      {\sembr{p}^{comp}=c}
+\]
+
+where $\Gamma_0$~--- empty environment.
+\end{document}

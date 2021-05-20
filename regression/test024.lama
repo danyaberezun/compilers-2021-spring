@@ -1,0 +1,9 @@
+var x, y;
+
+read (x);
+read (y);
+write (x);
+write (y);
+x := y := 5;
+write (x);
+write (y)

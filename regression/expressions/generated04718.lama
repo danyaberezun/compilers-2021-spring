@@ -1,0 +1,6 @@
+var x0, x1, y;
+
+read (x0);
+read (x1);
+y := 17+x1+x0-x1;
+write (y)

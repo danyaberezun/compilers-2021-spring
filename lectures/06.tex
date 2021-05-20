@@ -1,0 +1,423 @@
+\documentclass{article}
+
+\usepackage{amssymb, amsmath}
+\usepackage{alltt}
+\usepackage{pslatex}
+\usepackage{epigraph}
+\usepackage{verbatim}
+\usepackage{latexsym}
+\usepackage{array}
+\usepackage{comment}
+\usepackage{makeidx}
+\usepackage{listings}
+\usepackage{indentfirst}
+\usepackage{verbatim}
+\usepackage{color}
+\usepackage{url}
+\usepackage{xspace}
+\usepackage{hyperref}
+\usepackage{stmaryrd}
+\usepackage{amsmath, amsthm, amssymb}
+\usepackage{graphicx}
+\usepackage{euscript}
+\usepackage{mathtools}
+\usepackage{mathrsfs}
+\usepackage{multirow,bigdelim}
+\usepackage{subcaption}
+\usepackage{placeins}
+
+\makeatletter
+
+\makeatother
+
+\definecolor{shadecolor}{gray}{1.00}
+\definecolor{darkgray}{gray}{0.30}
+
+\def\transarrow{\xrightarrow}
+\newcommand{\setarrow}[1]{\def\transarrow{#1}}
+
+\def\padding{\phantom{X}}
+\newcommand{\setpadding}[1]{\def\padding{#1}}
+
+\def\subarrow{}
+\newcommand{\setsubarrow}[1]{\def\subarrow{#1}}
+
+\newcommand{\trule}[2]{\dfrac{#1}{#2}}
+\newcommand{\crule}[3]{\frac{#1}{#2},\;{#3}}
+\newcommand{\withenv}[2]{{#1}\vdash{#2}}
+\newcommand{\trans}[3]{{#1}\transarrow{\padding{\textstyle #2}\padding}\subarrow{#3}}
+\newcommand{\ctrans}[4]{{#1}\transarrow{\padding#2\padding}\subarrow{#3},\;{#4}}
+\newcommand{\llang}[1]{\mbox{\lstinline[mathescape]|#1|}}
+\newcommand{\pair}[2]{\inbr{{#1}\mid{#2}}}
+\newcommand{\inbr}[1]{\left<{#1}\right>}
+\newcommand{\highlight}[1]{\color{red}{#1}}
+\newcommand{\ruleno}[1]{\eqno[\scriptsize\textsc{#1}]}
+\newcommand{\rulename}[1]{\textsc{#1}}
+\newcommand{\inmath}[1]{\mbox{$#1$}}
+\newcommand{\lfp}[1]{fix_{#1}}
+\newcommand{\gfp}[1]{Fix_{#1}}
+\newcommand{\vsep}{\vspace{-2mm}}
+\newcommand{\supp}[1]{\scriptsize{#1}}
+\newcommand{\sembr}[1]{\llbracket{#1}\rrbracket}
+\newcommand{\cd}[1]{\texttt{#1}}
+\newcommand{\free}[1]{\boxed{#1}}
+\newcommand{\binds}{\;\mapsto\;}
+\newcommand{\dbi}[1]{\mbox{\bf{#1}}}
+\newcommand{\sv}[1]{\mbox{\textbf{#1}}}
+\newcommand{\bnd}[2]{{#1}\mkern-9mu\binds\mkern-9mu{#2}}
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\newcommand{\meta}[1]{{\mathcal{#1}}}
+\renewcommand{\emptyset}{\varnothing}
+\newcommand{\dom}[1]{\mathtt{dom}\;{#1}}
+\newcommand{\primi}[2]{\mathbf{#1}\;{#2}}
+
+\definecolor{light-gray}{gray}{0.90}
+\newcommand{\graybox}[1]{\colorbox{light-gray}{#1}}
+
+\lstdefinelanguage{lama}{
+keywords={read, write, skip,if,then,else,elif,fi,while,do,od,repeat,until,for,fun,local,public,return,import,length,
+string,case,of,esac,when,boxed,unboxed,string,sexp,array,infix,infixl,infixr,at,before,after,true,false,eta,lazy,ignore, ref},
+sensitive=true,
+basicstyle=\small,
+%commentstyle=\scriptsize\rmfamily,
+keywordstyle=\ttfamily\bfseries,
+identifierstyle=\ttfamily,
+basewidth={0.5em,0.5em},
+columns=fixed,
+fontadjust=true,
+literate={->}{{$\to$}}3,
+morecomment=[s][\ttfamily]{(*}{*)},
+morecomment=[l][\ttfamily]{--}
+}
+
+\lstset{
+mathescape=true,
+basicstyle=\small,
+identifierstyle=\ttfamily,
+keywordstyle=\bfseries,
+commentstyle=\scriptsize\rmfamily,
+basewidth={0.5em,0.5em},
+fontadjust=true,
+escapechar=!,
+language=lama
+}
+
+\sloppy
+
+\newcommand{\lama}{$\lambda\kern -.1667em\lower -.5ex\hbox{$a$}\kern -.1000em\lower .2ex\hbox{$\mathcal M$}\kern -.1000em\lower -.5ex\hbox{$a$}$\xspace}
+
+\theoremstyle{definition}
+
+\author{Dmitry Boulytchev}
+
+\begin{document}
+
+\section{Functions and Local Scopes}
+
+We extend the language with a new category~--- \emph{declarations} ($\mathscr D$), which consists of local variable declarations and
+function declarations. At the expression level we add \emph{scope expressions} ($\mathscr S$), nested scopes and function calls. Finally,
+the category of programs $\mathscr P$ is scope expression:
+
+\[
+\begin{array}{rcll}
+  \mathscr S & = & \mathscr D^*\quad \mathscr E & \mbox{--- scope expression}\\
+  \mathscr E & += & \lstinline|{ $\mathscr S\;$ }| & \mbox{--- nested scope}\\
+             &    & {\mathscr X}\quad\lstinline|($\;\mathscr E^*\;$)| & \mbox{--- function call}\\
+  \mathscr D & =  & \mbox{\lstinline|local $\;\mathscr X$|} & \mbox{--- local variable definition} \\
+             &    & \mbox{\lstinline|fun $\;\mathscr X\;$ ($\mathscr X^*$) \{$\;\mathscr S\;$\}|} & \mbox{--- function definition}\\
+  \mathscr P & =  & \mathscr S & \mbox{--- program}
+\end{array}
+\]
+
+\subsection{Concrete Syntax}
+
+On the concrete syntax level we stipulate the following conventions:
+
+\begin{enumerate}
+\item the expression in scope expression is optional; if no expression is explicitly specified then "\lstinline|skip|" is assumed;
+\item local variable definition has to be terminated by a semicolon, for example
+
+  \begin{lstlisting}
+     local x;
+  \end{lstlisting}
+  
+\item multiple variable names can be specified in a single definition, for example
+
+  \begin{lstlisting}
+     local x, y, z;
+  \end{lstlisting}
+
+  is equivalent to
+  
+  \begin{lstlisting}
+     local x;
+     local y;
+     local z;
+  \end{lstlisting}
+
+\item an optional initializer can be specified for a local variable definition; the initializers are reified into sequential assignments,
+  preserving their order, for example
+
+  \begin{lstlisting}
+     local x = 3;
+     local y = x + 5, z = x + y;
+  \end{lstlisting}
+
+  is equivalent to
+
+  \begin{lstlisting}
+     local x;
+     local y;
+     local z;
+
+     x := 3;
+     y := x + 5;
+     z := x + y
+  \end{lstlisting}
+
+\item scope expressions are implicitly assumed in the bodies of loops and branches of conditional expressions;
+
+\item in "\lstinline|repeat|" expression the scope of body's \emph{immediate} definitions is implicitly extended to enclose the
+  whole expression, thus
+
+  \begin{lstlisting}
+     repeat local i; read (i) until x > 0
+  \end{lstlisting}
+
+  is equivalent to
+
+  \begin{lstlisting}
+     local i;
+     repeat read (i) until x > 0
+  \end{lstlisting}
+
+\item an implicit scope expression is assumed in the initialization part of "\lstinline|for|"-loop; the scope of its immediate definitions
+  is extended to the whole expression as well, thus
+
+  \begin{lstlisting}
+     for local i; i := 0, i < 10, i := i+1 do write (i) od
+  \end{lstlisting}
+
+  is equavalent to
+
+  \begin{lstlisting}
+     local i; for i := 0, i < 10, i := i+1 do write (i) od
+  \end{lstlisting}
+
+\end{enumerate}
+
+\subsection{Well-formedness}
+
+\newcommand{\Ref}{\primi{Ref}{}}
+\newcommand{\Val}{\primi{Val}{}}
+\newcommand{\Void}{\primi{Void}{}}
+\newcommand{\Weak}{\primi{Weak}{}}
+
+We assume functions to always return a values; thus, we need a way to materialize a void into some default value "$\bot$".  We
+do this by introducing a new type of attribute~--- "$\Weak$"~--- and adding the following set of rules to
+the inference system we used to ensure/restore expression well-formedness (see Fig.~\ref{well_formed_old}).
+
+\begin{figure}[h]
+\renewcommand{\arraystretch}{2}
+\[
+  \begin{array}{cc}
+    \withenv{\Weak}{x},\quad x \in \mathscr X       & \withenv{\Weak}{z},\quad z \in \mathbb N \\
+  \trule{\withenv{\Val}{l},\quad\withenv{\Val}{r}} 
+        {\withenv{\Weak}{l\oplus r}}               & \withenv{\Weak}{\llang{skip; $\;\bot$}} \\[2mm]
+  \trule{\withenv{\Ref}{l},\quad\withenv{\Val}{r}}
+        {\withenv{\Weak}{\llang{$l\;$ := $\; r$}}} & \withenv{\Weak}{\llang{read ($x$); $\;\bot$}} \\[2mm]
+  \trule{\withenv{\Val}{e}}{\withenv{\Weak}{\llang{write ($e$); $\;\bot$}}} & \trule{\withenv{\Val}{e},\quad\withenv{\Void}{s}}{\withenv{\Weak}{\llang{while $\;e\;$ do $\;s\;$ od; $\;\bot$}}} \\[2mm]
+  \trule{\withenv{\Val}{e},\quad\withenv{\Void}{s}}{\withenv{\Weak}{\llang{(repeat $\;s\;$ until $\;e$); $\;\bot$ }}} & 
+  \end{array}
+  \]
+  \caption{Well-formedness: additional rules for the old kinds of expressions}
+  \label{well_formed_old}  
+\end{figure}
+
+We also need to specify the inference rules for the \emph{new} kinds of expressions (see Fig.~\ref{well_formed_new}), 
+and, finally, the rules for definitions (see Fig.~\ref{well_formed_def}).
+
+
+\begin{figure}[h]
+\renewcommand{\arraystretch}{2}
+\[
+  \begin{array}{ccc}
+  \trule{\withenv{\Val}{e_1},...,\withenv{\Val}{e_k}} 
+        {\withenv{\Val}{f (e_1,...,e_k)}} &   \trule{\withenv{\Val}{e_1},...,\withenv{\Val}{e_k}} 
+                                                    {\withenv{\Weak}{f (e_1,...,e_k)}} & \trule{\withenv{\Val}{e_1},...,\withenv{\Val}{e_k}} 
+                                                    {\withenv{\Void}{\llang{ignore ($f (e_1,...,e_k)$)}}} \\[2mm]
+                                         & \trule{\vdash^{\mathscr D^*}\,d,\quad \withenv{a}{e}}
+                                                    {\withenv{a}{d\;e}},\quad d\in\mathscr D^* & \\[2mm]
+                                         & \trule{\withenv{a}{e}}
+                                                    {\withenv{a}{\llang{\{$\;e\;$\}}}} &                                                     
+  \end{array}
+  \]
+  \caption{Well-formedness: additional rules for the new kinds of expressions}
+  \label{well_formed_new}  
+\end{figure}
+
+\begin{figure}[h]
+\renewcommand{\arraystretch}{2}
+\[
+   \begin{array}{cc}
+    \vdash^{\mathscr D^*}{\epsilon} & \trule{\vdash^{\mathscr D}\,d,\quad \vdash^{\mathscr D^*}\,ds}{\vdash^{\mathscr D^*}\,{d\,ds}} \\[2mm]
+    \vdash^{\mathscr D}\,\llang{local $\;x$} & \trule{\withenv{\Weak}{e}}
+                                                   {\vdash^{\mathscr D}\,\llang{fun $\;f\;$ (...) \{$\;e\;$\}}}
+  \end{array}
+  \]
+  \caption{Well-formedness: additional rules for definitions}
+  \label{well_formed_def}  
+\end{figure}
+
+
+The top-level well-formedness condition for the while program $p$ (which is now a scope expression) is
+
+\[
+\withenv{\Void}{p}
+\]
+
+\subsection{Semantics}
+
+We now present the big-step operational semantics for functions and scopes. First, we introduce a shortcut for
+a multiple substitutions into a state: for a lists of variable names $x\in\mathscr X^*$ and values $v\in \mathscr V^*$  of equal lengths
+we define
+
+\[
+\sigma[x_i\gets v_i] = \sigma[x_1\gets v_1]...[x_k\gets v_k]
+\]
+
+Then, we add a new kind of value~--- a functional value:
+
+\[
+\mathscr V += \mathscr X^*\binds\mathscr E
+\]
+
+The simplest form of semantics for function calls could be as follows: assume we know that $f$ is a function with arguments $a_1,...,a_k$ and
+body $b$; then we evaluate its call $f (e_1,...,e_k)$ as follows:
+
+\setarrow{\xRightarrow}
+\begin{figure}[h]
+  \[
+  \trule{{\setsubarrow{_*}\trans{c}{e_1...e_k}{\inbr{\inbr{\sigma^\prime,\,\omega^\prime},\,v}}}\quad\trans{\inbr{\sigma^\prime[a_i\gets v_i],\,\omega^\prime}}{b}{c^{\prime\prime}}}
+        {\trans{c}{f (e_1,...,e_k)}{c^{\prime\prime}}}
+  \]
+\end{figure}
+
+Thus, however, would describe \emph{dynamic binding} for functions, while our goal to have a semantics with \emph{static binding}.
+
+So, we modify the definition of state as follows:
+
+\[
+\Sigma = (2^{\mathscr X}\times (\mathscr X\to \mathscr V))^+
+\]
+
+Now a state is a non-empty list of \emph{scopes}; in each scope we have a set of scope variables and a local state. The rightmost element of a state
+corresponds to the \emph{global} state; all other elements corespond to properly ordered list of enclosing scopes for a given point
+in a program.
+
+We need to redefine two primitives for states: those for reading and assigning values variables. For reading:
+
+\[
+\left((L,\,s)\,\sigma\right)\,(x) = \left\{\begin{array}{rcl}
+                                   s\;x        & , & x\in L \\
+                                   \sigma\,(x) & , & x\not\in L
+                                 \end{array}\right.
+\]
+
+For assigning:
+
+\[
+\left((L,\,s)\,\sigma\right)\,[x\gets v] = \left\{\begin{array}{rcl}
+                                            (L,\,s\,[x\gets v])\,\sigma & , & x\in L\\                            
+                                            (L,\,s)\,\left(\sigma\,[x\gets v]\right) &,& x\not\in L
+                                         \end{array}\right.
+\]
+
+With these primitives redefined all existing semantic rules can be preserved; however, we need to put additional requirements for some
+rules (assignment, reading from a variable, reading from a world) to ensure that we do not deal with functional values.
+
+Now we need some new rules describing the semantics of new constructs (definitions and function calls). For scope expressions, the following
+``structural'' rules are sufficient:
+
+\[
+\trule{{\setsubarrow{_{\mathscr D^*}}\trans{\primi{enterScope}{c}}{d}{c^\prime}}\quad\trans{c^\prime}{e}{c^{\prime\prime}}}
+      {\trans{c}{d\;e}{\primi{leaveScope}{c^{\prime\prime}}}}\ruleno{Scope}
+\]
+\[
+ \trule{\trans{c}{e}{c^\prime}}
+       {\trans{c}{\llang{\{$\;e\;$\}}}{c^\prime}}\ruleno{LocalScope}
+\]
+\setsubarrow{_{\mathscr D^*}}
+
+We describe the primitives $\primi{enterScope}{}/\;\primi{leaveScope}{}$ below; the transition \hbox{"$\trans{}{}{}$"} is, again, described
+with obvious structural rules:
+
+\[
+\trans{c}{\epsilon}{c}\ruleno{DefsEmpty}
+\]
+\[
+\trule{{\setsubarrow{_{\mathscr D}}\trans{c}{d}{c^\prime}}\quad\trans{c^\prime}{ds}{c^{\prime\prime}}}
+      {\trans{c}{d\,ds}{c^{\prime\prime}}}\ruleno{DefsNonEmpty}
+\]
+
+\setsubarrow{_{\mathscr D}}
+
+The interesting part is the relation \hbox{"$\trans{}{}{}$"}:
+
+\[
+\trans{c}{\llang{local $\;x$}}{\primi{addName}{x\;0\;c}}\ruleno{DefVar}
+\]
+\[
+\trans{c}{\llang{fun $\;f\;$ ($x_1...x_k$) \{ $\;e\;$ \}}}{\primi{addName}{f\;(x_1..x_k \binds e)\;c}}\ruleno{DefFun}
+\]
+
+where the primitive "$\primi{addName}{}$" is defined as follows:
+
+\[
+  \primi{addName}\;x\;v\;\inbr{(L,\,s)\,\sigma,\,\omega} = \inbr{(L\cup\{x\},\,s[x\gets v])\,\sigma,\,\omega} 
+\]
+
+and we introduce the following shortcut for adding multiple names at once:
+
+\[
+\primi{addName^*}{\inbr{x_1,\,x_1}...\inbr{x_k,\,v_k}\;c} = \primi{addName}{x_k\;v_k\;(...(\primi{addName}{x_1\;v_1\;c})...)}
+\]
+
+
+Now we define the primitives $\primi{enterScope}{}/\;\primi{leaveScope}{}$:
+
+\[
+\begin{array}{rcl}
+  \primi{enterScope}{\inbr{\sigma,\,\omega}} & = & \inbr{(\emptyset,\,\Lambda)\,\sigma,\,\omega}\\
+  \primi{leaveScope}{\inbr{(L,\,s)\,\sigma,\,\omega}} & = & \inbr{\sigma,\,\omega}
+\end{array}
+\]
+
+Finally, we need to define the semantics for function calls:
+
+\setsubarrow{}
+\[
+\trule{\begin{array}{c}
+          \sigma\,f = (a\binds e)\\
+          {\setsubarrow{_*}\trans{\inbr{\sigma,\,\omega}}{e_1...e_k}{\inbr{c^\prime,\,v}}}\\
+          v_i\in\mathbb Z\\          
+          \trans{\primi{addName^*}{\inbr{a_1,\,v_1}...\inbr{a_k,\,v_k}\;(\primi{enterFunction}{c^\prime})}}{e}{\inbr{c^{\prime\prime},\,w}} 
+       \end{array}
+      }
+      {\trans{\inbr{\sigma,\,\omega}}{f (e_1...e_k)}{\inbr{\primi{leaveFunction}{c^\prime\;(\primi{global}{c^{\prime\prime}})},\,w}}}\ruleno{Call}
+\]
+
+The primitives "$\primi{enterFunction}{}/\;\primi{leaveFunction}{}/\;\primi{global}{}$" are defined as follows:
+
+\[
+\begin{array}{rcl}
+  \primi{enterFunction}{\inbr{\sigma,\,\omega}}   & = & \inbr{\primi{enterScope}{(\primi{global}{\sigma})},\,\omega}\\
+  \primi{leaveFunction}{\inbr{(L^\prime,\,s^\prime)\,\epsilon,\,\omega}\;(L,\,s)}& = & \inbr{(L,\,s)\,\epsilon,\omega}\\
+  \primi{leaveFunction}{\inbr{(L^\prime,\,s^\prime)\,\sigma,\,\omega}\;(L,\,s)}& = & \inbr{(L^\prime,\,s^\prime)\,(\primi{leaveFunction}{\sigma\;(L,\,s)}),\,\omega},\;\sigma\ne\epsilon\\
+  \primi{global}{(L,\,s)\,\epsilon} & = & (L,\,s)\\
+  \primi{global}{(L,\,s)\,\sigma} & = & \primi{global}{\sigma},\;\sigma\ne\epsilon
+\end{array}
+\]
+
+\end{document}
