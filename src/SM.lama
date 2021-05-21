@@ -29,6 +29,43 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
+fun evalOneInstr (c@[stack, state, world], insn) {
+  case insn of
+    CONST (n) -> [[n:stack , state, world], Stay]
+  | READ -> 
+      case readWorld (world) of
+        [n, new_world] -> [[n:stack, state, new_world], Stay]
+      esac
+  | WRITE ->
+      case stack of
+        z:zs -> [[zs, state, writeWorld (z, world)], Stay]
+      esac
+  | LD (x) -> [[(state (x)):stack, state, world], Stay]
+  | ST (x) -> 
+      case stack of
+        z:zs -> [[zs, state <- [x, z], world], Stay]
+      esac
+  | BINOP (op) -> 
+      case stack of
+        y:x:s ->
+          [[countOp(op, x, y):s, state, world], Stay]
+      esac
+  | LABEL (s) ->
+      [c, Stay]
+  | JMP (l) ->
+      [c, Jump (l)]
+  | CJMP (cond, l) ->
+      case stack of 
+        value:stack_tail -> 
+          case [value, cond] of
+            [0, "z"] -> [[stack_tail, state, world], Jump (l)]
+          | [1, "nz"] -> [[stack_tail, state, world], Jump (l)]
+          | _ -> [[stack_tail, state, world], Stay]
+          esac
+      esac   
+  esac
+}
+
 -- Evaluation environment: keeps a mapping between labels and (sub)programs
 fun initEvalEnv (insns) {
   var map =
@@ -55,7 +92,16 @@ fun fromLabel (env, lab) {
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {} -> c
+  | i:is -> case evalOneInstr (c, i) of
+              [new_c, action] ->
+                case action of
+                  Stay -> eval (env, new_c, is)
+                | Jump (l) -> eval (env, new_c, fromLabel (env, l))
+                esac  
+            esac
+  esac
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -96,12 +142,61 @@ fun genLabels (env, n) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var (x) -> singletonBuffer (LD (x))
+  | Const (x) -> singletonBuffer (CONST (x))
+  | Binop (op, x, y) -> (compileExpr (x) <+> compileExpr (y)) <+ BINOP (op)
+  esac
+}
+
+fun compileSMrec (env, stmt) {
+  case stmt of
+    Skip -> [emptyBuffer (), env]
+  | Assn (x, e) -> [compileExpr (e) <+ ST (x), env]
+  | Read (x) -> [emptyBuffer () <+ READ <+ ST (x), env]
+  | Write (e) -> [compileExpr (e) <+ WRITE, env]
+  | Seq (s1, s2) -> 
+      case compileSMrec (env, s1) of
+        [stmts_1, env_1] ->
+          case compileSMrec (env_1, s2) of
+            [stmts_2, env_2] ->
+              [stmts_1 <+> stmts_2, env_2]
+          esac
+      esac
+  | If (e, b1, b2) -> 
+      case genLabels (env, 2) of
+        [else_label, exit_label, new_env] ->
+          case compileSMrec (new_env, b1) of
+            [stmts_b1, env_b1] ->
+              case compileSMrec (env_b1, b2) of
+                [stmts_b2, env_b2] ->
+                  [compileExpr (e) <+ CJMP ("z", else_label) <+> stmts_b1 <+ JMP (exit_label) 
+                     <+ LABEL (else_label) <+> stmts_b2 <+ LABEL (exit_label), env_b2]
+              esac
+          esac 
+      esac
+  | While (e, l) ->
+      case genLabels (env, 2) of
+        [start_label, body_label, new_env] ->
+          case compileSMrec (new_env, l) of
+            [stmts_l, env_l] ->
+              [singletonBuffer (JMP (start_label)) <+ LABEL (body_label) <+> stmts_l <+ LABEL (start_label) <+> compileExpr (e) <+ CJMP ("nz", body_label), env_l]
+          esac
+      esac 
+  | DoWhile (l, e) ->
+      case genLabels (env, 1) of
+        [start_label, new_env] ->
+          case compileSMrec (new_env, l) of
+            [stmts_l, env_l] ->
+              [singletonBuffer(LABEL (start_label)) <+> stmts_l <+> compileExpr (e) <+ CJMP("nz", start_label), env_l]
+          esac
+      esac
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  (compileSMrec (initCompEnv (), stmt) [0]) . getBuffer
 }
