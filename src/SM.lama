@@ -6,17 +6,19 @@ import State;
 import Expr;
 import Buffer;
 import Fun;
+import Expr;
+import Array;
 
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
   case i of
-    READ      -> sprintf ("READ")
-  | WRITE     -> sprintf ("WRITE")
-  | BINOP (s) -> sprintf ("BINOP %s", s)
-  | LD    (x) -> sprintf ("LD %s", x)
-  | ST    (x) -> sprintf ("ST %s", x)
-  | CONST (n) -> sprintf ("CONST %d", n)
+    READ       -> sprintf ("READ")
+  | WRITE      -> sprintf ("WRITE")
+  | BINOP (op) -> sprintf ("BINOP %s", op)
+  | LD    (x)  -> sprintf ("LD %s", x)
+  | ST    (x)  -> sprintf ("ST %s", x)
+  | CONST (n)  -> sprintf ("CONST %d", n)
   esac
 }
 
@@ -27,7 +29,49 @@ public fun showSM (prg) {
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {} -> c
+  | x:xs -> eval (evalInsn (c, x), xs)
+  esac
+}
+
+fun evalInsn(c, insn) {
+  case insn of
+    READ       -> read (c)
+  | WRITE      -> write (c)
+  | BINOP (op) -> binop (op, c)
+  | LD    (x)  -> push (c[1] (x), c)
+  | ST    (x)  -> popAndAssign (x, c)
+  | CONST (n)  -> push (n, c)
+  esac
+}
+
+fun binop (op, c) {
+  var y = pop (c);
+  var x = pop (y[1]);
+  push (applyBinop (op, x[0], y[0]), x[1])
+}
+
+fun read (c@[s, st, w]) {
+  var r = readWorld (w);
+  [r[0]:s, st, r[1]]
+}
+
+fun write (c@[s, st, w]) {
+  var x = pop (c);
+  [x[1][0], st, writeWorld (x[0], w)]
+}
+
+fun pop([n:s, st, w]) {
+  [n, [s, st, w]]
+}
+
+fun popAndAssign(x, [n:s, st, w]) {
+  [s, st <- [x, n], w]
+}
+
+fun push (n, c@[s, st, w]) {
+  [n:s, st, w]
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -39,12 +83,26 @@ public fun evalSM (input, insns) {
 -- Takes an expression, returns a list 
 -- of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  case expr of
+    Var (x) -> singletonBuffer (LD (x))
+  | Const (i) -> singletonBuffer (CONST (i))
+  | Binop (op, expr1, expr2) -> compileExpr (expr1) <+> compileExpr (expr2) <+ BINOP (op)
+  esac
+}
+
+fun compileSMWithBuffer(stmt) {
+  case stmt of
+    Assn (x, expr) ->  compileExpr (expr) <+ ST (x)
+  | Seq (stmt1, stmt2) -> compileSMWithBuffer (stmt1) <+> compileSMWithBuffer (stmt2)
+  | Skip -> emptyBuffer ()
+  | Read (x) -> listBuffer ({READ, ST (x)})
+  | Write (expr) -> compileExpr (expr) <+ WRITE
+  esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compileSMWithBuffer (stmt))
 }

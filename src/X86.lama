@@ -288,9 +288,73 @@ fun compile (env, code) {
           case env.pop of
             [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
           esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+      | CONST (n) -> 
+          case env.allocate of
+            [s, env] -> [env, code <+> move (L (n), s)]
+          esac
+      | LD (x) ->
+          case env.allocate of
+            [s, env] -> [env, code <+> move (env.loc (x), s)]
+          esac 
+      | ST (x) -> 
+          case env.addGlobal (x).pop of
+            [s, env] -> [env, code <+> move (s, env.loc (x))]
+          esac
+      | BINOP (op) ->
+          case env.pop2 of
+            [y, x, env] -> [env.push (x), code <+> generateBinopCode (op, y, x)]
+          esac
       esac
     }, [env, emptyBuffer ()], code)
+}
+
+fun generateBinopCode (op, x, y) {
+  case op of
+    "*"  -> mult (x, y)
+  | "/"  -> div (y, x)
+  | "%"  -> rem (y, x)
+  | "+"  -> binop (op, x, y)
+  | "-"  -> binop (op, x, y)
+  | "==" -> comp (op, x, y)
+  | "!=" -> comp (op, x, y)
+  | "<=" -> comp (op, x, y)
+  | "<"  -> comp (op, x, y)
+  | ">=" -> comp (op, x, y)
+  | ">"  -> comp (op, x, y)
+  | "!!" -> logic (op, x, y)
+  | "&&" -> logic (op, x, y)
+  esac 
+}
+
+fun doDiv (x, y) {
+  singletonBuffer (Mov (x, eax)) <+ Cltd <+ IDiv (y)
+}
+
+fun div (x, y) {
+  doDiv (x, y) <+ Mov (eax, x)
+}
+
+fun rem (x, y) {
+  doDiv (x, y) <+ Mov (edx, x)
+}
+
+fun comp (op, x, y) {
+  singletonBuffer(Mov (L (0), eax)) <+> binop ("cmp", x, y) <+ Set (suffix (op), "%al") <+ Mov (eax, y)
+}
+
+fun mult (x, y) {
+  singletonBuffer (Mov (x, eax)) <+ Binop ("*", y, eax) <+ Mov (eax, y)
+}
+
+fun binop (op, x, y) { 
+  if memOpnd (x) && memOpnd (y)
+  then singletonBuffer (Mov (x, eax)) <+ Binop (op, eax, y)
+  else singletonBuffer (Binop (op, x, y))
+  fi
+}
+
+fun logic (op, x, y) {
+  comp ("!=", L (0), x) <+> comp ("!=", L (0), y) <+> binop (op, x, y)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
