@@ -95,7 +95,7 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
              esac
            },
            [{}, expr],
@@ -104,7 +104,7 @@ fun expandScope (defs, expr) {
 
   fun expandValDefs (defs, expr) {
     foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
            },
            [{}, expr],
            defs)
@@ -225,10 +225,89 @@ var
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
-
+    -- Scope expressions
+    inbr[s("("), scopeExpr, s(")")]                                         |
+    -- Skip
+    loc=pos -kSkip {fun (a) {assertVoid (a, returnST $ Skip, loc)}} |
+    -- If
+    loc=pos -kIf e=basic -kThen s1=exp sn=elsePart? -kFi {
+      fun (a) {
+        case sn of 
+          Some (s2) -> chainST({e (Val), s1 (a), s2 (a)}) => fun ({e, s1, s2}) {If(e, s1, s2)}
+        | _ -> assertVoid (a, chainST ({e (Val), s1 (a), returnST $ Skip}) => fun ({e, s1, s2}) {If (e, s1, s2)}, loc)
+        esac }} |
+    -- While
+    loc=pos -kWhile e=basic s=inbr[kDo, scopeExpr, kOd] {
+      fun (a) {
+        assertVoid (a, chainST({e (Val), s (Void)}) => fun({e, s}) {While (e, s)}, loc)
+      }} |
+    -- Do While
+    loc=pos -kDo s=scopeExpr -kWhile e=basic -kOd {
+      fun (a) {
+        assertVoid (a, chainST({s (Void), e (Val)}) =>
+        fun ({s, e}) {
+          distributeScope (s,
+          fun (s) {
+            DoWhile (s, e)
+          })}, 
+        loc)
+      }} | 
+    -- For      
+    loc=pos -kFor init=scopeExpr s[","] cond=basic s[","] step=basic s=inbr[kDo, scopeExpr, kOd] {
+      fun (a) {
+        assertVoid (a, chainST({init (Void), cond (Val), s (Void), step (Void)}) =>
+        fun ({init, cond, s, step}) {
+          distributeScope(init,
+          fun (init) {
+            Seq(init, While(cond, Seq (s, step))) 
+          })},
+        loc)
+      }} |
+    -kCase caseexpr=basic -kOf caseslist=cases -kEsac {
+      fun (a) {
+        case unzip (caseslist) of
+          [patterns, branches] -> 
+            chainST (caseexpr (Val) : map (fun (br) {br (a)}, branches)) =>>
+            fun (e : brs) {
+              fun (state) {
+                case freshName (state) of
+                  [state, name] ->
+                    [state, expandScope({Var ({[name, Some (e)]})}, Case (Var (name), reifyPatternBindings (name, zip (patterns, brs))))] 
+                esac
+              }}
+        esac
+      }
+    }
+  ),
+  elsePart = memo $ eta syntax (
+    loc=pos -kElif e=exp -kThen s1=scopeExpr sn=elsePart? {
+      fun (a) {
+        case sn of 
+          Some (s2) -> chainST ({e (Val), s1 (a), s2 (a)}) => fun ({e, s1, s2}) {If (e, s1, s2)}
+        | _         -> assertVoid (a, chainST ({e (Val), s1 (a), returnST $ Skip}) => fun ({e, s1, s2}) {If (e, s1, s2)}, loc)
+        esac
+      }} |
+    -kElse s2=scopeExpr {fun (a) {s2 (a)}}),
+  cases = memo $ eta syntax (
+    pat=pattern s["->"] branch=scopeExpr s["|"] tail=cases {[pat, branch] : tail} |
+    pat=pattern s["->"] branch=scopeExpr {{[pat, branch]}}
+  ),
+  pattern = memo $ eta syntax (
+    d=decimal {Const (stringInt (d))} |
+    name=lident pat=(-s["@"] pattern)? {
+      case pat of
+        None -> Named (name, Wildcard)
+      | Some(pat) -> Named (name, pat)
+      esac
+    } |
+    x=uident args=inbr[s("("), list0(pattern), s(")")]? {
+      case args of
+        None        -> Sexp (x, {})
+      | Some (args) -> Sexp (x, args)
+      esac} |
+    x=inbr[s("["), list0(pattern), s("]")] {Array (x)} |
+    s["_"] {Wildcard} 
+  ),
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
                                  fun (a) {assertValue (a, l (Ref) =>> fun (l) {

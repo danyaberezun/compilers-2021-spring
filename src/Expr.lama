@@ -101,8 +101,139 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun matchList (p, v) {
+  case [p, v] of
+    [pi: ps, vi : vs] -> 
+      if match (pi, vi)
+      then 1 && matchList (ps, vs)
+      else 0
+      fi
+  | [{}, {}] -> 1
+  | _ -> 0
+  esac
+}
+
+fun match (p, v) {
+  case [p, v] of
+    [Wildcard, v] -> 1 
+  | [Const (n), v] -> n == v
+  | [Sexp (t, args), Sexp (s, vargs)] -> 
+      if compare (t, s) == 0
+      then matchList (args, arrayList (vargs))
+      else 0
+      fi
+  | [Array (args), vargs] -> matchList (args, arrayList (vargs))
+  | [Named (_, p), v] -> match (p, v)
+  | _ -> 0
+  esac
+}
+
+fun evalBranches (c, brs, e) {
+  case brs of
+    [p, br] : brs -> 
+      if match (p, e) 
+      then eval (c, br)
+      else evalBranches (c, brs, e)
+      fi
+  | _ -> error (sprintf ("Do not matches"))
+  esac
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Assn (l, r)      -> case evalList (c, {l, r}) of 
+                          [[s1, w1], {Ref (x), v}] -> [[s1 <- [x, Val (v)], w1], v]
+                        | [c, {ElemRef (l, i), v}] -> l[i] := v; [c, v]
+                        esac
+  | Seq (s1, s2)     -> case eval (c, s1) of 
+                          [c1, _] -> eval (c1, s2)
+                        esac
+  | Skip             -> [c, Bottom]
+  | If (e, s1, s2)   -> case eval (c, e) of
+                          [c1, n] -> eval (c1, if n then s1 else s2 fi)
+                        esac
+  | While (e, s)     -> case eval (c, e) of
+                          [c1, 0] -> [c1, Bottom]
+                        | [c1, _] -> case eval (c1, s) of [c2, _] -> eval (c2, expr) esac
+                        esac
+  | DoWhile (s, e)    -> eval (c, Seq (s, While (e, s)))
+  | Var (x)          -> [c, case lookupVal (s, x) of Val (v) -> v esac]
+  | Ref (x)          -> [c, Ref (x)]
+  | Const (n)        -> [c, n]
+  | Binop (op, l, r) -> case evalList (c, {l, r}) of 
+                          [c, {x, y}] -> [c, evalOp (op, x, y)]
+                        esac
+  | Ignore (e)      -> case eval (c, e) of 
+                          [c1, _] -> [c1, Bottom]
+                        esac
+  | Scope (vl, e) -> if size (vl) == 0 then
+                       eval (c, e)
+                    else
+                      s := enterScope(s);
+                      while size (vl) > 0 do
+                        s := case vl[0] of
+                               Var (vs) -> addNames (s, vs)
+                             | Val (vs) -> addNames (s, vs)
+                             | Fun (name, args, body) -> addFunction (s, name, args, body)
+                        esac;
+                       vl := vl.tl
+                      od;
+                      case eval([s, w], e) of
+                        [[s, w], v] -> [[leaveScope(s), w], v]
+                      esac
+                    fi
+  | String (st) -> [c, st]
+  | Array (exs) -> 
+      case evalList (c, exs) of
+        [c, as] -> [c, listArray (as)]
+      esac
+  | Sexp (s, args) -> 
+      case evalList (c, args) of
+        [c, args] -> [c, Sexp (s, listArray (args))]
+      esac
+  | Elem (a, ind) -> 
+      case evalList (c, {a, ind}) of
+        [c, {l, i}] -> 
+          case l of
+            Sexp (s, arr) -> [c, arr[i]]
+          | _ -> [c, l[i]]
+          esac
+      esac
+  | ElemR (a, ind) -> 
+      case evalList (c, {a, ind}) of
+        [c, {l, i}] -> case l of
+          Sexp (s, arr) -> [c, ElemRef (arr, i)] 
+        | _ -> [c, ElemRef (l, i)]
+        esac 
+      esac
+  | Call (name, args) -> 
+      case lookupFun(s, name) of 
+        Fun(as, body) ->
+          var oldS = s;
+          case evalList(c, args) of 
+            [[s, w], vals] ->
+              case body of
+                External -> case evalBuiltin (name, vals, w) of [n, w] -> [[s, w], n] esac
+              | _ -> 
+                  s := enterFunction(s);
+                  while size(as) > 0 do
+                    s := addName(s, as[0], Val(vals[0]));
+                    as := as.tl;
+                    vals := vals.tl
+                  od;
+                  case eval ([s, w], body) of [[s, w], ret] ->
+                    s := leaveFunction(oldS, getGlobal (s));
+                    [[s, w], ret]
+                  esac
+              esac
+          esac
+      esac
+  | Case (e, brs) -> 
+      case eval (c, e) of
+        [c, v] -> evalBranches (c, brs, v)
+      esac
+  
+  esac
 }
 
 
