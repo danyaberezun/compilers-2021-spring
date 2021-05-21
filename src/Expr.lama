@@ -46,11 +46,12 @@ public fun evalOp (op, l, r) {
 --        Skip                         |
 --        if      (expr, expr, expr)   |
 --        While   (expr, expr)         |
---        Repeat  (expr, expr)         |
+--        DoWhile (expr, expr)         |
 --        Var     (string)             |
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
+--			  Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)               |
 --        String  (string)             |
@@ -101,8 +102,112 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun defineDeclarations (state, decls) {
+	foldl (fun (s, decl) {
+		case decl of
+			Var (names) -> addNames (s, names)
+		|	Fun (name, args, body) -> addFunction (s, name, args, body)
+		esac
+	}, state, decls)
+}
+
+fun eval (c@[s, w], expression) {
+	--printf("%s\n", expression.string);
+  case expression of
+		Const (value) -> [c, value]
+  | Var (x) -> [c, lookup (s, x)]      -- TODO checkVar (s, x); 
+  | Ref (x) -> [c, expression]
+  | Binop (op, l, r) -> case eval (c, l) of [c1, w] -> 
+                          case eval (c1, r) of [c2, v] -> [c2, evalOp (op, w, v)] esac 
+                        esac
+-- TODO evalList (too musch memory consumtion)
+--| Binop (op, l, r) -> case evalList (c, {l, r}) of [newC, {w, v}] -> [newC, evalOp(op, w, v)] esac
+  | Skip -> [c, Void]
+  | Assn (l, r) -> 
+			case evalList (c, {l, r}) of 
+				[[newS, newW], {Ref (x), v}] -> [[newS <- [x, v], newW], v] 
+			| [c, {ElemRef (arr, i), v}] -> arr[i] := v; [c, v] 
+			esac
+  | Seq (stm1, stm2) -> eval(eval(c, stm1)[0], stm2)
+  | If (expr, ifTrue, ifFalse) -> 
+			case eval(c, expr) 
+				of [newC, n] -> if (n != 0) then eval(newC, ifTrue) else eval(newC, ifFalse) fi
+			esac
+  | While (expr, body) -> 
+			case eval(c, expr) of 
+				[newC, n] ->  if (n != 0) 
+											then eval((*c'' = *) eval(newC, body)[0], expression)
+											else [newC, Void] 
+											fi
+			esac
+  | DoWhile (body, expr) -> eval(c, Seq (body, While(expr, body)))
+  | Scope (defs, expr) -> 
+			var scopeState = defineDeclarations (enterScope (s), defs);
+			case eval ([scopeState, w], expr) of
+				[c@[s, w], v] -> [[leaveScope (s), w], v]
+			esac
+  | Call (name, args) -> 
+		-- TODO checkFun (s, name)
+		case lookup (s, name) of         -- get fun signature 
+			Fun (params, body) ->
+				case evalList (c, args) of   -- evaluate args
+				[c1@[s1, w], values] -> 
+					case body of
+						External -> case evalBuiltin(name, values, w) of [result, newW] -> [[s, newW], result] esac 
+					| _ -> 
+						var stateInFun = enterFunction (s1);      -- enter new scope
+						var stateWithArgs = foldl(fun (s, pair@[name, value]) { addName (s, name, value) }, stateInFun, zip (params, values));
+						case eval ([stateWithArgs, w], body) of   -- evaluate body
+							[c2@[s2, w], result] -> [[leaveFunction (s, getGlobal (s2)), w], result]
+						esac
+					esac
+				esac
+		esac
+  | Ignore (expr) 	-> [eval (c, expr)[0], Void]
+  | String (string) -> [c, string]
+  | Array  (exprs) 				-> case evalList (c, exprs) of [c, list] -> [c, listArray(list)] esac
+  | Elem    (expr, index) -> 
+  	case eval (c, expr) of
+  		[c, Sexp (_, args)] -> case eval (c, index) of [c, i] -> [c, args [i]] esac
+  	| [c, arr] 						-> case eval (c, index) of [c, i] -> [c, arr [i]] esac
+  	esac
+  | ElemRef (expr, index) -> 
+    case eval (c, expr) of
+  		[c, Sexp (_, args)] -> case eval (c, index) of [c, i] -> [c, ElemRef (args, i)] esac
+  	| [c, arr] 						-> case eval (c, index) of [c, i] -> [c, ElemRef (arr, i)] esac
+  	esac
+  | Sexp (name, exprs) 		-> case evalList (c, exprs) of [c, list] -> [c, Sexp (name, listArray(list))] esac  
+  | Case (scrutinee, brs) 	-> 
+  	fun matchAllPatterns(xs, ps) {
+  		--printf("%s\n", ps.string);
+  		if length (xs) == size (ps)
+  		then foldl (fun (acc, [x, p]) { acc && matches (x, p) }, true, zip (arrayList (xs), ps)) 
+  		else false
+  		fi
+  	}
+
+  	fun matches(scrutinee, patt) {
+  		--printf("%s\n", patt.string);
+  		case [patt, scrutinee] of
+  			[Array (p), Array (x)]				-> matchAllPatterns (x, p)
+  		|	[Sexp (s1, p), Sexp (s2, x)]	-> compare (s1, s2) == 0 && matchAllPatterns (x, p)
+  		|	[Named (_, None), _] 					-> true
+  		|	[Named (_, Some (p)), _] 			-> matches (scrutinee, p)
+  		|	[Const (n), _]								-> scrutinee == n
+  		|	[All, _]											-> true
+  		| _ 														-> false
+  		esac
+  	}
+
+  	fun matchBranches(brs, condition) {
+  		case brs of
+  			{} -> failure ("Case match failure\n")
+  		|	br@[patt, branch]: tail -> if (matches (condition, patt)) then eval(c, branch) else matchBranches (tail, condition) fi
+  		esac
+  	}
+
+  	matchBranches (brs, lookup (s, scrutinee))
+  esac
 }
 
 
