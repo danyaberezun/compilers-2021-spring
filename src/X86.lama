@@ -447,6 +447,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -454,9 +455,25 @@ fun memOpnd (opnd) {
 -- Generates a move between locations, using
 -- intermediate register if needed
 fun move (from, to) {
-  if memOpnd (from) && memOpnd (to)
+  if from == to 
+  then emptyBuffer ()
+  elif memOpnd (from) && memOpnd (to)
   then singletonBuffer (Mov (from, eax)) <+ Mov (eax, to)
   else singletonBuffer (Mov (from, to))
+  fi
+}
+
+fun moveAddr (from, to) {
+  if memOpnd (from) && memOpnd (to)
+  then singletonBuffer (Lea (from, eax)) <+> move (eax, to)
+  else singletonBuffer (Lea (from, to))
+  fi
+}
+
+fun binop (op, x, y) {
+  if memOpnd (x) && memOpnd (y)
+  then singletonBuffer (Mov (y, eax)) <+ Binop (op, x, eax) <+ Mov (eax, y)
+  else singletonBuffer (Binop (op, x, y))
   fi
 }
 
@@ -489,6 +506,66 @@ fun toFixedNum (r) {
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (args, env, code) {  
   fun compile (env, code) {
+    fun isSimpleArithmeticBinop (op) {
+      compare (op, "+") == 0 !! compare (op, "-") == 0 !! compare (op, "*") == 0
+    }
+
+    fun isDivBinop (op) {
+      compare (op, "/") == 0 !! compare (op, "%") == 0
+    }
+
+    fun isLogical (op) {
+      compare (op, "!!") == 0 !! compare (op, "&&") == 0
+    }
+
+    fun withEaxSave(code) {
+      singletonBuffer (Push (eax)) <+> code <+ Pop (eax)
+    }
+
+    fun simpleArithmeticBinop (x, op, y, placeForResult) {
+      withEaxSave (binop (op, x, y) <+> move (y, placeForResult))
+    }
+
+    fun divBinop (x, op, y, placeForResult) {
+      var resultingRegister = case op of "/" -> eax | _ -> edx esac;
+      withEaxSave (move (y, eax) <+ Cltd <+ IDiv (x) <+ Mov (resultingRegister, placeForResult))
+    }
+
+    fun cmpBinop (x, op, y, placeForResult) {
+      withEaxSave (binop ("cmp", x, y) <+ Mov (L (0), eax) <+ Set (suffix (op), "%al") <+ Mov (eax, placeForResult))
+    }
+
+    fun logicalBinop (x, op, y, placeForResult) {
+      cmpBinop (L (0), ">", x, x) <+> cmpBinop (L (0), ">", y, y) <+> binop (op, x, y)
+    }
+
+    fun getArgsFromEnv (env, nArgs) {
+      var code = emptyBuffer();
+      for var i ; i := 0, i < nArgs, i := i + 1 do
+        case pop (env) of [x, e] -> env := e; code := code <+ Push (x) esac
+      od;
+      [env, code]
+    }
+
+    fun call (env, fLabel, nArgs, additionalArgs) {
+      var regsToSave = liveRegisters (env, nArgs);
+      var regsPush = foldl(fun(code, reg) { code <+ Push (reg) }, emptyBuffer(), regsToSave);
+      var regsPop = foldr(fun(code, reg) { code <+ Pop (reg) }, emptyBuffer(), regsToSave);
+      var additionalPush = foldl(fun(code, reg) { code <+ Push (reg) }, emptyBuffer(), additionalArgs);
+      var skipValue = wordSize * (nArgs + size (additionalArgs));
+
+      case getArgsFromEnv (env, nArgs) of
+        [env, code] -> 
+          case allocate (env) of 
+            [s, env] -> [env, regsPush <+> code <+> additionalPush <+ Call (fLabel) <+ Binop ("+", L (skipValue), esp) <+> regsPop <+ Mov (eax, s)] 
+          esac
+      esac
+    }
+
+    fun boxedConst (n) {
+      L (makeBox (n))
+    }
+
     foldl (
       fun ([env, scode], i) {
         var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
@@ -499,23 +576,24 @@ fun compile (args, env, code) {
         -- the stack invariants for the symbolic interpreter
         -- are violated
         if env.isBarrier 
-        then case i of
-               LABEL (l, true) -> [env.dropBarrier, code <+ Label (l)]
-             | LABEL (l, _)    -> if hasStack (env, l)
-                                  then [retrieveStack (env, l), code <+ Label (l)]
-                                  else [env, code]
-                                  fi
-             | _               -> [env, code]
-             esac
+        then 
+          case i of
+            LABEL (l, true) -> [env.dropBarrier, code <+ Label (l)]
+          | LABEL (l, _)    -> if hasStack (env, l)
+                               then [retrieveStack (env, l), code <+ Label (l)]
+                               else [env, code]
+                               fi
+          | _               -> [env, code]
+          esac
         else
           case i of
             READ ->
               case env.allocate of
-                [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+                [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Call ("Lread") <+ Pop (ecx) <+ Pop (edx) <+ Mov (eax, s)]
               esac             
           | WRITE ->
               case env.pop of
-                [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+                [s, env] -> [env, code <+ Push (edx) <+ Push (ecx) <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) <+ Pop (ecx) <+ Pop (edx)]
               esac
         
            -- Some guidelines for generating function calls:
@@ -533,8 +611,94 @@ fun compile (args, env, code) {
            -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
            --    env.enterFunction to create a proper environment;
            -- 2. generate epilogue for END instruction.
-               
-          | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+          | CONST (n) -> 
+              case allocate (env) of
+                [s, env] -> [env, code <+> move (boxedConst (n), s)]
+              esac 
+          | LD (x) -> 
+              case allocate (env) of
+                [s, env] -> [env, code <+> move (loc(env, x), s)]
+              esac  
+          | LDA (x) -> 
+              case allocate (env) of
+                [s, env] -> [env, code <+> moveAddr (loc(env, x), s)]
+              esac
+          | ST (x) ->[env, code <+> move (peek (env), loc(env, x))]
+          -- STI is not used
+          --| STI ->
+          --    case pop2 (env) of
+          --      [s, x, env] -> [push (env, s), code <+> move (x, eax) <+> move (s, edx) <+ Mov (edx, I (0, eax))]
+          --    esac 
+          | STA -> case call (env, "Bsta", 3, {}) of [env, callCode] -> [env, code <+> callCode] esac
+          | BINOP (op) ->
+              case pop2 (env) of
+                [x, y, env] -> 
+                  case allocate (env) of 
+                    [s, env] -> 
+                      var binopCode = 
+                        if isSimpleArithmeticBinop (op) then simpleArithmeticBinop (x, op, y, s)
+                        elif isDivBinop (op)            then divBinop (x, op, y, s)
+                        elif isLogical (op)             then logicalBinop (x, op, y, s)
+                        else                                 cmpBinop (x, op, y, s) fi;
+                      [env, code <+ Sar1 (x) <+ Sar1 (y) <+> binopCode <+> toFixedNum (s)]
+                  esac 
+              esac
+          | LABEL (l, _)  -> [env, code <+ Label(l)]
+          | JMP (l)       -> [setBarrier(setStack(env, l)), code <+ Jmp (l)]
+          | DROP -> case pop (env) of [_, env] -> [env, code] esac
+          | CJMP (cond, l)-> 
+              case pop (env) of
+                [s, env] -> [setStack(env, l), code <+ Binop("cmp", boxedConst (0), s) <+ CJmp (cond, l)]
+              esac
+          | CALL (fLabel, nArgs) -> 
+            var name = if (compare (fLabel[0], '$') == 0) then "L" ++ substring (fLabel, 1, fLabel.length - 1) else fLabel fi; 
+            case call (env, name, nArgs, {}) of [env, callCode] -> [env, code <+> callCode] esac
+          | GLOBAL (x) -> [addGlobal (env, x), code]
+          | BEGIN (fLabel, _, nLocals) -> [enterFunction(env, fLabel, nLocals), code <+> prologue(fLabel)]
+          | END -> case epilogue(env) of [env, endCode] -> [env, code <+> endCode] esac
+          | STRING (s)-> 
+              case addString (env, s) of 
+                [env, name] -> case allocate (env) of
+                  [s, env] -> case call (env, "Bstring", 1, {}) of [env, callCode] -> [env, code <+> moveAddr (M (name), s) <+> callCode] esac
+                esac
+              esac
+          | ARRAY  (n)-> case call (env, "Barray", n, { boxedConst (n) }) of [env, callCode] -> [env, code <+> callCode] esac
+          | ELEM      -> case call (env, "Belem", 2, {}) of [env, callCode] -> [env, code <+> callCode] esac
+          | DUP       -> 
+            case pop (env) of 
+              [x, env] -> case allocate (env) of [s0, env] ->
+                            case allocate (env) of [s1, env] ->
+                              [env, code <+> move (x, s0) <+> move (x, s1)]
+                            esac 
+                          esac
+            esac
+          | SEXP(name, n)-> 
+            case allocate (env) of
+              [s, env] -> 
+                case call (env, "Bsexp", n + 1, { boxedConst (n + 1) }) of 
+                  [env, callCode] -> [env, code <+> move (L (makeBox (tagHash (name))), s) <+> callCode]
+                esac
+            esac
+          | PATT (p)    ->
+            case p of
+              Tag (t, size) ->
+                case allocate (env) of
+                  [s1, env] -> 
+                    case allocate (env) of
+                      [s2, env] ->  
+                        case call (env, "Btag", 3, {}) of
+                          [env, callCode] -> [env, code <+> move(L (makeBox (tagHash (t))), s1) <+> move(L (makeBox (size)), s2) <+> callCode]
+                        esac
+                    esac
+                esac
+              esac
+            | Array (size) ->
+              case allocate (env) of
+                [s, env] -> 
+                  case call (env, "Barray_patt", 2, {}) of
+                    [env, callCode] -> [env, code <+> move(L (makeBox (size)), s) <+> callCode]
+                  esac
+              esac
           esac
         fi
       }, [env, emptyBuffer ()], code)
