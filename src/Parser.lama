@@ -12,14 +12,72 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
--- Primary expression
-var primary = memo $ eta (decimal @ fun (x) {Const (stringInt (x))} |
-                          lident  @ fun (x) {Var (x)} |
-                          inbr (s ("("), exp, s (")"))),
-    exp = memo $ eta (failure ("expression parsing not implemented\n"));
+fun spaceBrackets (a, b) {
+  a |> lift (inbr (s ("("), b, s (")")))
+}
 
-var stmt = memo $ eta (failure ("statement parsing not implemented\n"));
+fun binop (op) {
+  [s (op), fun (x, op, y) { Binop (op, x, y)}]
+}
+
+
+-- Primary expression
+var primary = memo $ eta syntax (x=decimal {Const (stringInt (x))} |
+                                 x=lident  {Var (x)}               |
+                                 inbr[s ("("), exp, s (")")]);
+
+var exp = memo $ eta expr ({
+  [Left, {binop ("!!")}],
+  [Left, {binop ("&&")}],
+  [Nona, {
+    binop ("=="),
+    binop ("!="),
+    binop ("<="),
+    binop ("<"),
+    binop (">="),
+    binop (">")
+  }],
+  [Left, {
+    binop ("+"), 
+    binop ("-")
+  }],
+  [Left, {
+    binop ("*"), 
+    binop ("/"), 
+    binop ("%")
+  }]
+}, primary);
+
+
+-- Statements
+
+var whileStmt   = memo $ eta syntax (kWhile x=exp kDo y=stmtSeq kOd {While (x, y)});
+
+var doWhileStmt = memo $ eta syntax (kDo x=stmtSeq kWhile y=exp kOd {DoWhile (x, y)});
+
+var ifStmt      = memo $ eta syntax (kIf x=exp kThen y=stmtSeq z=ifVariation {If (x, y, z)});
+var ifVariation = memo $ eta syntax (kFi {Skip}           |
+                                     kElse x=stmtSeq kFi {x} |
+                                     kElif x=exp kThen y=stmtSeq z=ifVariation {If (x, y, z)});
+
+var forStmt     = memo $ eta syntax (kFor x=stmtSeq s[","] y=exp s[","] z=stmtSeq kDo w=stmtSeq kOd {Seq (x, While (y, Seq (w, z)))});
+
+var skipStmt    = memo $ eta syntax (kSkip {Skip});
+var assnStmt    = memo $ eta syntax (x=lident s [":="] y=exp {Assn (x, y)});
+var readStmt    = memo $ eta syntax (x=spaceBrackets [kRead, lident] {Read (x)});
+var writeStmt   = memo $ eta syntax (x=spaceBrackets [kWrite, exp] {Write (x)});
+
+var stmt        = memo $ eta syntax (skipStmt    |
+                                     assnStmt    |
+                                     readStmt    |
+                                     writeStmt   |
+                                     whileStmt   |
+                                     doWhileStmt |
+                                     forStmt     |
+                                     ifStmt);
    
+var stmtSeq     = memo $ eta syntax (x=stmt s [";"] y=stmtSeq {Seq (x, y)} | stmt);
+
 
 -- Public top-level parser
-public parse = stmt;
+public parse = stmtSeq;  
