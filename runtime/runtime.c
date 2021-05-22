@@ -75,6 +75,7 @@ int Llength (void *p) {
   return BOX(LEN(a->tag));
 }
 
+// bn - args number (valuesN+1tag); ... - values + tag
 extern void* Bsexp (int bn, ...) {
   va_list args; 
   int     i;    
@@ -150,7 +151,7 @@ void* Belem (void *p, int i0) {
   return (void*) ((int*) a->contents)[i];
 }
 
-void* Bsta (void *x, int i, void *v) {
+void* Bsta (void *v, int i, void *x) {
   if (UNBOXED(i)) {
     if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) UNBOX(v);
     else ((int*) x)[UNBOX(i)] = (int) v;

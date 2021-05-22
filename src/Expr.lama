@@ -59,15 +59,6 @@ public fun evalOp (op, l, r) {
 --        ElemRef (expr, expr)         |
 --        Builtin (string, expr list)
 
--- Helper function: checks that given name designates a regular variable in
--- a given state
-fun lookupVal (state, name) {
-  case state.lookup (name) of
-    x@Val (_) -> x
-  | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
-  esac
-}
-
 -- Helper function: checks that given name designates a function in
 -- a given state
 fun lookupFun (state, name) {
@@ -79,14 +70,24 @@ fun lookupFun (state, name) {
 
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
 }
 
 -- Helper function: adds a function in current scope
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
+fun processDeclarations(state, decls) {
+  while size(decls) > 0 do
+    state := case decls.hd of 
+      Var (variables) -> addNames(state, variables) |
+      Fun (name, args, body) -> addFunction(state, name, args, body) 
+    esac;
+    decls := decls.tl
+  od; state
+}
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -101,8 +102,181 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (configuration@[state, world], expression) {
+  -- printf("evalexpr %s\n", expression.string);
+
+  case expression of
+    Const (value) ->
+      [configuration, value] |
+    Sexp(name, valueExprs) ->
+      case evalList(configuration, valueExprs) of
+        [configuration, values] ->
+          [configuration, Sexp(name, listArray(values))]
+      esac |
+    Var (variableName) -> 
+      [configuration, lookup(state, variableName)] |
+    Ref (x) ->
+      [configuration, Ref(x)] |
+    String(value) ->
+      [configuration, value] |
+    Array(valueExprs) ->
+      case evalList(configuration, valueExprs) of
+        [configuration, values] ->
+          [configuration, listArray(values)]
+      esac |
+    Elem(arrExpr, indexExpr) ->
+      case evalList(configuration, {arrExpr, indexExpr}) of
+        [configuration, {Sexp(_, arr), index}] ->
+          [configuration, arr[index]] |
+        [configuration, {arr, index}] ->
+          [configuration, arr[index]]
+      esac |
+    ElemRef(arrExpr, indexExpr) ->
+      case evalList(configuration, {arrExpr, indexExpr}) of
+        [configuration, {arr, index}] ->
+          [configuration, ElemRef(arr, index)]
+      esac |
+    Binop (operation, subexpression1, subexpression2) ->
+      case evalList(configuration, {subexpression1, subexpression2}) of 
+        [configuration, {lhs, rhs}] ->
+          [configuration, evalOp(operation, lhs, rhs)]
+      esac |
+    Assn (subexpression1, subexpression2) -> 
+      case evalList(configuration, {subexpression1, subexpression2}) of
+        [configuration, {ElemRef(arr, index), value}] ->
+          arr[index] := value;
+          [configuration, value] |
+        [[state, world], {Ref(varName), value}] ->
+          [[state <- [varName, value], world], value]
+      esac |
+    Seq (subexpression1, subexpression2) -> 
+      case eval(configuration, subexpression1) of
+        [configuration, _] ->
+          eval(configuration, subexpression2)
+      esac |
+    If (condition, consequentBody, alternativeBody) ->
+      case eval(configuration, condition) of
+        [configuration, 0] -> eval(configuration, alternativeBody) |
+        [configuration, _] -> eval(configuration, consequentBody)
+      esac |
+    While (condition, body) ->
+      case eval(configuration, condition) of 
+        [configuration, 0] -> [configuration, Bottom] |
+        _ ->
+          eval(eval(configuration, body)[0], expression)
+      esac |
+    DoWhile (body, condition) ->
+      case eval(eval(configuration, body)[0], condition) of
+        [configuration, 0] -> [configuration, Bottom] |
+        [configuration, _] -> eval(configuration, expression)
+      esac |
+    Case (scrutinee, cases) ->
+      fun isArrayMatching(pattern, scrutinee) {
+        -- printf("Pattern3: %s\n", pattern.string);
+        -- printf("Scrutinee3: %s\n", arrayList(scrutinee).string);
+        case {pattern, arrayList(scrutinee)} of 
+          {pattern@#box, scrutinee@#box} ->
+            if size(pattern) != size(scrutinee) then
+              false
+            else
+              var pairs = zip(pattern, scrutinee);
+              foldl(
+                fun(acc, [pElem, sElem]){ isMatching(pElem, sElem) && acc }, 
+                true, 
+                pairs
+              )
+            fi |
+          {0, 0} -> true |
+          _ -> false
+        esac
+      }
+      fun isSexpMatching(pattern, scrutinee) {
+        -- printf("Pattern2: %s\n", pattern.string);
+        -- printf("Scrutinee2: %s\n", scrutinee.string);
+        case {pattern, scrutinee} of 
+          {Sexp(pName, pArr), Sexp(sName, sArr)} ->
+            (compare(pName, sName) == 0) && isArrayMatching(pArr, sArr)
+        | _ -> false
+        esac
+      }
+      fun isMatching(pattern, scrutinee) {
+        -- printf("Pattern: %s\n", pattern.string);
+        -- printf("Scrutinee: %s\n", scrutinee.string);
+        case pattern of
+          Wildcard -> true |
+          Const(x) -> x == scrutinee |
+          Array(arr)  -> isArrayMatching(arr, scrutinee) |
+          Sexp(_, arr) -> isSexpMatching(pattern, scrutinee) |
+          Named(_, pattern) -> isMatching(pattern, scrutinee)
+        esac
+      }
+      fun match(currCase : cases) {
+        case currCase of [pattern, expr] ->
+            if isMatching(pattern, lookup(state, scrutinee)) then
+              expr
+            else
+              case cases of 
+                0 -> failure("Pattern matching failed\n") |
+                _ -> match(cases)
+              esac
+            fi
+        esac
+      }
+      eval(configuration, match(cases)) |
+    Scope(defs, expr) ->
+      if size(defs) == 0 then
+        eval(configuration, expr)
+      else
+        state := enterScope(state);
+        state := processDeclarations(state, defs);
+        case eval([state, world], expr) of
+          [[state, world], returnValue] ->
+            [[leaveScope(state), world], returnValue]
+        esac
+      fi |
+    Call("read", _) -> 
+      var result = readWorld(world);
+      [[state, result.snd], result.fst] |
+    Call("write", expr) -> 
+      case eval(configuration, expr[0]) of
+        [[state, world], value] -> [[state, writeWorld(value, world)], Bottom]
+      esac |
+    Call("length", expr) -> 
+      case eval(configuration, expr[0]) of
+        [[state, world], value] -> [configuration, evalBuiltin("length", {value}, world)[0]]
+      esac |
+    Call(name, argExprs) ->
+      -- checkFun(state, name); -- Increases memory requirements by some extent
+      case lookup(state, name) of Fun(argNames, body) ->
+        var previousState = state;
+        state := case evalList(configuration, argExprs) of [[state, world], argValues] ->
+          -- printf("%s\n", argValues.string);
+          state := enterFunction(state);
+          -- foldl(fun(state, [argName, argValue]) {
+          --   addName(state, argName, argValue)
+          -- }, state, zip(argNames, argValues)) -- A bit greater memory usage in comparison to the while code
+          while size(argNames) > 0 do
+            state := addName(state, argNames.hd, argValues.hd);
+            argNames := argNames.tl;
+            argValues := argValues.tl
+          od; state
+        esac;
+
+        case eval([state, world], body) of [[state, world], ret] ->
+          -- Add new global state into previous state
+          state := leaveFunction(previousState, getGlobal(state));
+          -- printf("-%s\n", argValues.string);
+          [[state, world], ret]
+        esac
+
+      esac |
+    Ignore (subexpression) ->
+      [eval(configuration, subexpression)[0], Bottom] |
+    Skip ->
+      [configuration, Bottom] |
+    _ ->
+      failure ("Unknown expression '" ++ string(expression) ++ "' appeared at evaluation\n")
+  esac
 }
 
 
