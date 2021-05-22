@@ -427,6 +427,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -464,47 +465,259 @@ fun toFixedNum (r) {
   singletonBuffer (Sal1 (r)) <+ Or1 (r)
 }
 
+fun compileArgsPush (env, argsCount) {
+  fun go (curEnv, curArgsCount, result) {
+    case curArgsCount of
+      0 -> [curEnv, result]
+    | _ ->
+        var popRes = pop (curEnv);
+        var argMem = popRes.fst;
+        var newEnv = popRes.snd;
+
+        var newResult = result <+ Push (argMem);
+        go (newEnv, curArgsCount - 1, newResult)
+    esac
+  }
+  go (env, argsCount, emptyBuffer ())
+}
+
+fun processRegisters (regsList, action) {
+  fun go (curRegsList, result) {
+    case curRegsList of
+      {} -> result
+    | headReg : tailRegs ->
+        var newResult = result <+ action (headReg);
+        go (tailRegs, newResult, action)
+    esac
+  }
+  go (regsList, emptyBuffer (), action)
+}
+
+fun compileSaveLiveRegisters (liveRegs) {
+  processRegisters (liveRegs, fun (regName) { Push (regName) })
+}
+
+fun compileLoadLiveRegisters (liveRegs) {
+  processRegisters (reverse (liveRegs), fun (regName) { Pop (regName) })
+}
+
+fun compileCall (env, functionLabel, argsCount) {
+  var liveRegs = liveRegisters (env, argsCount);
+  var saveRegsCode = compileSaveLiveRegisters (liveRegs);
+  var loadRegistersCode = compileLoadLiveRegisters (liveRegs);
+
+  var pushArgsRes = compileArgsPush (env, argsCount);
+  var newEnv = pushArgsRes.fst;
+  var pushArgsCode = pushArgsRes.snd;
+
+  var allocRes = allocate (newEnv);
+  var ansMem = allocRes.fst;
+  var finalEnv = allocRes.snd;
+
+  var resCode = saveRegsCode <+> 
+                pushArgsCode <+
+                Call (functionLabel) <+
+                Binop ("+", L (wordSize * argsCount), esp) <+> 
+                loadRegistersCode <+
+                Mov (eax, ansMem);
+  [finalEnv, resCode]
+}
+
+fun compileSimpleBinOp (op, x, y) {
+  case y of
+    R (_) -> singletonBuffer (Binop (op, x, y))
+  | _ -> singletonBuffer (Mov (y, eax)) <+ 
+         Binop (op, x, eax) <+ 
+         Mov (eax, y)
+  esac
+}
+
+fun compileDiv (op, x, y) {
+  var resultReg = case op of
+    "/" -> eax
+  | "%" -> edx
+  esac;
+  singletonBuffer (Mov (y, eax)) <+
+  Cltd <+ 
+  IDiv (x) <+ 
+  Mov (resultReg, y)
+}
+
+fun compileBoolConversion (x) {
+  singletonBuffer (Binop ("^", edx, edx)) <+
+  Binop ("cmp", L (0), x) <+
+  Set ("ne", "%dl") <+
+  Mov (edx, x)
+}
+
+fun compileBoolBinOp (op, x, y) {
+  compileBoolConversion (x) <+>
+  compileBoolConversion (y) <+>
+  compileSimpleBinOp (op, x, y)
+}
+
+fun compileComparison (op, x, y) {
+  singletonBuffer (Binop ("^", edx, edx)) <+
+  Mov (x, eax) <+
+  Binop ("cmp", eax, y) <+
+  Set (suffix (op), "%dl") <+
+  Mov (edx, y)
+}
+
+fun compileSingleInstruction (env, instr) {
+  case instr of        
+   -- Some guidelines for generating function calls:
+   --
+   -- 1. generate instructions to save live registers on the X86 stack (use
+   --    env.liveRegisters (number of arguments);
+   -- 2. generate instructions to move actual parameters from the symbolic
+   --    stack to the hardware one;
+   -- 3. generate the call itself;
+   -- 4. discard the actual parameters from the stack;
+   -- 5. restore saved live registers.
+   --
+   -- Some guidelines for generating functions:
+   --
+   -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
+   --    env.enterFunction to create a proper environment;
+   -- 2. generate epilogue for END instruction.
+    LD (varName) ->
+      var allocateRes = allocate (env);
+      var mem = allocateRes.fst;
+      var newEnv = allocateRes.snd;
+
+      var varLoc = loc (newEnv, varName);
+      var newCode = move (varLoc, mem);
+      [newEnv, newCode]
+  | ST (varName) ->
+      var mem = peek (env);
+      var varLoc = loc (env, varName);
+      var newCode = move (mem, varLoc);
+      [env, newCode]
+  | CONST (n) ->
+      var allocateRes = allocate (env);
+      var mem = allocateRes.fst;
+      var newEnv = allocateRes.snd;
+
+      var newCode = singletonBuffer (Mov (L (makeBox(n)), mem));
+      [newEnv, newCode]
+  | DROP ->
+      var newEnv = pop (env).snd;
+      [newEnv, emptyBuffer ()]
+  | DUP ->
+      var top = peek (env);
+      var allocateRes = allocate (env);
+      var mem = allocateRes.fst;
+      var newEnv = allocateRes.snd;
+
+      var newCode = move (top, mem);
+      [newEnv, newCode]
+  | LDA (varName) ->
+      var varLocAllocateRes = allocate (env);
+      var varLocMem = varLocAllocateRes.fst;
+      var newEnv = varLocAllocateRes.snd;
+
+      var zeroAllocateRes = allocate (newEnv);
+      var zeroMem = zeroAllocateRes.fst;
+      var finalEnv = zeroAllocateRes.snd;
+
+      var varLoc = loc (finalEnv, varName);
+      var newCode = singletonBuffer (Lea (varLoc, eax)) <+
+                    Mov (eax, varLocMem) <+
+                    Mov (L (0), zeroMem);
+      [finalEnv, newCode]
+  | LABEL (label) ->
+      var newEnv = if isBarrier (env) then
+        retrieveStack (env, label)
+      else
+        env
+      fi;
+      var newCode = singletonBuffer (Label (label));
+      [newEnv, newCode]
+  | JMP (label) ->
+      var newEnv = setStack (env, label).setBarrier;
+      var newCode = singletonBuffer (Jmp (label));
+      [newEnv, newCode]
+  | CJMP (tp, label) ->
+      var x86Tp = case tp of
+        Z -> "e"
+      | NZ -> "ne"
+      esac;
+      var popRes = pop (env);
+      var mem = popRes.fst;
+      var newEnv = popRes.snd;
+
+      var finalEnv = setStack (newEnv, label);
+      var newCode = singletonBuffer (Binop ("cmp", L (makeBox (0)), mem)) <+
+                    CJmp (x86Tp, label);
+      [finalEnv, newCode]
+  | BINOP (op) ->
+      var popRes = pop (env);
+      var x = popRes.fst;
+      var newEnv = popRes.snd;
+      var y = peek (newEnv);
+
+      var opCodeFun = case op of
+        "+" -> compileSimpleBinOp
+      | "-" -> compileSimpleBinOp
+      | "*" -> compileSimpleBinOp
+      | "&&" -> compileBoolBinOp
+      | "!!" -> compileBoolBinOp
+      | "/" -> compileDiv
+      | "%" -> compileDiv
+      | _ -> compileComparison
+      esac;
+      var newCode = singletonBuffer (Sar1 (x)) <+ 
+                    Sar1 (y) <+> 
+                    opCodeFun (op, x, y) <+>
+                    toFixedNum (y);
+      [newEnv, newCode]
+  | GLOBAL (varName) ->
+      var newEnv = addGlobal (env, varName);
+      [newEnv, emptyBuffer ()]
+  | BEGIN (functionName, _, localsCount) ->
+      var newEnv = enterFunction (env, functionName, localsCount);
+      var newCode = prologue (functionName);
+      [newEnv, newCode]
+  | END -> epilogue (env)
+  | CALL (functionLabel, argsCount) -> compileCall (env, functionLabel, argsCount)
+  | STA -> compileCall (env, "Bsta", 3)
+  | ELEM -> compileCall (env, "Belem", 2)
+  | BUILTIN (functionName, argsCount) -> compileCall (env, "L" ++ functionName, argsCount)
+  | STRING (value) ->
+      var addRes = addString (env, value);
+      var newEnv = addRes.fst;
+      var stringLabel = "$" ++ addRes.snd;
+
+      var allocateRes = allocate (newEnv);
+      var mem = allocateRes.fst;
+      var nextEnv = allocateRes.snd;
+
+      var callRes = compileCall (nextEnv, "Bstring", 1);
+      var finalEnv = callRes.fst;
+      var callCode = callRes.snd;
+
+      var resCode = move (M (stringLabel), mem) <+>
+                    callCode;
+      [finalEnv, resCode]
+  | ARRAY (arraySize) -> compileCall (env, "Barray", arraySize + 1)
+  | SEXP (name, sexpSize) -> compileCall (env, "Bsexp", sexpSize + 2)
+  esac
+}
+
+fun compileFold ([env, scode], instr) {
+  var code = scode <+ Meta ("# " ++ showSMInsn (instr) ++ "\n");
+  var compileRes = compileSingleInstruction (env, instr);
+  var newEnv = compileRes.fst;
+  var newCode = compileRes.snd;
+  var resCode = code <+> newCode;
+  [newEnv, resCode]
+}
 
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {  
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
-        
-         -- Some guidelines for generating function calls:
-         --
-         -- 1. generate instructions to save live registers on the X86 stack (use
-         --    env.liveRegisters (number of arguments);
-         -- 2. generate instructions to move actual parameters from the symbolic
-         --    stack to the hardware one;
-         -- 3. generate the call itself;
-         -- 4. discard the actual parameters from the stack;
-         -- 5. restore saved live registers.
-         --
-         -- Some guidelines for generating functions:
-         --
-         -- 1. generate proper prologue for BEGIN instruction (use "prologue" helper); use
-         --    env.enterFunction to create a proper environment;
-         -- 2. generate epilogue for END instruction.
-               
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
-        esac
-      }, [env, emptyBuffer ()], code)
-  }
-
-  compile (env, code) 
+fun compile (env, code) {
+  foldl (compileFold, [env, emptyBuffer ()], code)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
