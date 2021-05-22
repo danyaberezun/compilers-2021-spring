@@ -18,13 +18,13 @@
 # define TO_SEXP(x) ((sexp*)((char*)(x)-2*sizeof(int)))
 
 typedef struct {
-  int tag; 
+  int tag;
   char contents[0];
-} data; 
+} data;
 
 typedef struct {
-  int tag; 
-  data contents; 
+  int tag;
+  data contents;
 } sexp;
 
 int Blength (void *p) {
@@ -33,25 +33,25 @@ int Blength (void *p) {
 }
 
 extern void* Bsexp (int bn, ...) {
-  va_list args; 
-  int     i;    
-  int     ai;  
-  size_t *p;  
-  sexp   *r;  
-  data   *d;  
+  va_list args;
+  int     i;
+  int     ai;
+  size_t *p;
+  sexp   *r;
+  data   *d;
   int n = UNBOX(bn);
 
   r = (sexp*) malloc (sizeof(int) * (n+1));
   d = &(r->contents);
   r->tag = 0;
-    
+
   d->tag = SEXP_TAG | ((n-1) << 3);
-  
+
   va_start(args, bn);
-  
+
   for (i=0; i<n-1; i++) {
     ai = va_arg(args, int);
-    
+
     p = (size_t*) ai;
     ((int*)d->contents)[i] = ai;
   }
@@ -65,21 +65,21 @@ extern void* Bsexp (int bn, ...) {
 
 void* Barray (int n0, ...) {
   int     n = UNBOX(n0);
-  va_list args; 
-  int     i, ai; 
-  data    *r; 
+  va_list args;
+  int     i, ai;
+  data    *r;
 
   r = (data*) malloc (sizeof(int) * (n+1));
 
   r->tag = ARRAY_TAG | (n << 3);
-  
+
   va_start(args, n);
-  
+
   for (i = 0; i<n; i++) {
     ai = va_arg(args, int);
     ((int*) r->contents)[i] = ai;
   }
-  
+
   va_end(args);
 
   return r->contents;
@@ -88,7 +88,7 @@ void* Barray (int n0, ...) {
 void* Bstring (void *p) {
   int   n = strlen (p);
   data *s;
-  
+
   s = (data*) malloc (n + 1 + sizeof (int));
   s->tag = STRING_TAG | (n << 3);
 
@@ -99,19 +99,19 @@ void* Bstring (void *p) {
 void* Belem (void *p, int i0) {
   int i = UNBOX(i0);
   data *a = TO_DATA(p);
-  
+
   if (TAG(a->tag) == STRING_TAG) {
     return (void*) BOX(a->contents[i]);
   }
-  
+
   return (void*) ((int*) a->contents)[i];
 }
 
-void* Bsta (int i0, void *v, void *x) {
+void* Bsta (void *v, int i0, void *x) {
   int i = UNBOX (i0);
-  
-  if (TAG(TO_DATA(x)->tag) == STRING_TAG) 
-    ((char*) x)[i] = UNBOX((int) v);  
+
+  if (TAG(TO_DATA(x)->tag) == STRING_TAG)
+    ((char*) x)[i] = UNBOX((int) v);
   else ((int*) x)[i] = (int) v;
 
   return v;
