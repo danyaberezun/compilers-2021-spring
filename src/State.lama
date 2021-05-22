@@ -7,13 +7,23 @@ import Parser;
 
 -- State with a stack of scopes; each scope is a map from names to
 -- their kind and values
-fun makeState (scopes) {
-  -- Searches a scope stack and performed a speficified action
+fun makeFullState ([scopes, outers, global, builtins]) {
+  fun makeState (s) {
+    makeFullState ([s, outers, global, builtins])
+  }
+
+  -- Searches a scope stack and performed a specified action
   -- on the found binding
-  fun lookup (name, action) {
+  fun lookup (name) {
     fun lookupInScopes (scopes) {
       case scopes of
-        {}         -> error (sprintf ("name ""%s"" is undefined", name), getLoc (name))
+        {}         -> case findMap (global, name) of
+                        None     -> case findMap (builtins, name) of
+                                      None     -> error (sprintf ("name ""%s"" undefined", name), getLoc (name))
+                                    | Some (x) -> x
+                                    esac
+                      | Some (x) -> x
+                      esac
       | s : scopes ->
          case findMap (s, name) of
            None     -> lookupInScopes (scopes)
@@ -24,81 +34,82 @@ fun makeState (scopes) {
 
     lookupInScopes (scopes)  
   }
+
+  fun checkName (name) {
+    case [scopes, global] of
+      [s : scopes, _] -> findMap (s, name)
+    | [_, Void] -> findMap (builtins, name)
+    | [_, _] -> findMap (global, name)
+    esac
+  }
   
   -- Makes and assignment in scopes
   fun assign (name, vl) {
     fun assignInScopes (scopes) {
       case scopes of
-        {}         -> error (sprintf ("name ""%s"" is undefined", name), getLoc (name))
+        {}         -> case findMap (global, name) of
+                        None -> error (sprintf ("name ""%s"" undefined", name), getLoc (name))
+                      | Some (_) -> [{}, outers, addMap (global, name, vl), builtins]
+                      esac
       | s : scopes ->
          case findMap (s, name) of
-           None     -> s : assignInScopes (scopes)
-         | Some (_) -> addMap (s, name, vl) : scopes
+           None     -> case assignInScopes (scopes) of [ss, o, g, b] -> [s : ss, o, g, b] esac
+         | Some (_) -> [addMap (s, name, vl) : scopes, outers, global, builtins]
          esac
       esac    
     }
 
-    makeState (assignInScopes (scopes))
+    makeFullState (assignInScopes (scopes))
   }
 
   -- Enters a new scope
-  fun enterScope () {
-    makeState (emptyMap (compare) : scopes)
+  fun enterScope () {    
+    case global of 
+      Void -> makeFullState ([{}, outers, emptyMap (compare), builtins])
+    | _    -> makeState (emptyMap (compare) : scopes)
+    esac
   }
 
   -- Leaves a scope
   fun leaveScope () {
-    makeState (scopes.tl)
+    case scopes of
+      scope:scopes -> makeState (scopes)
+    | _            -> makeFullState ([{}, outers, Void, builtins])
+    esac
   }
 
   -- Adds a name into a scope
   fun addName (name, vl) {
-    case scopes of
-      s : scopes ->
+    case [scopes, global] of
+      [s : scopes, _] ->
        case findMap (s, name) of
          None     -> makeState (addMap (s, name, vl) : scopes)
        | Some (_) -> error (sprintf ("duplicate ""%s"" name definition", name), getLoc (name))
        esac
+    | [_, Void] ->  case findMap (builtins, name) of
+                      None     -> makeFullState ([scopes, outers, global, addMap (builtins, name, vl)])
+                    | Some (_) -> error (sprintf ("duplicate ""%s"" name definition", name), getLoc (name))
+                    esac
+    | [_, _] -> case findMap (global, name) of
+                  None     -> makeFullState ([scopes, outers, addMap (global, name, vl), builtins])
+                | Some (_) -> error (sprintf ("duplicate ""%s"" name definition", name), getLoc (name))
+                esac
     esac
   }
 
   -- Enters a function; this drops all local scopes and creates a new one
   fun enterFunction () {
-    fun enterScopes (scopes) {
-      case scopes of        
-        {_, _}     -> scopes
-      | _ : scopes -> enterScopes (scopes)
-      esac
-    }
-
-    makeState (emptyMap (compare) : enterScopes (scopes))
+    makeFullState ([{emptyMap (compare)}, scopes : outers, global, builtins])
   }
 
   -- Leaves a function: replaces the global scope in the state with a given one
-  fun leaveFunction (global) {
-    fun replaceGlobal (scopes) {
-      case scopes of
-        {_, _}     -> global
-      | s : scopes -> s : replaceGlobal (scopes)
-      esac    
-    }
-
-    makeState (replaceGlobal (scopes))
-  }
-
-  --- Gets a global scope from a state
-  fun getGlobal () {
-    fun findGlobal (scopes) {
-      case scopes of
-        {_, _}     -> scopes
-      | _ : scopes -> findGlobal (scopes)
-      esac
-    }
-
-    findGlobal (scopes)
+  fun leaveFunction () {
+    case outers of outer : outers ->
+      makeFullState ([outer, outers, global, builtins])
+    esac
   }
   
-  [lookup, assign, enterScope, leaveScope, addName, enterFunction, leaveFunction, getGlobal]
+  [lookup, assign, enterScope, leaveScope, addName, enterFunction, leaveFunction, checkName]
 }
 
 -- Accessors functions
@@ -126,15 +137,15 @@ public fun enterFunction (state) {
   state [5] ()
 }
 
-public fun leaveFunction (state, global) {
-  state [6] (global)
+public fun leaveFunction (state) {
+  state [6] ()
 }
 
-public fun getGlobal (state) {
-  state [7] ()
+public fun checkName (state, name) {
+  state [7] (name)
 }
 
 -- Creates an empty state
 public fun emptyState () {
-  makeState ({})
+  makeFullState ([{}, {}, Void, emptyMap (compare)])
 }
