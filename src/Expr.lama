@@ -52,7 +52,6 @@ public fun evalOp (op, l, r) {
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
 --        Call    (string, expr list)  |
---        Ignore  (expr)               |
 --        String  (string)             |
 --        Array   (expr list)          |
 --        Elem    (expr, expr)         |
@@ -79,7 +78,7 @@ fun lookupFun (state, name) {
 
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+  foldl (fun (s, name) {s.addName (name,  Var (0))}, state, names)
 }
 
 -- Helper function: adds a function in current scope
@@ -101,8 +100,150 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun while_func(expr, stmt, c) {
+	var a1 = eval(c, expr);
+	c := a1.fst;
+	while a1.snd do 
+		c:=eval(c, stmt).fst;
+		a1 := eval(c, expr);
+		c := a1.fst 
+	od;
+	[c, Void]
+}
+
+fun do_while_func(expr, stmt, c) {
+	var a1;
+	do 
+		c:=eval(c, stmt).fst;
+		a1 := eval(c, expr);
+		c := a1.fst
+	while a1.snd 
+	od;
+	[c, Void]
+}
+
+fun makeScope(st, defs) {
+	case defs of 
+	d:dd ->
+	st := case d of
+		Var(e) -> addNames(st, e)|
+		Fun(a, e, b) -> addFunction(st, a, e, b)
+	esac;
+	makeScope(st, dd)
+	| 0 -> st
+	| d ->
+	st := case d of
+		Var(e) -> addNames(st, e)|
+		Fun(a, e, b) -> addFunction(st, a, e, b)
+	esac;
+	st
+	esac
+}
+
+
+fun matchList(l1, l2) {
+	case [l1, l2] of 
+		[l11:l1, l21:l2] -> if match(l11, l21) == 1 then  matchList(l1, l2) else  0 fi |
+		[{}, {}] ->  1 |
+		_ ->  0
+	esac
+}
+
+
+fun match(name, p) {
+	case [name, p] of 
+		[_, Wildcard] ->  1 |
+		[x, Decimal(d)] -> compare(d, x) == 0 |
+		[x, Sexp(n, a)] -> case x of Sexp(xn, xa) -> if compare(xn, n) == 0 then  matchList(arrayList(xa), a) else  0 fi esac |
+		[x, Named(_, p)] ->  match(x, p) |
+		[x, Array(a)] ->  case x of Array(x) -> matchList(x, a) esac 
+	esac
+}
+
+fun caseof(c@[s, w], name, cases) {
+	case cases of 
+		[p, b]:cases_rest -> case match(name, p) of 
+					1 -> eval(c, b) | 
+					0 -> caseof(c, name, cases_rest) 
+				esac  
+	esac
+}
+
+fun eval (c, expr) {
+	--printf(" %s ", expr.string);
+	case expr of
+		Skip -> [c, Void] |
+		Set(a, expr1) -> var a1 = eval(c, expr1); 
+				  case a1.fst of
+					[st, w] -> [[st <- [a, a1.snd], w], a1.snd] 
+				  esac |
+		Assn(a, expr1) -> var a1 = eval(c, expr1); 
+				  case eval(a1.fst, a) of
+					[[st, w], Ref(x)] -> [[st <- [x, a1.snd], w], a1.snd] |
+					[cNew, ElemRef(arr, i)] -> arr[i] := a1.snd; [cNew, a1.snd]	
+				  esac |
+		Seq(expr1, expr2) -> eval(eval(c, expr1).fst, expr2) |
+		If(expr1, expr2, expr3) ->  var a1 = eval(c,expr1); if a1.snd then eval(a1.fst, expr2) else eval(a1.fst, expr3) fi |
+		While(expr1, expr2) -> while_func(expr1, expr2, c) |
+		DoWhile(expr2, expr1) -> do_while_func(expr1, expr2, c) |  
+		Const(a) -> [c, a] |
+		Var(a) -> [c, lookup(c[0], a)] |
+		Ref(a) -> [c, Ref(a)] |
+		Ignore(e) -> [eval(c, e)[0], Void] |
+		Binop(a, expr1, expr2) ->
+			case a of
+				"+" -> var a1 = eval(c, expr1); [c, a1.snd + eval(a1.fst, expr2).snd] |
+				"-" -> var a1 = eval(c, expr1); [c, a1.snd - eval(a1.fst, expr2).snd] |
+				"*" -> var a1 = eval(c, expr1); [c, a1.snd * eval(a1.fst, expr2).snd] |
+				"/" -> var a1 = eval(c, expr1); [c, a1.snd / eval(a1.fst, expr2).snd] |
+				"%" -> var a1 = eval(c, expr1); [c, a1.snd % eval(a1.fst, expr2).snd] |
+				"<" -> var a1 = eval(c, expr1); [c, a1.snd < eval(a1.fst, expr2).snd] |
+				">" -> var a1 = eval(c, expr1); [c, a1.snd > eval(a1.fst, expr2).snd] |
+				"<=" -> var a1 = eval(c, expr1); [c, a1.snd <= eval(a1.fst, expr2).snd] |
+				">=" -> var a1 = eval(c, expr1); [c, a1.snd >= eval(a1.fst, expr2).snd] |
+				"==" -> var a1 = eval(c, expr1); [c, a1.snd == eval(a1.fst, expr2).snd] |
+				"!=" -> var a1 = eval(c, expr1); [c, a1.snd != eval(a1.fst, expr2).snd] |
+				"&&" -> var a1 = eval(c, expr1); [c, a1.snd && eval(a1.fst, expr2).snd] |
+				"!!" -> var a1 = eval(c, expr1); [c, a1.snd !! eval(a1.fst, expr2).snd]
+			esac |
+		Scope (d, e) -> var st; st := enterScope(c[0]); st := makeScope(st, d); case eval ([st, c[1]], e) of [[st, w], res] -> [[leaveScope(st), w], res] esac |
+		Call(f, args) -> case f of
+				 "read" -> var res = readWorld(c[1]); [[c[0], res[1]], res[0]] |
+				 "write" -> var a1 = eval(c, args[0]); [[a1.fst[0], writeWorld(a1.snd, a1.fst[1])], Void] |
+				 "length" -> var a1 = eval(c, args[0]); case a1.snd of Sexp(_, arr) -> [a1[0], length(arr)] | _ -> [a1[0], length(a1[1])] esac |
+				 _ -> 
+				 	case c of [st, w] -> 
+  						case lookup (st, f) of Fun (argvars, body) ->
+      							var globalState = st;
+      							case evalList (c, args) of [[st, w], values] ->
+          							st := enterFunction(st);
+          							while size(argvars) > 0 do
+            								st := addName(st, argvars[0], values[0]);
+            								argvars := argvars.tl;
+            								values := values.tl
+          							od;
+          							case eval ([st, w], body) of [[st, w], v] -> 
+              								[[leaveFunction(globalState, getGlobal(st)), w], v]
+          							esac
+      							esac
+  						esac 
+					esac 
+				 esac |
+		String (v) -> [c, v] |
+		Array (expr_list) -> case evalList(c, expr_list) of [c, list_elems] -> [c, listArray(list_elems)] esac |
+		Elem (e, i) -> case evalList (c, {e, i}) of [c, {list_elems, idx}] ->  case list_elems of 
+       				Sexp (_, list_elems) -> [c, list_elems[idx]]
+     				| _ -> [c, list_elems[idx]]  
+     			       esac esac |
+		ElemRef (e, i) -> case evalList (c, {e, i}) of [c, {list_elems, idx}] -> case list_elems of
+        				Sexp (_, list_elems) -> [c, ElemRef(list_elems, idx)]
+      					| _ -> [c, ElemRef(list_elems, idx)]
+ 				  esac esac |
+		Sexp(tag, expr_list) -> case evalList(c, expr_list) of [c, list_elems] -> [c, Sexp(tag, listArray(list_elems))] esac |
+		Case(name, cases) -> case eval(c, name) of [c, n] ->  caseof(c, n, cases) esac |
+		_ -> failure("The expression %s is not recognized!", expr.string)
+
+	esac
 }
 
 
