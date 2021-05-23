@@ -52,31 +52,69 @@ fun binop (op) {
   ]
 }
 
-var primary  = memo $ eta syntax (
-                                  -- decimal constant
-                                  loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+fun spaceBrackets (a, b) {
+  a |> lift (inbr (s ("("), b, s (")")))
+}
 
-                                  -- identifier
-                                  x=lident                                          {fun (a) {
-                                                                                       case a of
-                                                                                         Ref  -> Ref (x)
-                                                                                       | Void -> Ignore (Var (x))
-                                                                                       | _    -> Var (x)
-                                                                                       esac
-                                                                                    }} |
-                                  $(failure ("the rest of primary parsing in not implemented\n"))),
-    basic    = memo $ eta (expr ({[Right, {[s (":="),
-                                            fun (l, loc, r) {
-                                              fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                            }]}],
-                                  [Left , map (binop, {"!!"})],
-                                  [Left , map (binop, {"&&"})],
-                                  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                  [Left , map (binop, {"+", "-"})],
-                                  [Left , map (binop, {"*", "/", "%"})]
-                                 },
-                                 primary)),
-    exp      = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+var decimalExpr = memo $ eta syntax (loc=pos x=decimal { fun (a) { assertValue (a, Const (stringInt (x)), loc) } });
+
+var lidentExpr  = memo $ eta syntax (x=lident {
+  fun (a) {
+     case a of
+       Ref  -> Ref (x)
+     | Void -> Ignore (Var (x))
+     | _    -> Var (x)
+     esac
+  }
+});
+
+var skipExpr    = memo $ eta syntax (loc=pos kSkip { fun (a) { assertVoid (a, Skip, loc) } });
+
+var readExpr    = memo $ eta syntax (loc=pos x=spaceBrackets [kRead, lident] { fun (a) { assertVoid (a, Read (x), loc) } });
+
+var writeExpr   = memo $ eta syntax (loc=pos x=spaceBrackets [kWrite, basicExpr] { fun (a) { assertVoid (a, Write (x (Val)), loc) } });
+
+var whileExpr   = memo $ eta syntax (loc=pos kWhile x=basicExpr kDo y=exprSeq kOd { fun (a) { assertVoid (a, While (x (Val), y (Void)), loc) } });
+
+var doWhileExpr = memo $ eta syntax (kDo x=exprSeq kWhile y=basicExpr kOd { fun (a) { assertVoid (a, DoWhile (x (Void), y (Val)), loc) } });
+
+var ifExpr      = memo $ eta syntax (kIf x=basicExpr kThen y=exprSeq z=ifVariation { fun (a) { If (x (Val), y (a), z (a)) } });
+var ifVariation = memo $ eta syntax (
+  kFi { fun (a) { Skip } } |
+  kElse x=exprSeq kFi {x}  |
+  kElif x=basicExpr kThen y=exprSeq z=ifVariation { fun (a) { If (x (Val), y (a), z (a)) } }
+);
+
+var forExpr     = memo $ eta syntax (loc=pos kFor x=exprSeq s[","] y=basicExpr s[","] z=exprSeq kDo w=exprSeq kOd {
+  fun (a) { 
+    assertVoid (a, Seq (x (Void), While (y (Val), Seq (w (Void), z (Void)))), loc) 
+  }
+});
+
+var primaryExpr = memo $ eta syntax (
+  decimalExpr |
+  lidentExpr  | 
+  skipExpr    |
+  readExpr    |
+  writeExpr   |
+  whileExpr   |
+  doWhileExpr |
+  ifExpr      |
+  forExpr     |
+  inbr[s ("("), exprSeq, s (")")]
+);
+
+var basicExpr   = memo $ eta expr ({
+  [Right, {[s (":="), fun (l, loc, r) { fun (a) { assertValue (a, Assn (l (Ref), r (Val)), loc) } } ]}],
+  [Left , map (binop, {"!!"})],
+  [Left , map (binop, {"&&"})],
+  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+  [Left , map (binop, {"+", "-"})],
+  [Left , map (binop, {"*", "/", "%"})]},
+  primaryExpr
+);
+
+var exprSeq = memo $ eta syntax (basicExpr | s1=basicExpr s[";"] s2=exprSeq { fun (a) { Seq (s1 (Void), s2 (a)) } });
 
 -- Public top-level parser
-public parse = syntax (s=exp {s (Void)});
+public parse = syntax (s=exprSeq {s (Void)});
