@@ -485,6 +485,21 @@ fun toFixedNum (r) {
 }
 
 
+fun saveRegisters(env){
+
+  var lRs = liveRegisters (env, 0);
+  var push = emptyBuffer();
+  var pop = emptyBuffer();
+  
+  while size (lRs) > 0 do
+    push := singletonBuffer( Push (lRs[0]) ) <+> push;
+    pop  := pop <+Pop  (lRs[0]) ;
+    lRs := lRs.tl
+  od;
+
+  [push, pop]
+}
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
 fun compile (args, env, code) {  
@@ -534,6 +549,252 @@ fun compile (args, env, code) {
            --    env.enterFunction to create a proper environment;
            -- 2. generate epilogue for END instruction.
                
+        | GLOBAL (x) -> [addGlobal(env, x), code]
+
+
+        | CONST (n) ->
+            case env.allocate of
+  	          [s, env] -> [env, code <+> move (L (makeBox(n)), s) ]
+  	        esac
+        | LD (x) ->
+            case env.allocate of
+  	          [s, env] -> [env, code <+> move (env.loc (x), s)]
+  	        esac
+        | LDA (x) ->
+            case env.allocate of [s1, env] ->
+            case env.allocate of [s2, env] ->
+              [env, code <+ Lea (env.loc(x), eax) <+ Mov (eax, s1) <+ Mov (L (0), s2)]
+            esac esac
+
+        | ST (x) ->
+  	        [env, code <+> move (env.peek, env.loc (x)) ]
+        | STI ->
+          case env.pop2 of
+            [v,x, env] -> case env.allocate of [s, env] ->
+              [env, code <+ Mov (x, eax) <+ Mov (v, edx) <+ Mov (edx, I (0, eax)) <+ Mov (edx, s)]
+          esac esac
+
+
+        | BINOP (op) ->
+            case env.pop2 of [x, y, env] -> 
+            case env.allocate of [s, env] ->
+              code := code 
+                      <+  Sar1 (x)
+                      <+  Sar1 (y)
+                      <+> case op of
+  	                        "+"  -> emptyBuffer() <+> move (x, edx) <+ Binop (op, edx, y)
+                          | "-"  -> emptyBuffer() <+> move (x, edx) <+ Binop (op, edx, y)
+                          | "*"  -> emptyBuffer() <+> move (y, edx) <+ Binop (op, x, edx) <+> move (edx, y)
+                          | "/"  -> emptyBuffer() <+> move (y, eax) <+ Cltd <+ IDiv (x) <+> move (eax, s) 
+                          | "%"  -> emptyBuffer() <+> move (y, eax) <+ Cltd <+ IDiv (x) <+> move (edx, s)
+                          | "==" -> emptyBuffer() <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)
+                          | "!=" -> emptyBuffer() <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)
+                          | "<"  -> emptyBuffer() <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)
+                          | "<=" -> emptyBuffer() <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)
+                          | ">"  -> emptyBuffer() <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)
+                          | ">=" -> emptyBuffer() <+ Mov (L (0), eax) <+> move (x, edx) <+ Binop ("cmp", edx, y) <+ Set (suffix(op), "%al") <+> move (eax, s)
+                          | "&&" -> emptyBuffer() <+ Mov (L (0), eax) <+ Mov (eax, edx) <+ Binop ("cmp", eax, x) <+ Set (suffix("!="), "%al") <+ Binop ("cmp", edx, y) <+ Set (suffix ("!="), "%dl") <+ Binop (op, edx, eax) <+> move (eax,s)
+                          | "!!" -> emptyBuffer() <+ Mov (L (0), eax) <+ Mov (eax, edx) <+ Binop ("cmp", eax, x) <+ Set (suffix("!="), "%al") <+ Binop ("cmp", edx, y) <+ Set (suffix ("!="), "%dl") <+ Binop (op, edx, eax) <+> move (eax,s)
+                          esac
+                      <+> toFixedNum (s);
+              [env, code]    
+            esac esac
+
+        | DROP -> case env.pop of
+              [_, env] -> [env, code]
+            esac
+
+        | DUP -> case env.pop of
+              [x, env] -> 
+                var s1 = env.allocate;
+                var s2 = s1[1].allocate;
+                [s2[1], code <+> move (x, eax) <+> move (eax, s1[0]) <+> move (eax, s2[0])]
+            esac
+
+
+        | LABEL (l, _) -> [env, code <+ Label (l)]
+        | JMP (l) -> [env.setStack(l).setBarrier, code <+ Jmp (l)]
+        | CJMP (c, l) -> 
+            case env.pop of
+              [s, env] -> [env.setStack(l), code <+ Mov (L (makeBox(0)), eax) <+ Binop ("cmp", s, eax) <+ CJmp (c, l)]
+            esac
+
+
+
+        | CALL (f, n) -> 
+            var block = emptyBuffer();
+            var lRs = liveRegisters (env, n);
+
+            for var i; i := 0, i < n, i := i +1 do
+              block := case env.pop of [x, e] ->
+                         env := e;
+                         block <+ Push(x)
+                       esac    
+            od;
+            
+            block := block <+ Call(f) <+ Binop("+", L(n*wordSize), esp);
+            
+            while size (lRs) > 0 do
+              block := singletonBuffer( Push (lRs[0]) ) <+> block <+ Pop (lRs[0]);
+              lRs := lRs.tl
+            od;
+            case allocate(env) of [s, env] ->
+              [env, code <+> block <+ Mov(eax, s)]
+            esac
+        | BEGIN (f, a, l) -> [enterFunction(env, f, l), code <+> prologue(f)]
+        | END -> 
+            case epilogue (env) of [env, ret] ->
+              [env, code <+> ret]
+            esac
+
+
+        | BUILTIN ("read", n) ->
+            case saveRegisters(env) of [push, pop] -> 
+            case env.allocate of [s, env] -> 
+              [env, code <+> push <+ Call ("Lread") <+> pop <+ Mov (eax, s)]
+            esac esac            
+        | BUILTIN ("write", n) ->
+            case env.pop of [s, env] -> 
+              [env.push(s), code  <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax) ]
+             esac
+        | BUILTIN ("length", n) -> 
+            case env.pop of [x, env] ->
+            case saveRegisters(env) of [push, pop] ->
+            case env.allocate of [s, env] ->
+              [env, code <+> push <+ Push (x) <+ Call ("Llength") <+ Binop("+", L(wordSize), esp)  <+> pop <+ Mov (eax, s)]
+            esac esac esac
+        | STRING (x) -> 
+            case env.addString (x) of [env, name] ->
+            case saveRegisters(env) of[push, pop] ->
+            case env.allocate of [s, env] ->
+              [env, code 
+                  <+>push
+                  <+ Push (M ("$" ++ name))
+                  <+ Call ("Bstring")
+                  <+ Binop ("+", L (wordSize), esp)
+                  <+>pop
+                  <+ Mov (eax, s)
+              ]
+            esac esac esac
+        | ELEM -> 
+            case env.pop2 of [x, y, env] ->
+            case saveRegisters(env) of [push, pop] ->
+            case env.allocate of [s, env] ->
+              [env, code
+                  <+>push
+                  <+ Push (x)
+                  <+ Push (y)
+                  <+ Call ("Belem")
+                  <+ Binop ("+", L (2*wordSize), esp)
+                  <+>pop
+                  <+ Mov (eax, s)
+              ]
+            esac esac esac
+        | STA -> 
+            case env.pop of [x, env] ->      
+            case env.pop2 of [i, v, env] ->  
+            case saveRegisters(env) of [push, pop] ->
+            case env.allocate of [s, env] -> 
+              [env, code 
+                  <+>push
+                  <+ Push (x)
+                  <+ Push (i)
+                  <+ Push (v)
+                  <+ Call ("Bsta")
+                  <+ Binop ("+", L (3*wordSize), esp)
+                  <+>pop
+                  <+ Mov (eax, s)
+              ]
+            esac esac esac esac
+        | ARRAY (n) ->
+            var tmp;
+            var params = emptyBuffer();
+
+            for var i; i := 0, i< n, i := i +1 do
+              tmp := env.pop;
+              env := tmp[1];
+              params := params <+ Push (tmp[0])
+            od;
+            case saveRegisters(env) of [push, pop] ->
+            case env.allocate of
+              [s, env] -> [env, code 
+                              <+>push
+                              <+>params
+                              <+ Push (L (makeBox(n))) 
+                              <+ Call ("Barray") 
+                              <+ Binop ("+", L ((n+1)*wordSize), esp)
+                              <+>pop
+                              <+ Mov (eax, s)
+                           ]
+             esac esac
+            
+        | SEXP (sH, n) ->
+            var tmp;
+            var params = singletonBuffer( Push (L (makeBox((tagHash(sH))))) );
+            for var i; i := 0, i< n, i := i +1 do
+              tmp := pop(env);
+              env := tmp[1];
+              params := params <+ Push (tmp[0])
+            od;
+            
+            case saveRegisters(env) of [push, pop] ->
+            case allocate(env) of
+              [s, env] -> [env, code
+                              <+>push
+                              <+>params
+                              <+ Push (L (makeBox(n+1)))
+                              <+ Call ("Bsexp")
+                              <+ Binop ("+", L ((n+2)*wordSize), esp)
+                              <+>pop
+                              <+ Mov (eax, s)
+                          ]
+            esac esac
+
+
+        | PATT (x) ->
+            case x of 
+              Sexp (sH, n) ->
+                case pop( env ) of [x, env] ->
+                case saveRegisters(env) of [push, pop] ->
+                case allocate( env ) of [s, env] ->
+                  [env, code 
+                      <+>push
+                      <+ Push (L (makeBox (n)))
+                      <+ Push (L (makeBox((tagHash(sH) ))))
+                      <+ Push (x)
+                      <+ Call ("Btag")
+                      <+ Binop ("+", L ((3)*wordSize), esp)
+                      <+>pop
+                      <+ Mov (eax, s)
+                  ]
+                esac esac esac
+            | Array (n) ->
+                case pop (env ) of [x, env] ->
+                case saveRegisters(env) of [push, pop] ->
+                case allocate( env ) of [s, env] ->
+                  [env, code
+                      <+>push
+                      <+ Push (L (makeBox (n)))
+                      <+ Push (x)
+                      <+ Call ("Barray_patt")
+                      <+ Binop ("+", L ((2)*wordSize), esp)
+                      <+>pop
+                      <+ Mov (eax, s)
+                  ]
+                esac esac esac
+            esac
+
+        | META (x) ->
+            case env.addString ("\nCase Error\n") of [env, name] ->
+              [env, code 
+                  <+ Push (M ("$" ++ name))
+                  <+ Call ("Bstring")
+                  <+ Binop ("+", L (wordSize), esp)
+                  <+ Push (eax)
+                  <+ Call ("Lfailure")
+              ]
+            esac
+
           | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
           esac
         fi
