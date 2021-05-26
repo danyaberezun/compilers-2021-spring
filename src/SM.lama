@@ -57,12 +57,88 @@ fun fromLabel (env, lab) {
   env [0] (lab)
 }
 
+public fun countOp (op, x, y) {
+  case op of
+    "+" -> x + y
+  | "-" -> x - y
+  | "*" -> x * y
+  | "/" -> x / y
+  | "%" -> x % y
+  | "<" -> x < y
+  | ">" -> x > y
+  | "<=" -> x <= y
+  | ">=" -> x >= y
+  | "==" -> x == y
+  | "!=" -> x != y
+  | "&&" -> x && y
+  | "!!" -> x !! y
+  esac   
+}
+
+fun evalOneInstr (c@[stack, state, world], insn) {
+  case insn of
+    CONST (n) -> [[n:stack , state, world], Stay]
+  | READ -> 
+      case readWorld (world) of
+        [n, new_world] -> [[n:stack, state, new_world], Stay]
+      esac
+  | WRITE ->
+      case stack of
+        z:zs -> [[zs, state, writeWorld (z, world)], Stay]
+      esac
+  | LD (x) -> [[(state (x)):stack, state, world], Stay]
+  | LDA (x) -> [[(Ref (x)):stack, state, world], Stay]
+  | ST (x) -> 
+      case stack of
+        z:zs -> [[z:zs, state <- [x, z], world], Stay]
+      esac
+  | STI ->
+    case stack of
+      v:Ref (x):s -> [[v:s, state <- [x, v], world], Stay]
+    esac
+  | BINOP (op) -> 
+      case stack of
+        y:x:s ->
+          [[countOp(op, x, y):s, state, world], Stay]
+      esac
+  | LABEL (s) ->
+      [c, Stay]
+  | JMP (l) ->
+      [c, Jump (l)]
+  | CJMP (cond, l) ->
+      case stack of 
+        value:stack_tail -> 
+          case [value, cond] of
+            [0, "z"] -> [[stack_tail, state, world], Jump (l)]
+          | [1, "nz"] -> [[stack_tail, state, world], Jump (l)]
+          | _ -> [[stack_tail, state, world], Stay]
+          esac
+      esac
+  | DROP ->
+      case stack of
+        x:s -> [[s, state, world], Stay]
+      esac
+  | DUP ->
+      case stack of
+        x:s -> [[x:stack, state, world], Stay]
+      esac
+  esac
+}
+
 -- Stack machine interpreter. Takes an environment, an SM-configuration and a program,
 -- returns a final configuration
 fun eval (env, c, insns) {
-  failure ("SM eval not implemented\n")
+  case insns of
+    {} -> c
+  | i:is -> case evalOneInstr (c, i) of
+              [new_c, action] ->
+                case action of
+                  Stay -> eval (env, new_c, is)
+                | Jump (l) -> eval (env, new_c, fromLabel (env, l))
+                esac  
+            esac
+  esac
 }
-
 -- Runs a stack machine for a given input and a given program, returns an output
 public fun evalSM (input, insns) {
   eval (initEvalEnv (insns), [{}, emptyState, createWorld (input)], insns)[2].getOutput
@@ -98,9 +174,90 @@ fun genLabels (env, n) {
   listArray (inner (env, n))
 }
 
+fun compileSMrec (env, stmt) {
+  case stmt of
+    Var (x) -> [singletonBuffer (LD (x)), env]
+  | Const (x) -> [singletonBuffer (CONST (x)), env]
+  | Binop (op, x, y) -> 
+      case compileSMrec (env, x) of
+        [x, env] ->
+          case compileSMrec (env, y) of
+            [y, env] -> [(x <+> y) <+ BINOP (op), env]
+          esac
+      esac
+  | Ref (name) -> [singletonBuffer (LDA (name)), env]
+  | Ignore (e) ->
+    case compileSMrec (env, e) of
+      [v, env] -> [v <+ DROP, env]
+    esac
+  | Skip -> [emptyBuffer (), env]
+  | Assn (x, e) ->
+      case compileSMrec (env, x) of
+        [insts_x, env] ->
+          case compileSMrec (env, e) of
+            [insts_e, env] -> [insts_x <+> insts_e <+ STI, env]
+          esac
+      esac
+  | Read (x) -> 
+      case compileSMrec (env, x) of
+        [insts, env] -> [insts <+ READ <+ STI <+ DROP, env]
+      esac
+  | Write (e) -> 
+      case compileSMrec(env, e) of
+        [insts, env] -> [insts <+ WRITE, env]
+      esac
+  | Seq (s1, s2) -> 
+      case compileSMrec (env, s1) of
+        [stmts_1, env_1] ->
+          case compileSMrec (env_1, s2) of
+            [stmts_2, env_2] ->
+              [stmts_1 <+> stmts_2, env_2]
+          esac
+      esac
+  | If (e, b1, b2) -> 
+      case genLabels (env, 2) of
+        [else_label, exit_label, new_env] ->
+          case compileSMrec (new_env, b1) of
+            [stmts_b1, env_b1] ->
+              case compileSMrec (env_b1, b2) of
+                [stmts_b2, env_b2] ->
+                  case compileSMrec (env_b2, e) of
+                    [stmts_e, env_b2] -> [stmts_e <+ CJMP ("z", else_label) <+> stmts_b1 <+ JMP (exit_label) 
+                                          <+ LABEL (else_label) <+> stmts_b2 <+ LABEL (exit_label), env_b2]
+                  esac
+                  
+              esac
+          esac 
+      esac
+  | While (e, l) ->
+      case genLabels (env, 2) of
+        [start_label, body_label, new_env] ->
+          case compileSMrec (new_env, e) of
+            [stmts_e, new_env] ->
+              case compileSMrec (new_env, l) of
+                [stmts_l, env_l] ->
+                  [singletonBuffer (JMP (start_label)) <+ LABEL (body_label) <+> stmts_l <+ LABEL (start_label) <+> stmts_e <+ CJMP ("nz", body_label), env_l]
+              esac
+          esac
+          
+      esac 
+  | DoWhile (l, e) ->
+      case genLabels (env, 1) of
+        [start_label, new_env] ->
+          case compileSMrec (new_env, e) of
+            [stmts_e, new_env] ->
+              case compileSMrec (new_env, l) of
+                [stmts_l, env_l] ->
+                  [singletonBuffer(LABEL (start_label)) <+> stmts_l <+> stmts_e <+ CJMP("nz", start_label), env_l]
+            esac
+          esac
+      esac
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  (compileSMrec (initCompEnv (), stmt) [0]) . getBuffer
 }
