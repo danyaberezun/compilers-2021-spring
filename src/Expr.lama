@@ -101,8 +101,102 @@ fun evalList (c, exprs) {
   esac
 }
 
+fun addDecls (st, decls) {
+      foldl (fun (s, decl) { case decl of
+                                    Var (names) -> addNames (s, names)
+                                  | Fun (name, args, body) -> addFunction (s, name, args, body)
+                             esac}, st, decls)
+}
+
+fun matchLists(xs, ps) {
+    if length (xs) == size (ps)
+        then foldl (fun (r, [x, p]) { r && matche (p, x) }, true, zip (arrayList (xs), ps)) 
+        else false
+    fi
+}
+
+fun matche(pattern, scrutinee) {
+    case [pattern, scrutinee] of
+      [Array (p), Array (x)]        -> matchLists (x, p)
+    | [Sexp (s1, p), Sexp (s2, x)]  -> compare (s1, s2) == 0 && matchLists (x, p)
+    | [Named(_, p), _]                ->  case p of
+                                              None          -> true 
+                                            | Some(p) -> matche(p, scrutinee)
+                                          esac
+    | [Const (n), _]                -> scrutinee == n
+    | [Wildcard, _]                      -> true
+    | _                             -> false
+    esac
+}
+
+fun matchBranches(c, branches, cond) {
+    case branches of
+      [p, branch]: tail -> if (matche (p, cond)) 
+                                    then eval(c, branch) 
+                                    else matchBranches (c, tail, cond) 
+                                 fi
+    | {} -> failure ("Case match failure\n")
+    esac
+}
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Const (value)     -> [c, value]
+    | Var (x)           -> [c, lookup (s, x)]      
+    | Ref (x)           -> [c, expr]
+    | Binop (op, l, r)  -> case eval (c, l) of [cl, x] -> 
+                            case eval (cl, r) of [cr, y] -> [cr, evalOp (op, x, y)] esac 
+                         esac
+
+    | Skip              -> [c, Void]
+    | Assn (l, r)       -> case evalList (c, {l, r}) of 
+                                  [[ns, nw], {Ref (x), v}]   -> [[ns <- [x, v], nw], v] 
+                                | [c, {ElemRef (arr, i), v}] -> arr[i] := v; [c, v] 
+                           esac
+    | Seq (s1, s2)      -> eval(eval(c, s1)[0], s2)
+    | If (cond, ifT, ifF)   -> case eval (c, cond) of
+                                     [cc, 0] -> eval(cc, ifF)
+                                    |[cc, _] -> eval(cc, ifT)
+                               esac
+    | While (cond, body)    -> case eval(c, cond) of
+                                     [cc, 0] -> [cc, Void]
+                                    |[cc, _] -> eval(eval(cc, body)[0], expr)
+                               esac
+    | DoWhile (body, cond)  -> eval(c, Seq (body, While(cond, body)))
+    | Scope (defs, expr)    -> 
+                              var sSt = addDecls (enterScope (s), defs);
+                              case eval ([sSt, w], expr) of
+                                [cs@[ss, ws], vs] -> [[leaveScope (ss), ws], vs]
+                              esac
+    | Call (name, args)     -> case lookup (s, name) of         
+                                  Fun (ps, body) ->
+                                    case evalList (c, args) of 
+                                    [c1@[s1, w], vs] ->  case body of
+                                                                External -> case evalBuiltin(name, vs, w) of [result, newW] -> [[s, newW], result] esac 
+                                                              | _ -> 
+                                                                    var funSt = enterFunction (s1); 
+                                                                    var funArgSt = foldl(fun (s, [n, v]) { addName (s, n, v) }, funSt, zip (ps, vs));
+                                                                    case eval ([funArgSt, w], body) of 
+                                                                      [cb@[sb, wb], rb] -> [[leaveFunction (s, getGlobal (sb)), wb], rb]
+                                                                    esac
+                                                            esac
+                                    esac
+                                esac
+    | Ignore (expr)         -> [eval (c, expr)[0], Void]
+    | String (v)            -> [c, v]
+    | Array  (exprs)        -> case evalList (c, exprs) of [c, vals] -> [c, listArray(vals)] esac
+    | Sexp (name, exprs)    -> case evalList (c, exprs) of [c, vals] -> [c, Sexp (name, listArray(vals))] esac 
+    | Elem (expr, index)    -> case eval (c, expr) of
+                                  [c, Sexp (_, args)] -> case eval (c, index) of [c, iv] -> [c, args [iv]] esac
+                                | [c, arr]            -> case eval (c, index) of [c, iv] -> [c, arr  [iv]] esac
+                                esac 
+    | ElemRef (expr, index) -> case eval (c, expr) of
+                                    [c, Sexp (_, args)] -> case eval (c, index) of [c, i] -> [c, ElemRef (args, i)] esac
+                                  | [c, arr]            -> case eval (c, index) of [c, i] -> [c, ElemRef (arr, i)] esac
+                                  esac 
+    | Case (scrutinee, brs)   -> matchBranches (c, brs, lookup (s, scrutinee))
+    | _                       -> failure ("No match evalExpr")
+  esac
 }
 
 
