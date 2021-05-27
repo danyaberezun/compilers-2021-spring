@@ -95,16 +95,8 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
              esac
-           },
-           [{}, expr],
-           defs)
-  }
-
-  fun expandValDefs (defs, expr) {
-    foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
            },
            [{}, expr],
            defs)
@@ -114,10 +106,6 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {
              case def of
                f@Fun (_, _, _) -> [f : defs, expr]
-             | Val (ds) ->
-                 case expandValDefs (ds, expr) of
-                   [ds, expr] -> [Val (ds) : defs, expr]
-                 esac
              | Var (ds) ->             
                  case expandVarDefs (ds, expr) of
                    [ds, expr] -> [Var (ds) : defs, expr]
@@ -169,9 +157,10 @@ fun reifyPatternBindings (matched, brs) {
       | bindings ->
            [pat,
              expandScope (
-               {Val (map (
+               {Var (map (
                       fun ([name, path]) {
-                        [name, foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path)]
+                        var value = foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path);
+                        [name, Some (value)]
                       },
                       bindings))},
                br
@@ -226,9 +215,155 @@ var
                         esac, loc)}
     } |
   
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
+    loc=pos kSkip {
+      fun (expectedType) {
+        var res = returnST (Skip);
+        assertVoid (expectedType, res, loc)
+      }
+    } |
 
+    loc=pos kWhile condGetter=exp kDo bodyGetter=scopeExpr kOd {
+      fun (expectedType) {
+        var condST = condGetter (Val);
+        var bodyST = bodyGetter (Void);
+        var res = chainST ({condST, bodyST}) => fun ({cond, body}) {
+          While (cond, body)
+        };
+        assertVoid (expectedType, res, loc)
+      }
+    } |
+
+    loc=pos kDo bodyGetter=scopeExpr kWhile condGetter=exp kOd {
+      fun (expectedType) {
+        var bodyST = bodyGetter (Void);
+        var condST = condGetter (Val);
+        var res = chainST ({bodyST, condST}) => fun ({body, cond}) {
+          distributeScope (body, fun (bodyExpr) {
+            DoWhile (bodyExpr, cond)
+          })
+        };
+        assertVoid (expectedType, res, loc)
+      }
+    } |
+
+    loc=pos 
+    kFor initGetter=scopeExpr s[","] condGetter=exp s[","] stepGetter=exp kDo
+      bodyGetter=scopeExpr 
+    kOd {
+      fun (expectedType) {
+        var initST = initGetter (Void);
+        var condST = condGetter (Val);
+        var stepST = stepGetter (Void);
+        var bodyST = bodyGetter (Void);
+        var res = chainST ({initST, condST, stepST, bodyST}) => fun ({init, cond, step, body}) {
+          var loopBody = Seq (body, step);
+          var loop = While (cond, loopBody);
+          distributeScope (init, fun (initExpr) {
+            Seq (initExpr, loop)
+          })
+        };
+        assertVoid (expectedType, res, loc)
+      }
+    } |
+
+    kIf condGetter=exp kThen thenGetter=scopeExpr elseGetter=elseParser {
+      fun (expectedType) {
+        var condST = condGetter (Val);
+        var thenST = thenGetter (expectedType);
+        var elseST = elseGetter (expectedType);
+        chainST ({condST, thenST, elseST}) => fun ({cond, thenBody, elseBody}) {
+          If (cond, thenBody, elseBody)
+        }
+      }
+    } |
+
+    kCase scrutineeGetter=exp kOf patternsExprsGetter=patternsExprsParser kEsac {
+      fun (expectedType) {
+        var scrutineeST = scrutineeGetter (Val);
+        var patternsExprsST = patternsExprsGetter (expectedType);
+        
+        chainST ({scrutineeST, patternsExprsST, freshName}) => fun ({scrutinee, patternsExprs, varName}) {
+          var curDefinition = Var ({ varName });
+          var curAssn = Assn (Ref (varName), scrutinee);
+          var curCase = Case (varName, reifyPatternBindings (varName, patternsExprs));
+          var curExpr = Seq (Ignore (curAssn), curCase);
+          Scope ({curDefinition}, curExpr)
+        }
+      }
+    } |
+
+    inbr[s("("), scopeExpr, s(")")]
+  ),
+  patternExprParser = memo $ eta syntax (
+    pattern=patternParser s["->"] exprGetter=scopeExpr {
+      fun (expectedType) {
+        exprGetter (expectedType) => fun (expr) {
+          [pattern, expr]
+        }
+      }
+    }
+  ),
+  patternsExprsParser = memo $ eta syntax (
+    patternExprGetter=patternExprParser {
+      fun (expectedType) {
+        patternExprGetter (expectedType) => fun (patternExpr) {
+          {patternExpr}
+        }
+      }
+    } |
+    patternExprGetter=patternExprParser s["|"] tailGetter=patternsExprsParser {
+      fun (expectedType) {
+        var patternExprST = patternExprGetter (expectedType);
+        var tailST = tailGetter (expectedType);
+        chainST ({patternExprST, tailST}) => fun ({patternExpr, tail}) {
+          patternExpr : tail
+        }
+      }
+    }
+  ),
+  elseParser = memo $ eta syntax (
+    kElif condGetter=exp kThen thenGetter=scopeExpr elseGetter=elseParser {
+      fun (expectedType) {
+        var condST = condGetter (Val);
+        var thenST = thenGetter (expectedType);
+        var elseST = elseGetter (expectedType);
+        chainST ({condST, thenST, elseST}) => fun ({cond, thenBody, elseBody}) {
+          If (cond, thenBody, elseBody)
+        }
+      }
+    } |
+    -kElse scopeExpr -kFi |
+    loc=pos kFi {
+      fun (expectedType) {
+        var res = returnST (Skip);
+        assertVoid (expectedType, res, loc)
+      } 
+    }
+  ),
+  patternParser = memo $ eta syntax (
+    s["_"] {
+      Wildcard
+    } |
+    x=decimal {
+      var value = stringInt (x);
+      Const (value)
+    } |
+    s["["] patterns=list0[patternParser] s["]"] {
+      Array (patterns)
+    } |
+    sexpName=uident s["("] patterns=list0[patternParser] s[")"] {
+      Sexp (sexpName, patterns)
+    } |
+    sexpName=uident {
+      Sexp (sexpName, {})
+    } |
+    varName=lident s["@"] pattern=patternParser {
+      Named (varName, Some (pattern))
+    } |
+    varName=lident {
+      Named (varName, None)
+    }
+  ),
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
                                  fun (a) {assertValue (a, l (Ref) =>> fun (l) {
@@ -297,9 +432,6 @@ var
                                                       esac})] s[";"] {
       chainST (ds) => fun (ds) {Var (ds)}
     } |
-    kVal ds=list[syntax (x=lident s["="] e=basic {e (Val) => fun (e) {[x, e]}})] s[";"] {
-      chainST (ds) => fun (ds) {Val (ds)}
-    } |  
     kFun name=lident args=inbr[s("("), list0 (lident), s(")")] body=inbr[s("{"), scopeExpr, s("}")] {
       body (Weak) => fun (body) {Fun (name, args, body)}
     }

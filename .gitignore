@@ -1,0 +1,7 @@
+*.i
+*.o
+*.s
+src/lama-impl
+regression/test*
+regression/expressions/generated*
+regression/deep-expressions/generated*
