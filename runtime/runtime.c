@@ -10,7 +10,7 @@
 # define STRING_TAG  0x00000001
 # define ARRAY_TAG   0x00000003
 # define SEXP_TAG    0x00000005
-# define CLOSURE_TAG 0x00000007 
+# define CLOSURE_TAG 0x00000007
 # define UNBOXED_TAG 0x00000009 // Not actually a tag; used to return from LkindOf
 
 # define LEN(x) ((x & 0xFFFFFFF8) >> 3)
@@ -28,13 +28,13 @@
 	 != STRING_TAG) failure ("string value expected in %s\n", memo); while (0)
 
 typedef struct {
-  int tag; 
+  int tag;
   char contents[0];
-} data; 
+} data;
 
 typedef struct {
-  int tag; 
-  data contents; 
+  int tag;
+  data contents;
 } sexp;
 
 static char* chars = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'";
@@ -51,7 +51,7 @@ char* de_hash (int n) {
   indent++; print_indent ();
   printf ("de_hash: tag: %d\n", n); fflush (stdout);
 #endif
-  
+
   *p-- = 0;
 
   while (n != 0) {
@@ -66,7 +66,7 @@ char* de_hash (int n) {
 #ifdef DEBUG_PRINT
   indent--;
 #endif
-  
+
   return ++p;
 }
 
@@ -76,25 +76,25 @@ int Llength (void *p) {
 }
 
 extern void* Bsexp (int bn, ...) {
-  va_list args; 
-  int     i;    
-  int     ai;  
-  size_t *p;  
-  sexp   *r;  
-  data   *d;  
+  va_list args;
+  int     i;
+  int     ai;
+  size_t *p;
+  sexp   *r;
+  data   *d;
   int n = UNBOX(bn);
 
   r = (sexp*) malloc (sizeof(int) * (n+1));
   d = &(r->contents);
   r->tag = 0;
-    
+
   d->tag = SEXP_TAG | ((n-1) << 3);
-  
+
   va_start(args, bn);
-  
+
   for (i=0; i<n-1; i++) {
     ai = va_arg(args, int);
-    
+
     p = (size_t*) ai;
     ((int*)d->contents)[i] = ai;
   }
@@ -108,21 +108,21 @@ extern void* Bsexp (int bn, ...) {
 
 void* Barray (int n0, ...) {
   int     n = UNBOX(n0);
-  va_list args; 
-  int     i, ai; 
-  data    *r; 
+  va_list args;
+  int     i, ai;
+  data    *r;
 
   r = (data*) malloc (sizeof(int) * (n+1));
 
   r->tag = ARRAY_TAG | (n << 3);
-  
+
   va_start(args, n);
-  
+
   for (i = 0; i<n; i++) {
     ai = va_arg(args, int);
     ((int*) r->contents)[i] = ai;
   }
-  
+
   va_end(args);
 
   return r->contents;
@@ -131,7 +131,7 @@ void* Barray (int n0, ...) {
 void* Bstring (void *p) {
   int   n = strlen (p);
   data *s;
-  
+
   s = (data*) malloc (n + 1 + sizeof (int));
   s->tag = STRING_TAG | (n << 3);
 
@@ -142,15 +142,15 @@ void* Bstring (void *p) {
 void* Belem (void *p, int i0) {
   int i = UNBOX(i0);
   data *a = TO_DATA(p);
-  
+
   if (TAG(a->tag) == STRING_TAG) {
     return (void*) BOX(a->contents[i]);
   }
-  
+
   return (void*) ((int*) a->contents)[i];
 }
 
-void* Bsta (void *x, int i, void *v) {
+void* Bsta (void *v, int i, void *x) {
   if (UNBOXED(i)) {
     if (TAG(TO_DATA(x)->tag) == STRING_TAG)((char*) x)[UNBOX(i)] = (char) UNBOX(v);
     else ((int*) x)[UNBOX(i)] = (int) v;
@@ -164,8 +164,8 @@ void* Bsta (void *x, int i, void *v) {
 }
 
 extern int Btag (void *d, int t, int n) {
-  data *r; 
-  
+  data *r;
+
   if (UNBOXED(d)) return BOX(0);
   else {
     r = TO_DATA(d);
@@ -179,8 +179,8 @@ extern int Btag (void *d, int t, int n) {
 }
 
 extern int Barray_patt (void *d, int n) {
-  data *r; 
-  
+  data *r;
+
   if (UNBOXED(d)) return BOX(0);
   else {
     r = TO_DATA(d);
@@ -189,19 +189,19 @@ extern int Barray_patt (void *d, int n) {
 }
 
 static void failure (char *s, ...);
-  
+
 extern int Bstring_patt (void *x, void *y) {
   data *rx = (data *) BOX (NULL),
        *ry = (data *) BOX (NULL);
-  
+
   ASSERT_STRING(".string_patt:2", y);
-      
+
   if (UNBOXED(x)) return BOX(0);
   else {
     rx = TO_DATA(x); ry = TO_DATA(y);
 
     if (TAG(rx->tag) != STRING_TAG) return BOX(0);
-    
+
     return BOX(strcmp (rx->contents, ry->contents) == 0 ? 1 : 0);
   }
 }
@@ -254,7 +254,7 @@ static void vprintStringBuf (char *fmt, va_list args) {
   buf     = &stringBuf.contents[stringBuf.ptr];
   rest    = stringBuf.len - stringBuf.ptr;
   written = vsnprintf (buf, rest, fmt, args);
-  
+
   if (written >= rest) {
     extendStringBuf ();
     goto again;
@@ -284,10 +284,10 @@ static void printValue (void *p) {
       printStringBuf ("0x%x", p);
       return;
     }
-    
+
     a = TO_DATA(p);
 
-    switch (TAG(a->tag)) {      
+    switch (TAG(a->tag)) {
     case STRING_TAG:
       printStringBuf ("\"%s\"", a->contents);
       break;
@@ -297,12 +297,12 @@ static void printValue (void *p) {
       for (i = 0; i < LEN(a->tag); i++) {
 	if (i) printValue ((void*)((int*) a->contents)[i]);
 	else printStringBuf ("0x%x", (void*)((int*) a->contents)[i]);
-	
+
 	if (i != LEN(a->tag) - 1) printStringBuf (", ");
       }
       printStringBuf (">");
       break;
-      
+
     case ARRAY_TAG:
       printStringBuf ("[");
       for (i = 0; i < LEN(a->tag); i++) {
@@ -311,17 +311,17 @@ static void printValue (void *p) {
       }
       printStringBuf ("]");
       break;
-      
+
     case SEXP_TAG: {
 #ifndef DEBUG_PRINT
       char * tag = de_hash (TO_SEXP(p)->tag);
 #else
       char * tag = de_hash (GET_SEXP_TAG(TO_SEXP(p)->tag));
-#endif      
-      
+#endif
+
       if (strcmp (tag, "cons") == 0) {
 	data *b = a;
-	
+
 	printStringBuf ("{");
 
 	while (LEN(a->tag)) {
@@ -333,7 +333,7 @@ static void printValue (void *p) {
 	  }
 	  else break;
 	}
-	
+
 	printStringBuf ("}");
       }
       else {
@@ -372,7 +372,7 @@ static void failure (char *s, ...) {
 static void fix_unboxed (char *s, va_list va) {
   size_t *p = (size_t*)va;
   int i = 0;
-  
+
   while (*s) {
     if (*s == '%') {
       size_t n = p [i];
@@ -387,7 +387,7 @@ static void fix_unboxed (char *s, va_list va) {
 
 extern void Lfailure (char *s, ...) {
   va_list args;
-  
+
   va_start    (args, s);
   fix_unboxed (s, args);
   vfailure    (s, args);
