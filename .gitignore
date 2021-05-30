@@ -1,0 +1,12 @@
+*.i
+*.o
+*.s
+*.sm
+regression/test???
+regression/test???.log
+regression/test???.run
+regression/expressions/generated?????
+regression/expressions/generated?????.log
+regression/deep-expressions/generated?????
+regression/deep-expressions/generated?????.log
+lama-impl

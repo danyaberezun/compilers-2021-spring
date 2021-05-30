@@ -65,6 +65,10 @@ fun inbr (l, p, r) {
   syntax (-l p -r)
 }
 
+fun inRoundBrackets(p) {
+  inbr(s ("("), p, s (")"))
+}
+
 -- A helper function to be used with super-combinator "expr"
 fun binop (op) {
   [syntax (pos -s[op]), fun (l, loc, r) {
@@ -91,35 +95,23 @@ fun list (item) {
 -- Helper AST function: expands a "raw" scope expression, reifying
 -- initializers into assignments
 fun expandScope (defs, expr) {
-  fun expandVarDefs (defs, expr) {
+  fun expandDefs (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
              esac
            },
            [{}, expr],
            defs)
   }
 
-  fun expandValDefs (defs, expr) {
-    foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
-           },
-           [{}, expr],
-           defs)
-  }
-  
   case 
     foldr (fun ([defs, expr], def) {
              case def of
                f@Fun (_, _, _) -> [f : defs, expr]
-             | Val (ds) ->
-                 case expandValDefs (ds, expr) of
-                   [ds, expr] -> [Val (ds) : defs, expr]
-                 esac
-             | Var (ds) ->             
-                 case expandVarDefs (ds, expr) of
+             | Var (ds)      ->
+                 case expandDefs (ds, expr) of
                    [ds, expr] -> [Var (ds) : defs, expr]
                  esac
              esac
@@ -159,7 +151,8 @@ fun reifyPatternBindings (matched, brs) {
         case p of
           Sexp  (_, ps)   -> collectList (path, ps)
         | Array (ps)      -> collectList (path, ps)
-        | Named (name, p) -> [name, path] : collectBindings (path, p)
+        | Named (name, Some (p)) -> [name, path] : collectBindings (path, p)
+        | Named (name, None) -> {[name, path]}
         |  _              -> {}
         esac
       }
@@ -169,9 +162,10 @@ fun reifyPatternBindings (matched, brs) {
       | bindings ->
            [pat,
              expandScope (
-               {Val (map (
+               {Var (map (
                       fun ([name, path]) {
-                        [name, foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path)]
+                        var value = foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path); 
+                        [name, Some (value)]
                       },
                       bindings))},
                br
@@ -182,140 +176,259 @@ fun reifyPatternBindings (matched, brs) {
   )
 }
 
-var
-  primary = memo $ eta syntax (
-    -- array constant
-    loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {
-      fun (a) {assertValue (a, chainST (x) => fun (x) {Array (x)}, loc)}
-    } |
-                                      
-    -- string constant
-    loc=pos x=strlit {
-      fun (a) {assertValue (a, returnST $ String (x), loc)}
-    } |
-                                      
-    -- character literal
-    loc=pos x=chrlit {
-      fun (a) {assertValue (a, returnST $ Const (x), loc)}
-    } |
-                                      
-    -- decimal constant
-    loc=pos x=decimal {
-      fun (a) {assertValue (a, returnST $ Const (stringInt (x)), loc)}
-    } |
-                                      
-    -- identifier
-    loc=pos x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {
-      fun (a) {
-        case args of
-          None -> returnST $ case a of
-                               Ref  -> Ref (x)
-                             | Void -> Ignore (Var (x))
-                             | _    -> Var (x)
-                             esac
-        | Some (args) -> assertValue (a, chainST (args) => fun (args) {Call (x, args)}, loc)
-        esac}
-    } |
+var binopParsers = {
+  [Right, {[s (":="), fun (l, loc, r) {
+                        fun (atr) {
+                          assertValue (atr, l (Ref) =>> fun (tL) {
+                                            r (Val) => fun (tR) {
+                                              Assn (tL, tR)
+                                            }}, loc)
+                        }
+                      }]}],
+  [Left , map (binop, {"!!"})],
+  [Left , map (binop, {"&&"})],
+  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+  [Left , map (binop, {"+", "-"})],
+  [Left , map (binop, {"*", "/", "%"})]
+};
 
-    -- S-expression
-    loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e (Val)})), s(")")]? {
-      fun (a) {
-        assertValue (a, case args of
-                          None        -> returnST $ Sexp (x, {})
-                        | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
-                        esac, loc)}
-    } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
-
-  basic = memo $ eta (
-    expr ({[Right, {[s (":="), fun (l, loc, r) {
-                                 fun (a) {assertValue (a, l (Ref) =>> fun (l) {
-                                                          r (Val) =>  fun (r) {
-                                                          Assn (l, r)
-                                                          }},
-                                                        loc)
-                                 }
-                               }]}],
-           [Left , map (binop, {"!!"})],
-           [Left , map (binop, {"&&"})],
-           [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-           [Left , map (binop, {"+", "-"})],
-           [Left , map (binop, {"*", "/", "%"})]
-          },
-          postfix)
-  ),
-  
-  postfix = memo $ eta syntax (
-    loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Val))})* {
-      fun (a) {
-        foldl (fun (e, p) {                                                                            
-                 case p of                                                                                   
-                   Index (i) ->
-                    fun (a) {
-                      case a of
-                        Ref -> e (Val) =>> fun (e) {
-                               i       =>  fun (i) {
-                                 ElemRef (e, i)
-                               }} 
-                      | _   -> assertValue (a, e (Val) =>> fun (e) {
-                                               i       =>  fun (i) {
-                                               Elem (e, i)
-                                               }},
-                                            loc)
-                      esac
-                    }
-                 esac                                                                            
-               }, e, ps) (a)
-      }}
-  ),
-  
-  scopeExpr  = memo $ eta syntax (ds=definition* e=exp? {
-    fun (a) {
-      fun (e) {
-        case ds of
-          {} -> e
-        | _  -> chainST (ds) =>> fun (ds) {
-                e            =>  fun (e)  {
-                  expandScope (ds, e)
-                }}
-        esac
-      }
-      (case e of 
-        Some (e) -> e (a)
-      | _        -> returnST $ Skip
-      esac)
-    }}                                                                  
-  ),
-  
-  definition = memo $ eta syntax (
-    kVar ds=list[syntax (x=lident e=(-s["="] basic)? {case e of
-                                                        None -> returnST $ [x, None]
-                                                      | Some (e) ->
-                                                          e (Val) => fun (e) {[x, Some (e)]}
-                                                      esac})] s[";"] {
-      chainST (ds) => fun (ds) {Var (ds)}
-    } |
-    kVal ds=list[syntax (x=lident s["="] e=basic {e (Val) => fun (e) {[x, e]}})] s[";"] {
-      chainST (ds) => fun (ds) {Val (ds)}
-    } |  
-    kFun name=lident args=inbr[s("("), list0 (lident), s(")")] body=inbr[s("{"), scopeExpr, s("}")] {
-      body (Weak) => fun (body) {Fun (name, args, body)}
+var primary = memo $ eta syntax (
+  loc=pos x=inbr[s("["), list0(argParser), s("]")] {
+    fun (atr) {
+      assertValue (atr, chainST (x) => fun (t) {Array (t)}, loc)
     }
-  ),
-  
-  exp = memo $ eta syntax (
-    basic
-  | s1=basic s[";"] s2=exp {
-     fun (a) {
-       s1 (Void) =>> fun (s1) {
-       s2 (a)    =>  fun (s2) {
-         Seq (s1, s2)
-       }}
-     }
-   }
-  );
+  } |
+  loc=pos x=strlit {
+    fun (atr) {
+      assertValue (atr, returnST $ String (x), loc)
+    }
+  } |
+  loc=pos x=chrlit {
+    fun (atr) {
+      assertValue (atr, returnST $ Const (x), loc)
+    }
+  } |
+  loc=pos n=decimal {
+    fun (atr) {
+      assertValue (atr, returnST $ Const (stringInt (n)), loc)
+    }
+  } |
+  loc=pos func=lident args=inRoundBrackets[list0 (argParser)] {
+    fun (atr) {
+      assertValue (atr, chainST (args) => fun (tArgs) {Call (func, tArgs)}, loc)
+    }
+  } |
+  loc=pos x=lident {
+    fun (atr) {
+      returnST $ case atr of
+        Ref -> Ref (x)
+      | Void -> Ignore (Var (x))
+      | _ -> Var (x)
+      esac
+    }
+  } |
+  loc=pos name=uident args=inRoundBrackets[list0 (argParser)]? {
+    fun (atr) {
+      var realArgs = case args of
+                       None -> {}
+                     | Some (x) -> x
+                     esac;
+      assertValue (atr, chainST (realArgs) => fun (tRealArgs) {Sexp (name, tRealArgs)}, loc)
+    }
+  } |
+  loc=pos kSkip {
+    fun (atr) {
+      assertVoid (atr, returnST $ Skip, loc)
+    }
+  } |
+  kIf cond=exp kThen body=scopeExpr elseTail=elsePart {
+    fun (atr) {
+      chainST ({cond (Val), body (atr), elseTail (atr)}) => fun ({tCond, tBody, tElse}) {
+        If (tCond, tBody, tElse)
+      }
+    }
+  } |
+  loc=pos kWhile cond=exp kDo body=scopeExpr kOd {
+    fun (atr) {
+      var node = chainST ({cond (Val), body (Void)}) => fun ({tCond, tBody}) {While (tCond, tBody)};
+      assertVoid(atr, node, loc)
+    }
+  } |
+  loc=pos kDo body=scopeExpr kWhile cond=exp kOd {
+    fun (atr) {
+      var node = chainST ({body (Void), cond (Val)}) => fun ({tBody, tCond}) {
+        distributeScope (
+          tBody,
+          fun (loopBody) {
+            DoWhile (loopBody, tCond)
+          }
+        )
+      };
+      assertVoid(atr, node, loc)
+    }
+  } |
+ loc=pos kFor init=scopeExpr s[","] cond=exp s[","] step=exp kDo body=scopeExpr kOd {
+   fun (atr) {
+      var node = chainST ({init (Void), cond (Val), step (Void), body (Void)}) => fun ({tInit, tCond, tStep, tBody}) {
+        var fullBody = Seq (tBody, tStep);
+        var whilePart = While (tCond, fullBody);
+        distributeScope (
+          tInit,
+          fun (initPart) {
+            Seq (initPart, whilePart)
+          }
+        )  
+      };
+      assertVoid(atr, node, loc)
+    }
+  } |
+  kCase scrutinee=exp kOf cases=listBy[caseParser, s("|")] kEsac {
+    fun (atr) {
+      var atrCases = map (fun (curCase) {curCase (atr)}, cases);
+      scrutinee (Val) =>> fun (tScrutinee) {
+      chainST (atrCases) =>> fun (tCases) {
+      freshName => fun (tName) {
+        var newDef = Var ({tName});
+        var newAssn = Assn (Ref (tName), tScrutinee);
+        var reifiedCases = reifyPatternBindings (tName, tCases);
+        Scope({newDef}, Seq (Ignore (newAssn), Case (tName, reifiedCases)))
+      }}}
+    }
+  } |
+  inRoundBrackets[scopeExpr]
+),
+argParser = memo $ eta syntax (arg=exp {arg (Val)}),
+elsePart = memo $ eta syntax (
+  kElif cond=exp kThen body=scopeExpr elseTail=elsePart {
+    fun (atr) {
+      chainST ({cond (Val), body (atr), elseTail (atr)}) => fun ({tCond, tBody, tElse}) {
+        If (tCond, tBody, tElse)
+      }
+    }
+  } |
+  kElse body=scopeExpr kFi {
+    body
+  } |
+  loc=pos kFi {
+    fun (atr) {
+      assertVoid (atr, returnST $ Skip, loc)
+    }
+  }
+),
+patternPaser = memo $ eta syntax (
+  s["_"] {
+    Wildcard
+  } |
+  x=decimal {
+    Const (stringInt (x))
+  } |
+  s["["] elems=list0[patternPaser] s["]"] {
+    Array (elems)
+  } |
+  name=uident s["("] elems=list0[patternPaser] s[")"] {
+    Sexp (name, elems)
+  } |
+  name=uident {
+    Sexp (name, {})
+  } |
+  name=lident s["@"] pattern=patternPaser {
+    Named (name, Some (pattern))
+  } |
+  name=lident {
+    Named (name, None)
+  }
+),
+caseParser = memo $ eta syntax (
+  pattern=patternPaser s["->"] e=scopeExpr {
+    fun (atr) {
+      e (atr) => fun (tE) {[pattern, tE]}
+    }
+  }
+),
+varDef = memo $ eta syntax (
+  x=lident {
+    returnST $ [x, None]
+  } |
+  x=lident s["="] init=basic {
+    init (Val) => fun (tInit) {[x, Some (tInit)]}
+  }
+),
+genericDef = memo $ eta syntax (
+  s["var"] varDefs=list[varDef] s[";"] {
+    chainST (varDefs) => fun(tVarDefs) {Var (tVarDefs)}
+  } |
+  s["fun"] funName=lident args=inRoundBrackets[list0 (lident)] s["{"] body=scopeExpr s["}"] {
+    body (Weak) => fun(tBody) {Fun (funName, args, tBody)}
+  }
+),
+defenitions = memo $ eta syntax (
+  headDef=genericDef tailDefs=defenitions {
+    headDef : tailDefs
+  } |
+  headDef=genericDef {
+    {headDef}
+  }
+),
+scopeExpr = memo $ eta syntax (
+  defs=defenitions e=exp {
+    fun (atr) {
+      chainST (defs) =>> fun (tDefs) {
+      e (atr) => fun (tE) {
+        expandScope (tDefs, tE)
+      }}   
+    }
+  } |
+  e=exp {
+    fun (atr) {
+      e (atr) => fun (tE) {Scope ({}, tE)}
+    }
+  } |
+  loc=pos defs=defenitions {
+    fun (atr) {
+      chainST (defs) =>> fun (tDefs) {
+      assertVoid(atr, returnST $ Skip, loc) => fun (tSkip) {
+        expandScope(tDefs, tSkip)
+      }}
+    }
+  }
+),
+basic = memo $ eta (expr (binopParsers, postfix)),
+postfix = memo $ eta syntax (
+  loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Val))})* {
+    fun (atr) {
+      foldl(
+        fun (e, p) {                                                                            
+          case p of Index (i) ->
+            fun (innerAtr) {
+              case innerAtr of
+                Ref -> e (Val) =>> fun (tE) {
+                       i => fun (tI) {
+                          ElemRef (tE, tI)
+                       }}      
+              | _   -> assertValue (innerAtr, e (Val) =>> fun (tE) {
+                                              i => fun (tI) {
+                                                  Elem (tE, tI)
+                                              }}, loc)
+              esac
+            }
+          esac                                                                            
+        }, 
+        e, 
+        ps
+      ) (atr)
+    }
+  }
+),
+exp = memo $ eta syntax (
+  basic |
+  s1=basic s[";"] s2=exp {
+    fun (atr) {
+      chainST ({s1 (Void), s2 (atr)}) => fun ({tS1, tS2}) {
+        Seq (tS1, tS2)
+      }
+    }
+  }
+);
 
 -- Public top-level parser
 public parse = syntax (s=scopeExpr {s (Void) (emptyEnv ()) [1]});
