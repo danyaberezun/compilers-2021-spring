@@ -84,6 +84,24 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+fun addDefeniton(state, def) {
+  case def of
+    Fun (name, args, body) -> addFunction (state, name, args, body)
+  | Var (names) -> addNames (state, names)
+  esac
+}
+
+fun addDefenitions(state, defs) {
+  foldl (addDefeniton, state, defs)
+}
+
+fun addArgs(state, argNames, argValues) {
+  case [argNames, argValues] of
+    [{}, {}] -> state
+  | [name:namesTail, value:valuesTail] -> addArgs (addName (state, name, value), namesTail, valuesTail)
+  esac
+}
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
@@ -99,8 +117,102 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[st, w], expr) {
+  case expr of
+    Const (n) -> [c, n]
+  | Var (x) -> [c, lookup (st, x)]
+  | Ref (x) -> [c, Ref (x)]
+  | Skip -> [c, Void]
+  | Read (e) -> 
+    case eval (c, e) of [c1@[st1, w1], Ref (varName)] ->
+    case readWorld (w1) of [varValue, w2] ->
+      [[st1 <- [varName, varValue], w2], Void]
+    esac
+    esac
+  | Write (e) -> 
+    case eval (c, e) of [[st1, w1], v] ->
+      [[st1, writeWorld (v, w1)], Void]
+    esac
+  | Ignore (e) -> [eval(c, e)[0], Void]
+  | Seq (e1, e2) -> 
+    case eval (c, e1) of
+      [c1, Void] -> eval (c1, e2)
+    esac
+  | Binop (op, l, r) -> 
+    case eval (c, l) of [c1, lRes] -> 
+    case eval (c1, r) of [c2, rRes] -> 
+      [c2, evalOp (op, lRes, rRes)]
+    esac esac
+  | Assn (e1, e2) -> 
+    case eval (c, e1) of [c1, ref] -> 
+    case eval (c1, e2) of [c2@[st2, w2], value] ->
+    case ref of
+      Ref (x) -> [[st2 <- [x, value], w2], value]
+    | ElemRef (arr, idx) ->
+        arr[idx] := value;
+        [c2, value]
+    esac
+    esac
+    esac
+  | If (cond, trueExpr, falseExpr) -> 
+    case eval (c, cond) of
+      [c1, 0] -> eval (c1, falseExpr)
+    | [c1, _] -> eval (c1, trueExpr)
+    esac
+  | While (cond, body) ->
+    case eval (c, cond) of
+      [c1, 0]   -> [c1, Void]
+    | [c1, _]  -> case eval (c1, body) of [c2, Void] ->
+                    eval (c2, While (cond, body))
+                  esac
+    esac
+  | DoWhile (body, cond) -> 
+    case eval (c, body) of
+     [c1, Void] -> eval (c1, While (cond, body))
+    esac
+  | Scope (defs, e) -> (
+    var st1 = enterScope(st);
+    var st2 = addDefenitions(st1, defs);
+    case eval ([st2, w], e) of [[st3, w3], eRes] ->
+      [[leaveScope (st3), w3], eRes]
+    esac
+  )
+  | Call (funName, argExprs) ->
+    case lookup (st, funName) of Fun (argNames, body) ->
+    case evalList(c, argExprs) of [[st1, w1], argValues] ->
+    case body of
+      External ->
+      case evalBuiltin (funName, argValues, w1) of [funcRes, w2] ->
+        [[st1, w2], funcRes]
+      esac
+    | _ ->
+        var st2 = enterFunction (st1);
+        var st3 = addArgs(st2, argNames, argValues);
+        case eval([st3, w1], body) of [[st4, w4], funcRes] ->
+          var newGlobalScope = getGlobal (st4);
+          [[leaveFunction (st, newGlobalScope), w4], funcRes]
+        esac
+    esac
+    esac
+    esac
+  | String (s) -> [c, s]
+  | Array (elemExprs) ->
+    case evalList (c, elemExprs) of [c1, elemValues] ->
+      [c1, listArray (elemValues)]
+    esac 
+  | Elem (arrExpr, idxExpr) ->
+    case eval (c, arrExpr) of [c1, arr] ->
+    case eval (c1, idxExpr) of [c2, idx] ->
+      [c2, arr[idx]]
+    esac
+    esac
+  | ElemRef (arrExpr, idxExpr) ->
+    case eval (c, arrExpr) of [c1, arr] ->
+    case eval (c1, idxExpr) of [c2, idx] ->
+      [c2, ElemRef (arr, idx)]
+    esac
+    esac
+  esac
 }
 
 
@@ -109,6 +221,7 @@ public fun evalExpr (input, expr) {
   case eval ([emptyState ().enterScope.addName ("read",   Fun ({}, External))
                                       .addName ("write",  Fun ({"a"}, External))
                                       .addName ("length", Fun ({"a"}, External)), createWorld (input)], expr) of
-    [c, _] -> c.snd.getOutput
+    [[_, w], Void] -> getOutput (w)
+  | _ -> failure ("Whole program must return Void")
   esac
 }

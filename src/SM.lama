@@ -13,17 +13,18 @@ import Expr;
 import Builtins;
 import Buffer;
 
+-- Shows a location (a reference to function argument, local or global variable)
+fun showLoc (d) {
+  case d of
+    Arg (i) -> sprintf ("arg[%d]", i)
+  | Loc (i) -> sprintf ("loc[%d]", i)
+  | Glb (x) -> x
+  esac
+}
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
-  -- Shows a location (a reference to function argument, local or global variable)
-  fun showLoc (d) {
-    case d of
-      Arg (i) -> sprintf ("arg[%d]", i)
-    | Loc (i) -> sprintf ("loc[%d]", i)
-    | Glb (x) -> x
-    esac
-  }
   
   case i of
     BINOP  (s)       -> sprintf ("BINOP %s", s)
@@ -120,9 +121,124 @@ fun eval (env, w, insns) {
     inner (n, {}, list)
   }
 
+  fun assingArgs (state, argValues) {
+    foldl (
+      fun (idx, curArg) {
+        assign (state, Arg (idx), curArg);
+        idx + 1
+      },
+      0,
+      argValues
+    )
+  }
+
+  -- Return pair ot new context and next commands
+  fun evalCommand (c@[stack, callStack, state, world], command, commandTail) {
+    case command of 
+      BINOP (opStr) -> (
+        case stack of
+          snd:fst:rest -> (
+            var value = evalOp (opStr, fst, snd);
+            [[value:rest, callStack, state, world], commandTail]
+        )
+        | _ -> failure ("Less than 2 elements on stack for BINOP")
+        esac
+    )
+    | LD (loc) -> (
+        [[lookup (state, loc):stack, callStack, state, world], commandTail]
+    )
+    | ST (loc) -> (
+      case stack of
+        varValue:tail -> (  
+          assign (state, loc, varValue);
+          [[stack, callStack, state, world], commandTail]
+      )
+      | _ -> failure ("Got empty stack for ST")
+      esac
+    )
+    | CONST (value) -> [[value:stack, callStack, state, world], commandTail]
+    | JMP (label) -> [c, fromLabel (env, label)]
+    | LABEL (_) -> [c, commandTail]
+    | CJMP (type, label) -> (
+      case stack of
+        head:tail -> (
+          var nextCommands = if (compare (type, "z") == 0 && head == 0)
+                             !! (compare (type, "nz") == 0 && head != 0) then
+                               fromLabel (env, label)
+                             else
+                               commandTail
+                             fi;
+          [[tail, callStack, state, world], nextCommands]
+      )
+      | _ -> failure ("Got empty stack for CJMP")
+      esac
+    )
+    | DROP -> 
+      case stack of
+        head:tail -> [[tail, callStack, state, world], commandTail]
+      | _ -> failure ("Got empty stack for DROP")
+      esac
+    | DUP ->
+      case stack of
+        head:tail -> [[head:stack, callStack, state, world], commandTail]
+      | _ -> failure ("Got empty stack for DUP")
+      esac
+    | LDA (loc) -> [[Ref (loc):stack, callStack, state, world], commandTail]
+    | STI -> 
+      case stack of
+        v:Ref (loc):tail -> (
+          assign (state, loc, v);
+          [[v:tail, callStack, state, world], commandTail]
+        )
+      | _ -> failure ("Too small stack for STI")
+      esac
+    | CALL (fLabel, agrsCnt) -> [[stack, [state, commandTail]:callStack, state, world], fromLabel (env, fLabel)]
+    | BEGIN (_, argsCnt, localsCnt) ->
+      case take (stack, argsCnt) of [newStack, argValues] ->
+        var newState = makeState (argsCnt, localsCnt);
+        assingArgs (newState, argValues);
+        [[newStack, callStack, newState, world], commandTail]
+      esac
+    | END -> 
+      case callStack of
+        [prevState, nextCommands] : prevCallStack -> [[stack, prevCallStack, prevState, world], nextCommands]
+      | {} -> [[stack, {}, state, world], {}]
+      esac
+    | GLOBAL (varName) -> (
+        assign (state, Glb (varName), 0);
+        [c, commandTail]
+      )
+    | STRING (s) -> [[s:stack, callStack, state, world], commandTail]
+    | ARRAY (elemsCnt) ->
+      case take (stack, elemsCnt) of [newStack, elems] ->
+        [[listArray (elems):newStack, callStack, state, world], commandTail]
+      esac
+    | ELEM ->
+      case stack of idx:arr:rest ->
+        [[arr[idx]:rest, callStack, state, world], commandTail]
+      esac
+    | STA ->
+      case stack of value:idx:arr:rest ->
+        arr[idx] := value;
+        [[value:rest, callStack, state, world], commandTail]
+      esac
+    | BUILTIN (name, argsCnt) ->
+      case take (stack, argsCnt) of [newStack, args] ->
+      case evalBuiltin(name, args, world) of [funcRes, newWorld] ->
+        [[funcRes:newStack, callStack, state, newWorld], commandTail]
+      esac esac
+    esac
+  }
+
   -- Core interpreter: takes a configuration and a program, returns a configuration
   fun eval (c@[st, cst, s, w], insns) {
-    failure ("SM interpreter is not implemented\n")
+    case insns of
+      {} -> c
+    | insn : insnTail ->
+      case evalCommand (c, insn, insnTail) of [c1, newInsns] ->
+        eval (c1, newInsns)
+      esac
+    esac
   }
   
   
@@ -326,30 +442,237 @@ fun addVars (env, names) {
   foldl (fun (env, name) {addVar (env, name)}, env, names)
 }
 
+fun rememberFuncs (env, labeledFuncs) {
+  case labeledFuncs of
+    {} -> env
+  | LabeledFun (fLabel, args, body) : tailFuncs -> 
+      var env1 = rememberFun (env, fLabel, args, body);
+      rememberFuncs (env1, tailFuncs)
+  esac
+}
+
+fun separateDefenitions(defs) {
+  foldl (
+    fun ([vars, funcs], def) {
+      case def of
+        Var (varNames) -> [vars <+> listBuffer (varNames), funcs]
+      | func@Fun (_, _, _) -> [vars, func : funcs]
+      esac
+    },
+    [emptyBuffer (), {}],
+    defs
+  )
+}
+
+fun addFuncDefs(env, funcDefs) {
+  foldl (
+    fun ([curEnv, curFuncs], Fun (name, args, body)) {
+      case genFunLabel (curEnv, name) of [fLabel, curEnv1] ->
+        var env1 = addFun (curEnv1, name, fLabel, size (args));
+        [env1, LabeledFun (fLabel, args, body) : curFuncs]
+      esac
+    },
+    [env, {}],
+    funcDefs
+  )
+}
+
+fun addDefenitions(env, defs) {
+  case separateDefenitions (defs) of [varDefsBuff, funcDefs] ->
+    var varNames = getBuffer (varDefsBuff);
+    var env1 = addVars (env, varNames);
+    case addFuncDefs (env1, funcDefs) of [env2, labeledFuncs] ->
+      var prologCode = if (isGlobal (env2)) then 
+                         listBuffer (map (fun (name) {GLOBAL (name)}, varNames))
+                       else 
+                         emptyBuffer ()
+                       fi;
+      var env3 = rememberFuncs (env2, labeledFuncs);
+      [env3, prologCode]
+    esac
+  esac
+}
+
+fun compileSMBuffList(env, stmts) {
+  foldl (
+    fun ([curEnv, curCode], stmt) {
+      case compileSMBuff (curEnv, stmt) of [newEnv, newCode] ->
+        [newEnv, curCode <+> newCode]
+      esac
+    },
+    [env, emptyBuffer ()],
+    stmts
+  )
+}
+
+fun compileSMBuff (env, stmt) {
+  case stmt of
+    Var (varName) ->
+      var loc = lookupVar (env, varName);
+      [env, singletonBuffer (LD (loc))]
+  | Const (c) -> [env, singletonBuffer (CONST (c))]
+  | Binop (opStr, l, r) -> 
+    case compileSMBuff (env, l) of [env1, codeL] ->
+    case compileSMBuff (env1, r) of [env2, codeR] ->
+      [env2, codeL <+> codeR <+ BINOP (opStr)]
+    esac esac
+  | Assn (refExpr, valueExpr) -> 
+    case refExpr of 
+      ElemRef (arrExpr, idxExpr) ->
+      case compileSMBuff (env, arrExpr) of [env1, arrCode] ->
+      case compileSMBuff (env1, idxExpr) of [env2, idxCode] ->
+      case compileSMBuff (env2, valueExpr) of [env3, valueCode] ->
+        [env3, arrCode <+> idxCode <+> valueCode <+ STA]
+      esac esac esac
+    | Ref (x) -> 
+        var varLoc = lookupVar (env, x);
+        case compileSMBuff (env, valueExpr) of [env1, valueCode] ->
+          [env1, valueCode <+ ST (varLoc)]
+        esac
+    | _ ->
+      case compileSMBuff (env, refExpr) of [env1, refCode] ->
+      case compileSMBuff (env1, valueExpr) of [env2, valueCode] ->
+        [env2, refCode <+> valueCode <+ STI]
+      esac esac
+    esac
+  | Skip -> [env, emptyBuffer ()]
+  | Seq (x, y) -> 
+    case compileSMBuff (env, x) of [env1, codeX] ->
+    case compileSMBuff (env1, y) of [env2, codeY] ->
+      [env2, codeX <+> codeY]
+    esac esac
+  | If (cond, trueStmt, falseStmt) -> 
+    case genLabels (env, 2) of [falseLabel, exitLabel, env0] ->
+    case compileSMBuff (env0, cond) of [env1, condCode] ->
+    case compileSMBuff (env1, trueStmt) of [env2, trueStmtCode] ->
+    case compileSMBuff (env2, falseStmt) of [env3, falseStmtCode] ->
+      var newCode = condCode
+                  <+ CJMP ("z", falseLabel) 
+                  <+> trueStmtCode
+                  <+ JMP (exitLabel)
+                  <+ LABEL (falseLabel)
+                  <+> falseStmtCode
+                  <+ LABEL (exitLabel);
+      [env3, newCode]
+    esac esac esac esac
+  | While (cond, body) -> 
+    case genLabels (env, 2) of [condLabel, exitLabel, env0] ->
+    case compileSMBuff (env0, cond) of [env1, condCode] ->
+    case compileSMBuff (env1, body) of [env2, bodyCode] ->
+      var newCode = singletonBuffer (LABEL (condLabel))
+                  <+> condCode
+                  <+ CJMP ("z", exitLabel)
+                  <+> bodyCode
+                  <+ JMP (condLabel)
+                  <+ LABEL (exitLabel);
+      [env2, newCode]
+    esac esac esac
+  | DoWhile (body, cond) -> 
+    case genLabel (env) of [bodyLabel, env0] ->
+    case compileSMBuff (env0, cond) of [env1, condCode] ->
+    case compileSMBuff (env1, body) of [env2, bodyCode] ->
+      var newCode = singletonBuffer (LABEL (bodyLabel))
+                  <+> bodyCode
+                  <+> condCode
+                  <+ CJMP ("nz", bodyLabel);
+      [env2, newCode]
+    esac esac esac
+  | Ref (x) -> 
+      var loc = lookupVar (env, x);
+      [env, singletonBuffer (LDA (loc))]
+  | Ignore (e) -> 
+    case compileSMBuff (env, e) of
+      [env1, code] -> [env1, code <+ DROP]
+    esac
+  | Scope (defs, expr) -> 
+      var env1 = beginScope (env);
+      case addDefenitions(env1, defs) of [env2, prologCode] ->
+      case compileSMBuff (env2, expr) of [env3, exprCode] ->
+        [endScope (env3), prologCode <+> exprCode]
+      esac esac
+  | Call (fName, argExprs) ->
+      var callCommand = case fName of
+                          "read" -> BUILTIN ("read", 0)
+                        | "write" -> BUILTIN ("write", 1)
+                        | "length" -> BUILTIN ("length", 1)
+                        | "stringval" -> BUILTIN ("stringval", 1)
+                        | _ -> 
+                          case lookupFun (env, fName) of Fun (fLabel, argsCnt) ->
+                            CALL (fLabel, argsCnt)
+                          esac
+                        esac;
+      case compileSMBuffList (env, argExprs) of [env1, argsCode] ->
+        [env1, argsCode <+ callCommand]
+      esac
+  | String (s) -> [env, singletonBuffer (STRING (s))]
+  | Array (elemExprs) ->
+    case compileSMBuffList (env, elemExprs) of [env1, elemsCode] ->
+      [env1, elemsCode <+ ARRAY (size (elemExprs))]
+    esac
+  | Elem (arrExpr, idxExpr) ->
+    case compileSMBuff (env, arrExpr) of [env1, arrCode] ->
+    case compileSMBuff (env1, idxExpr) of [env2, idxCode] ->
+      [env2, arrCode <+> idxCode <+ ELEM]
+    esac esac
+  esac
+}
+
+fun compileFun(env, Fun (fLabel, args, body, state)) {
+  var env1 = beginFun (env, state);
+  var env2 = addArgs (env1, args);
+  case compileSMBuff (env2, body) of [env3, bodyCode] ->
+    var funcCode = singletonBuffer (LABEL (fLabel)) 
+                   <+ BEGIN (fLabel, size (args), getLocals (env3))
+                   <+> bodyCode
+                   <+ END;
+    [env3, funcCode]
+  esac
+}
+
+fun compileFuncs(env, funcs) {
+  foldl (
+    fun ([curEnv, curCode], func@Fun (fLabel, args, body, state)) {
+      case compileFun (curEnv, func) of [newEnv, funcCode] ->
+        [newEnv, curCode <+> funcCode]
+      esac
+    },
+    [env, emptyBuffer ()],
+    funcs
+  )
+}
+
+fun compileFuncsRecurively(env) {
+  var curCode = emptyBuffer ();
+  case getFuns (env) of [funcs, env1] ->
+    var curFuncs = funcs;
+    var curEnv = env1;
+    while size (curFuncs) > 0 do
+      case compileFuncs (curEnv, curFuncs) of [tmpEnv, newCode] ->
+        curCode := curCode <+> newCode;
+        case getFuns (tmpEnv) of [newFuncs, newEnv] ->
+          curFuncs := newFuncs;
+          curEnv := newEnv
+        esac
+      esac
+    od;
+    curCode
+  esac
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine
 -- instructions.
-
-
--- Some guidelines for compiling functions and scopes.
---
--- 1. use env.beginScope/env.endScope properly;
--- 2. in each scope traverse the definitions twice:
---    a. first, add all bindings into symbolic state,
---       using end.addVar/env.addFun;
---    b. do not forget to generate GLOBAL instructions for
---       top-level variable declarations;
---    c. on the secord traversal add functions themselves for
---       future code generation (use env.rememberFun).
--- 3. the overall flow for codegeneration:
---    a. generate the code for thetopmost expression (the progrman itself);
---    b. take list of nested functions definitions via env.getFuns and
---       generate the code for each function;
---    c. repeat b. until no function definitions appear.
--- 4. when compiling functions, do not forget to create proper
---    environment (use env.beginFun) and register arguments
---    (use env.addArg).
-
 public fun compileSM (expr) {
-  failure ("compileSM not implemented\n")
+  var env = beginScope (initCompEnv ());
+  case compileSMBuff (env, expr) of [env1, mainCode] ->
+    var functionsCode = compileFuncsRecurively (env1);
+    var code = singletonBuffer (LABEL ("main"))
+               <+ BEGIN ("main", 0, getLocals (env1))
+               <+> mainCode
+               <+ END
+               <+> functionsCode;
+    var res = getBuffer (code);
+    -- printf("%s\n", showSM (res));
+    res
+  esac
 }
