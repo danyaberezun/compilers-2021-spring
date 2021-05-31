@@ -105,35 +105,97 @@ fun distributeScope (expr, exprConstructor) {
   esac
 }
 
-var primary    = memo $ eta syntax (
-                                      -- decimal constant
-                                      loc=pos x=decimal                                 {fun (a) {assertValue (a, Const (stringInt (x)), loc)}}     |
+fun spaceBrackets (a, b) {
+  a |> lift (inbr (s ("("), b, s (")")))
+}
 
-                                      -- identifier
-                                      x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {fun (a) {
-                                                                                                            case args of
-                                                                                                              None -> case a of
-                                                                                                                        Ref  -> Ref (x)
-                                                                                                                      | Void -> Ignore (Var (x))
-                                                                                                                      | _    -> Var (x)
-                                                                                                                      esac
-                                                                                                            | Some (args) -> assertValue (a, Call (x, args))
-                                                                                                            esac
-                                                                                                         }} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
-      scopeExpr = memo $ eta syntax ($(failure ("scope expression parsing is not implemented\n"))),
-      basic      = memo $ eta (expr ({[Right, {[s (":="),
-                                                fun (l, loc, r) {
-                                                  fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                                }]}],
-                                      [Left , map (binop, {"!!"})],
-                                      [Left , map (binop, {"&&"})],
-                                      [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
-                                      [Left , map (binop, {"+", "-"})],
-                                      [Left , map (binop, {"*", "/", "%"})]
-                                     },
-                                     primary)),
-      exp        = memo $ eta syntax (basic | s1=basic s[";"] s2=exp {fun (a) {Seq (s1 (Void), s2 (a))}});
+var decimalExpr =  memo $ eta syntax (loc=pos x=decimal { fun (a) { assertValue (a, Const (stringInt (x)), loc) } });
+
+var identExpr  =  memo $ eta syntax (loc=pos x=lident args=inbr[s("("), list0(syntax(e=exprSeq {e(Val)})), s(")")]? {
+  fun (a) {
+    case args of
+      None -> case a of
+                Ref  -> Ref (x)
+              | Void -> Ignore (Var (x))
+              | _    -> Var (x)
+              esac
+    | Some (args) -> assertValue (a, Call (x, args), pos)
+    esac
+  }
+});
+
+var skipExpr    =  memo $ eta syntax (loc=pos kSkip { fun (a) { assertVoid (a, Skip, loc) } });
+
+var readExpr    =  memo $ eta syntax (loc=pos x=spaceBrackets [kRead, lident] { fun (a) { assertVoid (a, Read (x), loc) } });
+
+var writeExpr   =  memo $ eta syntax (loc=pos x=spaceBrackets [kWrite, basicExpr] { fun (a) { assertVoid (a, Write (x (Val)), loc) } });
+
+var whileExpr   =  memo $ eta syntax (loc=pos kWhile x=basicExpr kDo y=scopeExpr kOd { 
+  fun (a) { 
+    assertVoid (a, While (x (Val), y (Void)), loc)
+  } 
+});
+
+var doWhileExpr =  memo $ eta syntax (kDo x=scopeExpr kWhile y=basicExpr kOd { 
+  fun (a) { 
+    assertVoid (a, distributeScope (x (Void), fun (e) { DoWhile (e, y (Val)) }), loc) 
+  } 
+ });
+
+var ifExpr      =  memo $ eta syntax (kIf x=basicExpr kThen y=scopeExpr z=ifVariation { 
+  fun (a) { 
+    If (x (Val), y (a), z (a)) 
+  } 
+});
+var ifVariation =  memo $ eta syntax (
+  kFi { fun (a) { Skip } } |
+  kElse x=scopeExpr kFi {x}  |
+  kElif x=basicExpr kThen y=scopeExpr z=ifVariation { fun (a) { If (x (Val), y (a), z (a)) } }
+);
+
+var forExpr     =  memo $ eta syntax (loc=pos kFor x=scopeExpr s[","] y=basicExpr s[","] z=exprSeq kDo w=scopeExpr kOd {
+  fun (a) { 
+    assertVoid (a, distributeScope (x (Void), fun (e) { Seq (e, While (y (Val), Seq (w (Void), z (Void)))) }), loc) 
+  }
+});
+
+var primaryExpr =  memo $ eta syntax (
+  decimalExpr |
+  identExpr   | 
+  skipExpr    |
+  readExpr    |
+  writeExpr   |
+  whileExpr   |
+  doWhileExpr |
+  ifExpr      |
+  forExpr     |
+  inbr[s ("("), scopeExpr, s (")")]
+);
+
+var basicExpr   =  memo $ eta expr ({
+  [Right, {[s (":="), fun (l, loc, r) { fun (a) { assertValue (a, Assn (l (Ref), r (Val)), loc) } } ]}],
+  [Left , map (binop, {"!!"})],
+  [Left , map (binop, {"&&"})],
+  [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
+  [Left , map (binop, {"+", "-"})],
+  [Left , map (binop, {"*", "/", "%"})]},
+  primaryExpr
+);
+
+var varExpr      = memo $ eta syntax (kVar vars=list[varVariation] s[";"] {Var (vars)});
+var varVariation = memo $ eta syntax (x=lident {[x, None]} | x=lident s["="] y=basicExpr {[x, Some (y (Val))]});
+
+var funExpr      = memo $ eta syntax (
+  loc=pos kFun f=lident s["("] args=list0[lident] s[")"] s["{"] e=scopeExpr s["}"] {Fun (f, args, e (Weak))}
+);
+
+var exprSeq      = memo $ eta syntax (basicExpr | s1=basicExpr s[";"] s2=exprSeq { fun (a) { Seq (s1 (Void), s2 (a)) } });
+
+var scopeExpr    = memo $ eta syntax (
+  defs=def* e=exprSeq { fun (a) { expandScope (defs, e (a)) } }   |
+  defs=def*           { fun (a) { expandScope (defs, Skip) } }
+);
+var def          = memo $ eta syntax (varExpr | funExpr);
 
 -- Public top-level parser
 public parse = syntax (s=scopeExpr {s (Void)});
