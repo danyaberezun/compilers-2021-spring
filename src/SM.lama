@@ -7,6 +7,53 @@ import Expr;
 import Buffer;
 import Fun;
 
+fun binary_op([b:a:stack, st, w], op){
+	var res = case op of
+		"+" -> a + b |
+		"-" -> a - b |
+		"*" -> a * b |
+		"/" -> a / b |
+		"%" -> a % b |
+		"<" -> a < b |
+		">" -> a > b |
+		"<=" -> a <= b |
+		">=" -> a >= b |
+		"==" -> a == b |
+		"!=" -> a != b |
+		"&&" -> a && b |
+		"!!" -> a !! b
+	esac;
+	[res:stack, st, w]
+}
+
+fun read_op([stack, st, w]) {
+	var res = readWorld(w);
+	[res[0]:stack, st, res[1]]
+}
+
+fun write_op([a:stack, st, w]) {
+	[stack, st, writeWorld(a, w)]
+}
+
+fun ld_op(x, [stack, st, w]) {
+	[st(x):stack, st, w]
+}
+
+fun st_op(x, [a:stack, st, w]) {
+	[stack, st <- [x, a], w]
+}
+
+fun match(c, i) {
+	case i of
+    		READ      -> read_op(c)
+  		| WRITE     -> write_op(c)
+  		| BINOP (s) -> binary_op(c, s)
+  		| LD    (x) -> ld_op(x, c)   
+  		| ST    (x) -> st_op(x, c)
+  		| CONST (n) -> [n:c[0], c[1], c[2]]
+  	esac
+}
+
 -- Stack code printer. Takes a list of SM instructions, return its
 -- string representation.
 public fun showSMInsn (i) {
@@ -27,7 +74,7 @@ public fun showSM (prg) {
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+	foldl(match, c, getBuffer(insns))
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -38,12 +85,24 @@ public fun evalSM (input, insns) {
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+	case expr of
+		Const(a) -> singletonBuffer(CONST(a)) |
+		Var(a) -> singletonBuffer(LD(a)) |
+		Binop(a, expr1, expr2) -> compileExpr(expr1) <+> compileExpr(expr2) <+> singletonBuffer(BINOP(a)) |	
+		_ -> failure("The expression is not recognized!")
+	esac
 }
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+	case stmt of
+		Skip -> {} |
+		Assn(a, expr) -> compileExpr(expr) <+> singletonBuffer(ST(a)) |
+		Seq(stmt1, stmt2) -> compileSM(stmt1) <+> compileSM(stmt2) |
+		Read(a) -> singletonBuffer(READ) <+> singletonBuffer(ST(a)) |
+		Write(expr) -> compileExpr(expr) <+> singletonBuffer(WRITE) |
+		_ -> failure("The statement is not recognised!")
+	esac
 }
