@@ -91,35 +91,24 @@ fun list (item) {
 -- Helper AST function: expands a "raw" scope expression, reifying
 -- initializers into assignments
 fun expandScope (defs, expr) {
-  fun expandVarDefs (defs, expr) {
+  fun expandDefs (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
+             |  [ident, value]        -> [ident : defs, Seq (Ignore (Assn (Ref(ident), value)), expr)]
              esac
            },
            [{}, expr],
            defs)
   }
 
-  fun expandValDefs (defs, expr) {
-    foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
-           },
-           [{}, expr],
-           defs)
-  }
-  
   case 
     foldr (fun ([defs, expr], def) {
              case def of
                f@Fun (_, _, _) -> [f : defs, expr]
-             | Val (ds) ->
-                 case expandValDefs (ds, expr) of
-                   [ds, expr] -> [Val (ds) : defs, expr]
-                 esac
-             | Var (ds) ->             
-                 case expandVarDefs (ds, expr) of
+             | Var (ds)      ->
+                 case expandDefs (ds, expr) of
                    [ds, expr] -> [Var (ds) : defs, expr]
                  esac
              esac
@@ -169,7 +158,7 @@ fun reifyPatternBindings (matched, brs) {
       | bindings ->
            [pat,
              expandScope (
-               {Val (map (
+               {Var (map (
                       fun ([name, path]) {
                         [name, foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path)]
                       },
@@ -182,30 +171,64 @@ fun reifyPatternBindings (matched, brs) {
   )
 }
 
+fun assertVoidFun(token, loc) {
+  fun (attr) { assertVoid(attr, token, loc) }
+}
+
+fun assertValueFun(token, loc) {
+  fun (attr) { assertValue(attr, token, loc) }
+}
+
+var ifParser = memo $ eta syntax(
+      loc=pos kIf cond=exprParser kThen body=scopeExprParser tail=ifTailParser {
+        fun (attr) {
+          cond(Val) =>> fun(cond) {
+            body(attr) =>> fun(body) {
+              tail(attr) => fun(tail) {
+                If(cond, body, tail)
+              }
+            }
+          }
+        }
+      }
+    ),
+    ifTailParser = memo $ eta syntax(
+      kElif cond=exprParser kThen body=scopeExprParser tail=ifTailParser {
+        fun (attr) {
+          cond(Val) =>> fun(cond) {
+            body(attr) =>> fun(body) {
+              tail(attr) => fun(tail) {
+                If(cond, body, tail)
+              }
+            }
+          }
+        }
+      } |
+      -kElse scopeExprParser -kFi |
+      loc=pos kFi { assertVoidFun(returnST(Skip), loc) }
+    );
+
 var
-  primary = memo $ eta syntax (
+  primaryParser = memo $ eta syntax (
     -- array constant
-    loc=pos x=inbr[s("["), list0(syntax (e=exp {e(Val)})), s("]")] {
-      fun (a) {assertValue (a, chainST (x) => fun (x) {Array (x)}, loc)}
+    loc=pos x=inbr[s("["), list0(syntax (e=exprParser {e(Val)})), s("]")] {
+      assertValueFun (chainST (x) => fun (x) {Array (x)}, loc)
     } |
-                                      
     -- string constant
     loc=pos x=strlit {
-      fun (a) {assertValue (a, returnST $ String (x), loc)}
+      assertValueFun (returnST $ String (x), loc)
     } |
-                                      
     -- character literal
     loc=pos x=chrlit {
-      fun (a) {assertValue (a, returnST $ Const (x), loc)}
-    } |
-                                      
+      assertValueFun (returnST $ Const (x), loc)
+    } |                               
     -- decimal constant
     loc=pos x=decimal {
-      fun (a) {assertValue (a, returnST $ Const (stringInt (x)), loc)}
+      assertValueFun(returnST $ Const (stringInt (x)), loc)
+      -- fun (a) {assertValue (a, returnST $ Const (stringInt (x)), loc)}
     } |
-                                      
     -- identifier
-    loc=pos x=lident args=inbr[s("("), list0(syntax(e=exp {e(Val)})), s(")")]? {
+    loc=pos x=lident args=inbr[s("("), list0(syntax(e=exprParser {e(Val)})), s(")")]? {
       fun (a) {
         case args of
           None -> returnST $ case a of
@@ -216,20 +239,108 @@ var
         | Some (args) -> assertValue (a, chainST (args) => fun (args) {Call (x, args)}, loc)
         esac}
     } |
-
     -- S-expression
-    loc=pos x=uident args=inbr[s("("), list0(syntax(e=exp {e (Val)})), s(")")]? {
+    loc=pos x=uident args=inbr[s("("), list0(syntax(e=exprParser {e (Val)})), s(")")]? {
       fun (a) {
         assertValue (a, case args of
                           None        -> returnST $ Sexp (x, {})
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
+    -- Brackets
+    inbr[s("("), scopeExprParser, s(")")] |
+    -- While
+    loc=pos kWhile cond=exprParser kDo body=scopeExprParser kOd {
+      assertVoidFun(
+        cond(Val) =>> fun(cond) { -- returns plain value
+          body(Void) => fun(body) { -- returns monade
+            While(cond, body)
+          }
+        },
+        loc
+      )
+    } |
+    -- Skip
+    loc=pos kSkip {
+      assertVoidFun(returnST(Skip), loc)
+    } |
+    -- If
+    ifParser |
+    -- Do
+    loc=pos kDo body=scopeExprParser kWhile cond=exprParser kOd {
+      -- assertVoidFun(DoWhile(body(Void), cond(Val)), loc)
+      assertVoidFun(
+        body(Void) =>> fun(body) {
+          cond(Val) => fun(cond) {
+            case body of Scope(defs, bodyExpr) ->
+              Scope(defs, DoWhile(bodyExpr, cond))
+            esac
+          }
+        }, 
+        loc
+      )
+    } |
+    -- For
+    loc=pos kFor init=scopeExprParser s[","] cond=exprParser s[","] incr=exprParser kDo body=scopeExprParser kOd {
+      assertVoidFun(
+        chainST({init(Void), body(Void), cond(Val), incr(Void)}) => fun({init, body, cond, incr}) {
+          case init of Scope(defs, initExpr) ->
+            case body of Scope(defs2, bodyExpr) -> -- To decrease scope nesting
+              Scope(defs+++defs2, Seq(initExpr, While(cond, Seq(bodyExpr, incr))))
+            esac
+          esac
+        },
+        loc
+      )
+    } |
+    -- Case
+    loc=pos kCase scrutinee=exprParser kOf patterns=listBy[
+      syntax(p=patternParser s["->"] e=scopeExprParser { 
+        fun(attr, state) { [p, case e(attr)(state) of [state, x] -> x esac ] } 
+      }), 
+      s("|")
+    ] kEsac {
+      fun(attr) { fun(state) {
+        case scrutinee(Val)(state) of [state, scrutinee] ->
+          case freshName(state) of [state, varName] ->
 
-  basic = memo $ eta (
+              fun addScrutineeDefinition(subExpr) {
+                expandScope({Var({[varName, scrutinee]})}, subExpr)
+              }
+
+              patterns := map(fun(pattern) {pattern(attr, state)}, patterns);
+              [state, addScrutineeDefinition(Case(varName, reifyPatternBindings(varName, patterns)))]
+
+          esac
+        esac
+      }}
+    }
+  ),   
+  patternParser = memo $ eta syntax (
+    -- Number
+    x=decimal { Const(stringInt(x)) } |
+    -- Wildcard
+    s["_"] { Wildcard } |
+    -- Array
+    loc=pos patterns=inbr[s("["), list0(syntax (patternParser)), s("]")] {
+      Array (patterns)
+    } |
+    -- Sexpr
+    x=uident patterns=inbr[s("("), list0(patternParser), s(")")]? {
+      case patterns of
+          None        -> Sexp (x, {})
+        | Some (patterns) -> Sexp (x, patterns)
+      esac
+    } |
+    -- Named pattern
+    varName=lident pattern=(-s["@"] patternParser)? { 
+      case pattern of
+        None -> Named(varName, Wildcard) |
+        Some(pattern) -> Named(varName, pattern)
+      esac
+    }
+  ),
+  basicParser = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
                                  fun (a) {assertValue (a, l (Ref) =>> fun (l) {
                                                           r (Val) =>  fun (r) {
@@ -244,11 +355,11 @@ var
            [Left , map (binop, {"+", "-"})],
            [Left , map (binop, {"*", "/", "%"})]
           },
-          postfix)
+          postfixParser)
   ),
   
-  postfix = memo $ eta syntax (
-    loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Val))})* {
+  postfixParser = memo $ eta syntax (
+    loc=pos e=primaryParser ps=(i=inbr[s("["), exprParser, s("]")] {Index (i (Val))})* {
       fun (a) {
         foldl (fun (e, p) {                                                                            
                  case p of                                                                                   
@@ -270,44 +381,36 @@ var
                }, e, ps) (a)
       }}
   ),
-  
-  scopeExpr  = memo $ eta syntax (ds=definition* e=exp? {
-    fun (a) {
-      fun (e) {
-        case ds of
-          {} -> e
-        | _  -> chainST (ds) =>> fun (ds) {
-                e            =>  fun (e)  {
-                  expandScope (ds, e)
-                }}
-        esac
+  scopeExprParser = memo $ eta syntax (
+    declarations=definitionParser* expression=exprParser? {
+      fun (attr) {
+        chainST(declarations) =>> fun(declarations) {
+          case expression of
+            None    -> returnST(expandScope(declarations, Skip)) | -- Put in scope anyway to make further work easier
+            Some(e) -> e(attr) => fun(e) {
+              expandScope(declarations, e)
+            }
+          esac
+        }
       }
-      (case e of 
-        Some (e) -> e (a)
-      | _        -> returnST $ Skip
-      esac)
-    }}                                                                  
+    } 
   ),
-  
-  definition = memo $ eta syntax (
-    kVar ds=list[syntax (x=lident e=(-s["="] basic)? {case e of
+  definitionParser = memo $ eta syntax (
+    kVar ds=list[syntax (x=lident e=(-s["="] basicParser)? {case e of
                                                         None -> returnST $ [x, None]
                                                       | Some (e) ->
                                                           e (Val) => fun (e) {[x, Some (e)]}
                                                       esac})] s[";"] {
       chainST (ds) => fun (ds) {Var (ds)}
     } |
-    kVal ds=list[syntax (x=lident s["="] e=basic {e (Val) => fun (e) {[x, e]}})] s[";"] {
-      chainST (ds) => fun (ds) {Val (ds)}
-    } |  
-    kFun name=lident args=inbr[s("("), list0 (lident), s(")")] body=inbr[s("{"), scopeExpr, s("}")] {
+    kFun name=lident args=inbr[s("("), list0 (lident), s(")")] body=inbr[s("{"), scopeExprParser, s("}")] {
       body (Weak) => fun (body) {Fun (name, args, body)}
     }
   ),
   
-  exp = memo $ eta syntax (
-    basic
-  | s1=basic s[";"] s2=exp {
+  exprParser = memo $ eta syntax (
+    basicParser
+  | s1=basicParser s[";"] s2=exprParser {
      fun (a) {
        s1 (Void) =>> fun (s1) {
        s2 (a)    =>  fun (s2) {
@@ -318,4 +421,4 @@ var
   );
 
 -- Public top-level parser
-public parse = syntax (s=scopeExpr {s (Void) (emptyEnv ()) [1]});
+public parse = syntax (s=scopeExprParser {s (Void) (emptyEnv ()) [1]});
