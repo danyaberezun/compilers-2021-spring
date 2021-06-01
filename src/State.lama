@@ -10,7 +10,7 @@ import Parser;
 fun makeState (scopes) {
   -- Searches a scope stack and performed a speficified action
   -- on the found binding
-  fun lookup (name, action) {
+  fun lookup (name) {
     fun lookupInScopes (scopes) {
       case scopes of
         {}         -> error (sprintf ("name ""%s"" is undefined", name), getLoc (name))
