@@ -11,12 +11,12 @@ import Fun;
 -- string representation.
 public fun showSMInsn (i) {
   case i of
-    READ      -> sprintf ("READ")
-  | WRITE     -> sprintf ("WRITE")
-  | BINOP (s) -> sprintf ("BINOP %s", s)
+    Read      -> sprintf ("READ")
+  | Write     -> sprintf ("WRITE")
+  | Binop (s) -> sprintf ("BINOP %s", s)
   | LD    (x) -> sprintf ("LD %s", x)
   | ST    (x) -> sprintf ("ST %s", x)
-  | CONST (n) -> sprintf ("CONST %d", n)
+  | Const (n) -> sprintf ("CONST %d", n)
   esac
 }
 
@@ -24,10 +24,45 @@ public fun showSM (prg) {
   map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
 }
 
+public fun evalInsnRead ([stack, st, w], Read) {
+  var world = readWorld (w);
+  [world[0] : stack, st, world[1]]
+}
+
+public fun evalInsnWrite ([value : stack, st, w], Write) {
+  [stack, st, writeWorld (value, w)]
+}
+
+public fun evalInsnBinop ([exprRight : exprLeft : stack, st, w], Binop (op)) {
+  [evalExprBinop (op, exprLeft, exprRight) : stack, st, w]
+}
+
+public fun evalInsnLd ([stack, st, w], LD (name)) {
+  [st(name) : stack, st, w]
+}
+
+public fun evalInsnSt ([value:stack, st, w], ST (name)) {
+  [stack, st <- [name, value], w]
+}
+
+public fun evalInsnConst ([stack, st, w], Const (value)) {
+  [value : stack, st, w]
+}
+
 -- Stack machine interpreter. Takes an SM-configuration and a program,
 -- returns a final configuration
 fun eval (c, insns) {
-  failure ("SM eval not implemented\n")
+  foldl (fun (config, insn) {
+    case insn of
+      Read      -> evalInsnRead (config, insn) |
+      Write     -> evalInsnWrite (config, insn) |
+      Binop (_) -> evalInsnBinop (config, insn) |
+      LD (_)    -> evalInsnLd (config, insn) |
+      ST (_)    -> evalInsnSt (config, insn) |
+      Const  (_) -> evalInsnConst (config, insn) |
+      _         -> failure ("eval is not implemented for this operation\n")
+    esac
+  }, c, insns)
 }
 
 -- Runs a stack machine for a given input and a given program, returns an output
@@ -35,15 +70,67 @@ public fun evalSM (input, insns) {
   eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
 }
 
+public fun compileExprVar (Var (name)) {
+  singletonBuffer (LD (name))
+}
+
+public fun compileExprConst (Const (value)) {
+  singletonBuffer (Const (value))
+}
+
+public fun compileExprBinop (Binop (op, exprLeft, exprRight)) {
+  compileExprBuffer (exprLeft) <+> compileExprBuffer (exprRight) <+> singletonBuffer (Binop (op))
+}
+
 -- Compiles an expression into a stack machine code.
 -- Takes an expression, returns a list of stack machine instructions
 fun compileExpr (expr) {
-  failure ("compileExpr not implemented\n")
+  getBuffer (compileExprBuffer (expr))
 }
+
+fun compileExprBuffer (expr) {
+  case expr of
+    Var (v)           -> compileExprVar (expr) | 
+    Const (_)         -> compileExprConst (expr) |
+    Binop (s, e1, e2) -> compileExprBinop (expr) |
+    _                 -> failure ("compileExpr is not implemented for this operation\n")
+  esac
+}
+
+public fun compileStmtAssn (Assn (name, expr)) {
+  compileExprBuffer (expr) <+> singletonBuffer (ST (name))
+}
+
+public fun compileStmtSeq (Seq (stmtLeft, stmtRight)) {
+  compileSMBuffer (stmtLeft) <+> compileSMBuffer (stmtRight)
+}
+
+public fun compileStmtRead (Read (name)) {
+  singletonBuffer (Read) <+> singletonBuffer (ST (name))
+}
+
+public fun compileStmtWrite (Write (expr)) {
+  compileExprBuffer (expr) <+> singletonBuffer (Write)
+} 
+
+public fun compileStmtSkip (Skip) {
+  emptyBuffer ()
+} 
 
 -- Compiles a statement into a stack machine code.
 -- Takes a statement, returns a list of stack machine
 -- instructions.
+public fun compileSMBuffer (stmt) {
+  case stmt of
+    Assn (_, _) -> compileStmtAssn (stmt) |
+    Seq (_, _)  -> compileStmtSeq (stmt) |
+    Skip        -> compileStmtSkip (stmt) |
+    Read (_)    -> compileStmtRead (stmt) |
+    Write (_)   -> compileStmtWrite (stmt) |
+    _           -> failure ("compileSM is not implemented for this operation\n")
+  esac
+}
+
 public fun compileSM (stmt) {
-  failure ("compileSM not implemented\n")
+  getBuffer (compileSMBuffer(stmt))
 }
