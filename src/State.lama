@@ -10,7 +10,7 @@ import Parser;
 fun makeState (scopes) {
   -- Searches a scope stack and performed a speficified action
   -- on the found binding
-  fun lookup (name, action) {
+  fun lookup (name) {
     fun lookupInScopes (scopes) {
       case scopes of
         {}         -> error (sprintf ("name ""%s"" is undefined", name), getLoc (name))
@@ -48,7 +48,10 @@ fun makeState (scopes) {
 
   -- Leaves a scope
   fun leaveScope () {
-    makeState (scopes.tl)
+    case scopes of
+      {} -> failure ("leave from empty scope stack")
+    | s : scopes -> makeState (scopes)
+    esac
   }
 
   -- Adds a name into a scope
@@ -97,8 +100,27 @@ fun makeState (scopes) {
 
     findGlobal (scopes)
   }
+
+  fun getGlobalBindings () {
+    fun inner (scopes) {
+      case scopes of
+        global : builtin : {} -> global
+      | _      : scopes       -> inner (scopes)
+      esac      
+    }
+
+    bindings (inner (scopes))
+  } 
+
+  fun getLocalBindings () {
+    case scopes of
+      s : scopes -> bindings (s)
+    | {} -> failure ("local scope not found")
+    esac
+  }
   
-  [lookup, assign, enterScope, leaveScope, addName, enterFunction, leaveFunction, getGlobal]
+  [lookup, assign, enterScope, leaveScope, addName, enterFunction, leaveFunction, getGlobal,
+   getGlobalBindings, getLocalBindings]
 }
 
 -- Accessors functions
@@ -132,6 +154,14 @@ public fun leaveFunction (state, global) {
 
 public fun getGlobal (state) {
   state [7] ()
+}
+
+public fun getGlobalBindings (state) {
+  state [8] ()
+}
+
+public fun getLocalBindings (state) {
+  state [9] ()
 }
 
 -- Creates an empty state
