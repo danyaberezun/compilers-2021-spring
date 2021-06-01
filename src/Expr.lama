@@ -26,6 +26,24 @@ var ops = {
   ["!!", infix !!]
 };
 
+public fun calcBinop (s, e1, e2) {
+  case s of
+    "+"  -> e1 + e2 |
+    "-"  -> e1 - e2 |
+    "/"  -> e1 / e2 |
+    "*"  -> e1 * e2 |
+    "<"  -> e1 < e2 |
+    ">"  -> e1 > e2 |
+    "%"  -> e1 % e2 |
+    "<=" -> e1 <= e2 |
+    ">=" -> e1 >= e2 |
+    "==" -> e1 == e2 |
+    "!=" -> e1 != e2 |
+    "!!" -> e1 !! e2 |
+    "&&" -> e1 && e2
+  esac
+}
+
 -- The evaluator for infix operators: takes an operator as a string
 -- and two operand values, and returns the result
 public fun evalOp (op, l, r) {
@@ -102,7 +120,163 @@ fun evalList (c, exprs) {
 }
 
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+      Var (v) -> [c, lookup(s, v)] 
+    | Const (v) -> [c, v]
+    | Ref (x) -> [c, Ref(x)]
+    | Binop (o, e1, e2) ->
+        case evalList(c, {e1, e2}) of
+          [c, {lhs, rhs}] -> [c, evalOp(o, lhs, rhs)]
+        esac 
+    | Assn (e1, e2) ->
+        case evalList(c, {e1, e2}) of
+          [[s, w], {Ref(n), v}] -> [[s <- [n, v], w], v] |
+          [c, {ElemRef(arr, ind), v}] ->
+            arr[ind] := v;
+            [c, v]
+        esac 
+    | Seq (s1, s2) ->
+        case eval(c, s1) of
+          [c, _] -> eval(c, s2)
+        esac 
+    | Skip -> [c, Bottom]
+    | Scope(defs, e) ->
+       if size (defs) == 0 then
+         eval (c, e)
+       else
+         s := enterScope(s);
+         while size(defs) > 0 do
+           s := case defs[0] of
+             Var (vs) -> addNames (s, vs)
+		   | Val (vs) -> addNames (s, vs)
+           | Fun (name, args, body) -> addFunction (s, name, args, body)
+           esac;
+           defs := defs.tl
+         od;
+         case eval([s, w], e) of
+           [[s, w], v] ->
+             [[leaveScope(s), w], v]
+         esac
+       fi
+    | Call(name, args) ->
+        case name of
+          "read" ->
+            var rw = readWorld (w);
+            [[s, rw[1]], rw[0]]
+        | "write" ->
+            case eval (c, args[0]) of
+              [[s, w], v] -> [[s, writeWorld (v, w)], Bottom]
+            esac
+        | "length" ->
+            case eval (c, args[0]) of
+              [[s, w], v] -> [c, evalBuiltin ("length", {v}, w)[0]]
+            esac
+        | _ ->
+            case lookup(s, name) of Fun(argNames, body) ->
+              var oldS = s;
+              case evalList(c, args) of [[s, w], argValues] ->
+                s := enterFunction(s);
+                while size(argNames) > 0 do
+                  s := addName(s, argNames[0], argValues[0]);  
+                  argNames := argNames.tl;
+                  argValues := argValues.tl
+                od;
+                case eval([s, w], body) of [[s, w], ret] ->
+                  s := leaveFunction(oldS, getGlobal (s));
+                  [[s, w], ret]
+                esac
+            esac
+         esac
+      esac  
+    | While (cond, body) ->
+        case eval(c, cond) of
+          [c, 0] -> [c, Bottom]
+        | _ -> eval(eval(c, body)[0], expr)
+        esac 
+    | DoWhile (body, cond) ->
+        case eval(eval(c, body)[0], cond) of
+          [c, 0] -> [c, Bottom]
+        | [c, _] -> eval(c, expr)
+        esac 
+    | If (cond, b1, b2) ->
+        case eval(c, cond) of
+          [c, 0] -> eval(c, b2)
+        | [c, _] -> eval(c, b1)
+        esac
+    | String (v) -> [c, v]
+    | Array (exprs) -> case evalList (c, exprs) of
+          [c, v] -> [c, listArray (v)]
+        esac 
+    | Ignore (se) -> [eval(c, se)[0], Bottom]
+    | Elem (arrE, indE) -> case evalList (c, {arrE, indE}) of
+          [c, {Sexp (_, arr), ind}] -> [c, arr[ind]]
+        | [c, {arr, ind}] -> [c, arr[ind]]
+        esac
+    | ElemRef(arrE, indE) ->
+       case evalList(c, {arrE, indE}) of
+         [c, {arr, ind}] -> [c, ElemRef(arr, ind)]
+     esac
+    | Sexp(n, v) -> case evalList (c, v) of [c, vs] -> [c, Sexp (n, listArray (vs))]
+        esac
+    | Case (scr, cases) ->
+      fun checkMatching(pt, scr) {
+        case pt of
+          Wildcard -> true
+        | Const (x) -> x == scr
+        | Array (pt)  ->
+            case {pt, arrayList(scr)} of
+               {pt@#box, scr@#box} ->
+                 if size(pt) != size(scr) then
+                   false
+                 else
+                   var pairs = zip(pt, scr);
+                   foldl(
+                     fun(acc, [pElem, sElem]){ checkMatching (pElem, sElem) && acc },
+                     true,
+                     pairs
+                   )
+                 fi
+             | {0, 0} -> true
+             | _ -> false
+             esac
+        | Sexp (_, arr) ->
+            case {pt, scr} of
+              {Sexp (pName, pArr), Sexp (sName, sArr)} ->
+                (compare (pName, sName) == 0) &&
+                 case {pArr, arrayList (sArr)} of
+                    {pArr@#box, sArr@#box} ->
+                      if size (pArr) != size (sArr) then
+                        false
+                      else
+                        var pairs = zip (pArr, sArr);
+                        foldl(
+                          fun (acc, [pElem, sElem]){ checkMatching (pElem, sElem) && acc },
+                          true,
+                          pairs
+                        )
+                      fi
+                  | {0, 0} -> true
+                  | _ -> false
+                  esac
+            | _ -> false
+            esac
+        | Named(_, pt) -> checkMatching (pt, scr)
+        esac
+      }
+      fun match (currCase : cases) {
+        case currCase of [pt, expr] ->
+            if checkMatching (pt, lookup(s, scr)) then
+              expr
+            else
+              case cases of
+                0 -> failure("Pattern matching failed\n")
+              | _ -> match (cases)
+              esac
+            fi
+        esac
+      }
+      eval(c, match (cases))
+    esac
 }
 
 
