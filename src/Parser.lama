@@ -70,20 +70,12 @@ fun list (item) {
 -- Helper AST function: expands a "raw" scope expression, reifying
 -- initializers into assignments
 fun expandScope (defs, expr) {
-  fun expandVarDefs (defs, expr) {
+  fun expandDefs (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
              esac
-           },
-           [{}, expr],
-           defs)
-  }
-
-  fun expandValDefs (defs, expr) {
-    foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
            },
            [{}, expr],
            defs)
@@ -93,12 +85,8 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {
              case def of
                f@Fun (_, _, _) -> [f : defs, expr]
-             | Val (ds) ->
-                 case expandValDefs (ds, expr) of
-                   [ds, expr] -> [Val (ds) : defs, expr]
-                 esac
-             | Var (ds) ->             
-                 case expandVarDefs (ds, expr) of
+             | Var (ds)      ->
+                 case expandDefs (ds, expr) of
                    [ds, expr] -> [Var (ds) : defs, expr]
                  esac
              esac
@@ -141,11 +129,82 @@ var primary    = memo $ eta syntax (
                                                                                                             | Some (args) -> assertValue (a, Call (x, args))
                                                                                                             esac
                                                                                                          }} |
-                                      $(failure ("the rest of primary parsing in not implemented\n"))),
+												  
+								  loc=pos kSkip {
+									fun (a) {
+										assertVoid (a, Skip, loc)
+									}
+								  } |
+								  loc=pos kIf cond=exp kThen thenExp=exp elseExp=parseElse {
+									fun (a) {
+										If (cond (Val), thenExp (a), elseExp(a))
+									}
+								  } |
+								  loc=pos kWhile cond=exp kDo body=scopeExpr kOd {
+									fun (a) {
+										assertVoid (a, While (cond (Val), body(Void)), loc)
+									}
+								  } |
+								  loc=pos kDo body=scopeExpr kWhile cond=exp kOd {
+									fun (a) {
+										assertVoid (
+											a,
+											distributeScope (
+												body(Void),
+												fun (body) {
+													DoWhile (body, cond (Val))
+												}
+											),
+											loc
+										)
+									}
+								  } |
+								  loc=pos kFor init=scopeExpr s[","] cond=exp s[","] step=exp kDo body=scopeExpr kOd {
+									fun (a) {
+										assertVoid (
+											a,
+											distributeScope (
+												init(Void),
+												fun(init) {
+													Seq (
+														init,
+														While (cond(Val), Seq (body(Void), step(Void)))
+													)
+												}
+											),
+											loc
+										)
+									}
+								  } |
+								  inbr[s ("("), scopeExpr, s(")")]),
+      parseElse = memo $ eta syntax (
+		loc=pos kElif cond=exp kThen thenExp=exp elseExp=parseElse  {
+			fun (a) {
+				If (cond (Val), thenExp (a), elseExp(a))
+			}
+		} |
+		loc=pos kElse elseExp=exp kFi {
+			elseExp
+		}  |
+		loc=pos kFi {
+			fun (a) {
+				assertVoid (a, Skip, loc)
+			}
+		}
+	  ),
+	  decl = memo $ eta syntax (
+			loc=pos kVar vars=list[syntax (lident (s["="] expr=basic { expr(Val)})?)] s[";"] {
+				Var (vars)
+			} |
+			loc=pos kFun funname=lident args=inbr[s("("), list0(lident), s(")")] body=inbr[s("{"), scopeExpr, s("}")] {
+				Fun (funname, args, body(Weak))
+			}
+	  ),
+
       basic      = memo $ eta (expr ({[Right, {[s (":="),
                                                 fun (l, loc, r) {
                                                   fun (a) {assertValue (a, Assn (l (Ref), r (Val)), loc)}
-                                                }]}],
+                                               }]}],
                                       [Left , map (binop, {"!!"})],
                                       [Left , map (binop, {"&&"})],
                                       [Nona , map (binop, {"==", "!=", "<", ">", "<=", ">="})],
@@ -153,8 +212,9 @@ var primary    = memo $ eta syntax (
                                       [Left , map (binop, {"*", "/", "%"})]
                                      },
                                      postfix)),
-      postfix    = memo $ eta syntax (loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Val))})* {fun (a) {foldl (fun (e, p) {
-                                                                                 case p of
+      postfix    = memo $ eta syntax (loc=pos e=primary ps=(i=inbr[s("["), exp, s("]")] {Index (i (Val))})* {
+                                                                               fun (a) {foldl (fun (e, p) {                                                                            
+                                                                                 case p of                                                                                   
                                                                                    Index (i) ->
                                                                                      fun (a) {
                                                                                        case a of
@@ -177,7 +237,6 @@ var primary    = memo $ eta syntax (
                                                                          esac)
                                                                       }}),
       definition = memo $ eta syntax (kVar ds=list[syntax (lident (s["="] e=basic {e (Val)})?)] s[";"] {Var (ds)} |
-                                      kVal ds=list[syntax (lident (s["="] e=basic {e (Val)}))]  s[";"] {Val (ds)} |
                                       kFun name=lident
                                            args=inbr[s("("), list0 (lident), s(")")]
                                            body=inbr[s("{"), scopeExpr, s("}")] {
