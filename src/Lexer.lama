@@ -60,7 +60,14 @@ public rSkip        = createRegexp ("skip\\b", "skip"),
        rVal         = createRegexp ("val\\b", """for"""),
        rFun         = createRegexp ("fun\\b", """for""");
       
+-- Parser := a r = ((s -> a) -> r) -> s -> a
+
+-- Matcher := (buf, pos, line, col)
+-- MatchResult := Success (String, Matcher) | Fail (String, line, col)
+-- @type: cont -> Matcher -> MatchResult 
 var whiteSpace = token (rWhiteSpace);
+
+-- a |> lift (b) ~ a >> b
 
 -- Public parsers for concrete tokens
 -- Generic token parser; t is either a string or a regular expression

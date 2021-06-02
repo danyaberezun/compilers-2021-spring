@@ -8,31 +8,6 @@ import Lexer;
 import Parser;
 import Builtins;
 
--- As association map which maps "\otimes" into "\oplus"
-var ops = {
-  ["+" , infix + ],
-  ["-" , infix - ],
-  ["*" , infix * ],
-  ["/" , infix / ],
-  ["%" , infix % ],
-  ["==", infix ==],
-  ["!=", infix !=],
-  ["<" , infix < ],
-  ["<=", infix <=],
-  [">" , infix > ],
-  [">=", infix >=],
-  ["&&", infix &&],
-  ["!!", infix !!]
-};
-
--- The evaluator for infix operators: takes an operator as a string
--- and two operand values, and returns the result
-public fun evalOp (op, l, r) {
-  case assoc (ops, op) of
-    Some (f) -> f (l, r)
-  esac
-}
-
 -- Evaluates an expression "expr" in a configuration "c".
 -- A configuration is a pair of a state "s" and a world "w".
 -- Returns a final configuration (if any)
@@ -49,6 +24,7 @@ public fun evalOp (op, l, r) {
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
+--        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)               |
 --        String  (string)             |
@@ -57,11 +33,17 @@ public fun evalOp (op, l, r) {
 --        ElemRef (expr, expr)         |
 --        Builtin (string, expr list)
 
+-- A definition is either a local variable definition or a function
+-- definition:
+--
+-- def = Var (string list)                |
+--       Fun (string, string list, expr)
+
 -- Helper function: checks that given name designates a regular variable in
 -- a given state
-fun lookupVal (state, name) {
+fun lookupVar (state, name) {
   case state.lookup (name) of
-    x@Val (_) -> x
+    Var (x) -> x
   | _         -> error (sprintf ("the name ""%s"" does not designate a variable", name), getLoc (name))
   esac
 }
@@ -77,7 +59,13 @@ fun lookupFun (state, name) {
 
 -- Helper function: adds a bunch of regular variables current scope
 fun addNames (state, names) {
-  foldl (fun (s, name) {s.addName (name, Val (0))}, state, names)
+  foldl (fun (s, name) {s.addName (name, Var (0))}, state, names)
+}
+
+fun addNameInit (state, names, values) {
+  foldl (fun (s, [name, v]) {
+    addName (s, name, Var (v))
+  }, state, zip (names, values))
 }
 
 -- Helper function: adds a function in current scope
@@ -85,6 +73,29 @@ fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
                                         
+fun matchBinop (s) {
+  case s of
+    "+" -> infix +
+  | "-" -> infix -
+  | "*" -> infix *
+  | "/" -> infix /
+  | "%" -> infix %
+  | "<" -> infix <
+  | ">" -> infix >
+  | "<=" -> infix <=
+  | ">=" -> infix >=
+  | "==" -> infix ==
+  | "!=" -> infix !=
+  | "&&" -> infix &&
+  | "!!" -> infix !!
+  esac
+}
+
+
+var bottom = 0;
+
+fun void (cfg) { [cfg, bottom] }
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -99,10 +110,109 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun enterScopeWithDefs (state, defs) {
+  foldl (fun (state, def) {
+      case def of
+        Var (names)            -> addNames (state, names)
+      | Fun (name, args, body) -> addFunction (state, name, args, body)
+      esac
+    }, enterScope (state), defs)
 }
 
+fun eval (cfg@[state, world], expr) {
+  case expr of
+    Var (x) -> [cfg, lookupVar (state, x)]
+  | Ref (x) -> [cfg, Ref (x)]
+  | Const (v) -> [cfg, v]
+  | Binop (s, e1, e2) -> 
+    case evalList (cfg, {e1, e2}) of
+      [cfg, {v1, v2}] -> [cfg, matchBinop (s) (v1, v2)]
+    esac
+  | Skip -> void (cfg)
+  | Assn (ref, e) ->
+    case evalList (cfg, {ref, e}) of 
+      [cfg@[state, world], {Ref (x), v}] -> 
+        lookupVar (state, x); -- check
+        [[state <- [x, Var (v)], world], v]
+    | [cfg, {ElemRef (arr, ix), v}] ->
+        arr[ix] := v;
+        [cfg, v]
+    esac
+  | Seq (e1, e2) -> 
+    case evalList (cfg, {e1, e2}) of
+      [cfg, {v1, v2}] -> [cfg, v2]
+    esac
+  | If (cond, e1, e2) ->
+    case eval (cfg, cond) of
+      [cfg@[state, world], 0] -> eval (cfg, e2)
+    | [cfg@[state, world], _] -> eval (cfg, e1)
+    esac
+  | While (cond, e) -> (
+      fun rec (cfg) {
+        case eval (cfg, cond) of
+          [cfg, 0] -> cfg
+        | [cfg, _] ->
+          case eval (cfg, e) of 
+            [cfg, _] -> rec (cfg)
+          esac
+        esac
+      }
+      void (rec (cfg))
+    )
+  | DoWhile (e, cond) -> (
+      fun rec (cfg) {
+        case eval (cfg, e) of
+          [cfg, _] -> 
+          case eval (cfg, cond) of
+            [cfg, 0] -> cfg
+          | [cfg, _] -> rec (cfg)
+          esac
+        esac
+      }
+      void (rec (cfg))
+    )
+  | Scope ({}, exp)   -> eval (cfg, exp)
+  | Scope (defs, exp) ->
+    var scopeState = enterScopeWithDefs (state, defs);
+    case eval ([scopeState, world], exp) of
+      [[state, world], v] -> [[leaveScope (state), world], v]
+    esac
+  | Call (name, args) -> 
+    case evalList (cfg, args) of
+      [[state, world], vs] -> 
+    case lookupFun (state, name) of
+      Fun (argNames, External) -> 
+        case evalBuiltin (name, vs, world) of
+          [r, world] -> [[state, world], r]
+        esac
+    | Fun (argNames, body) -> 
+        var funState = addNameInit (enterFunction (state), argNames, vs);
+        case eval ([funState, world], body) of
+          [[funState, world], v] -> 
+            var funGlobalScope = getGlobal (funState);
+            var resultState = leaveFunction (state, funGlobalScope);
+            [[resultState, world], v]
+        esac
+    esac esac
+  | Ignore (e) ->
+    case eval (cfg, e) of
+      [cfg, _] -> void (cfg)
+    esac
+  | String (s) -> [cfg, s]
+  | Array (es) -> 
+    case evalList (cfg, es) of
+      [cfg, vs] -> [cfg, listArray (vs)]
+    esac
+  | Elem (eArr, eIx) ->
+    case evalList (cfg, {eArr, eIx}) of
+      [cfg, {vArr, vIx}] -> [cfg, vArr [vIx]]
+    esac
+  | ElemRef (eArr, eIx) ->
+    case evalList (cfg, {eArr, eIx}) of
+      [cfg, {vArr, vIx}] -> [cfg, ElemRef (vArr, vIx)]
+    esac
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {

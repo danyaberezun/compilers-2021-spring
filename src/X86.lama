@@ -65,6 +65,7 @@ fun insnString (insn) {
     | "!!"  -> "orl" 
     | "^"   -> "xorl"
     | "cmp" -> "cmpl"
+    | "test"-> "test"
     esac
   }
 
@@ -409,6 +410,7 @@ fun epilogue (env) {
 fun stackOpnd (opnd) {
   case opnd of
     S (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac      
 }
@@ -418,6 +420,7 @@ fun memOpnd (opnd) {
   case opnd of
     S (_) -> true
   | M (_) -> true
+  | I (_, _) -> true
   | _     -> false
   esac
 }
@@ -431,6 +434,18 @@ fun move (from, to) {
   fi
 }
 
+-- Generate code with semantic:
+-- l2 = l2 `op` l1
+-- NOTE: not save edx
+fun binop (op, l1, l2) {
+  case [memOpnd (l1), memOpnd (l2)] of
+    [true, true] -> case op of
+        "*" -> listBuffer ({Mov (l2, edx), Binop (op, l1, edx), Mov (edx, l2)})
+      | _   -> listBuffer ({Mov (l1, edx), Binop (op, edx, l2)})
+      esac
+  | _            -> singletonBuffer (Binop (op, l1, l2))
+  esac
+}
 
 -- Gets a suffix for Set instruction from
 -- source language comparison operator
@@ -445,22 +460,19 @@ fun suffix (op) {
   esac
 }
 
--- Compiles stack machine code into a list of x86 instructions. Takes an environment
--- and stack machine code, returns an updated environment and x86 code.
-fun compile (env, code) {
-  fun compile (env, code) {
-    foldl (
-      fun ([env, scode], i) {
-        var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
-        case i of
-          READ ->
-            case env.allocate of
-              [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-            esac             
-        | WRITE ->
-            case env.pop of
-              [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-            esac
+fun isCmpOp (op) {
+  case op of
+    "<" -> true
+  | ">" -> true
+  | "<=" -> true
+  | ">=" -> true
+  | "==" -> true
+  | "!=" -> true
+  | _ -> false
+  esac
+}
+
+        (* Assignment *)
         
          -- Some guidelines for generating function calls:
          --
@@ -478,12 +490,167 @@ fun compile (env, code) {
          --    env.enterFunction to create a proper environment;
          -- 2. generate epilogue for END instruction.
                
-        | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        (* End *)
+
+-- Compiles stack machine code into a list of x86 instructions. Takes an environment
+-- and stack machine code, returns an updated environment and x86 code.
+fun compile (env, codeSM) {
+  fun isLabel (i) { case i of LABEL (_) -> true | _ -> false esac }
+
+  -- NOTE: careless using the `push` instead of allocate may cause space leak 
+  fun compileInsn ([env, code], insn) {
+
+    fun preAndPostCall (env, f, nargs, type) {
+      var liveRegs = case type of 
+          Internal -> liveRegisters (env, nargs) 
+        | Cdecl    -> { ecx } esac;
+      var saveStackRegs    = foldl (fun (acc, r) { acc <+ Push (r) }, {}, liveRegs);
+      var restoreStackRegs = foldl (fun (acc, r) { acc <+ Pop (r) }, {}, reverse (liveRegs));
+      fun popArgsFromST (n, env) {
+        if n == 0 then 
+          [{}, env]
+        else 
+          case pop (env) of 
+            [s, env] -> 
+          case popArgsFromST (n-1, env) of
+            [acc, env] -> [Push (s) : acc, env]
+        esac esac fi
+      }
+      case popArgsFromST (nargs, env) of 
+        [argPushes, env] -> 
+      var pushArgs = listBuffer (argPushes);
+      case allocate (env) of 
+        [res, env] -> [env, saveStackRegs <+> pushArgs,
+                            {} <+  Binop ("+", L (nargs*wordSize), esp)
+                               <+> restoreStackRegs
+                               <+  Mov (eax, res)]
+      esac esac
+    }
+
+    fun compileCall ([env, code], f, nargs) {
+      case preAndPostCall (env, f, nargs, Internal) of
+        [env, pre, post] -> 
+          [env, code <+> pre <+ Call (f) <+> post]
+      esac
+    }
+
+    fun compileExternalCall ([env, code], f, nargs) {
+      case preAndPostCall (env, f, nargs, Cdecl) of
+        [env, pre, post] -> 
+          [env, code <+> pre <+ Call (f) <+> post]
+      esac
+    }
+
+    fun compileCVarargCall ([env, code], f, nargs) {
+      case preAndPostCall (env, f, nargs, Cdecl) of
+        [env, pre, post] -> 
+          [env, code 
+            <+> pre 
+            <+  Push (L (nargs))
+            <+  Call (f) 
+            <+  Binop ("+", L (wordSize), esp) 
+            <+> post]
+      esac
+    }
+
+    code := code <+ Meta ("# " ++ showSMInsn (insn) ++ "\n");
+    if isBarrier (env) && isLabel (insn) != true
+    then failure ("unreachable code!")
+    else case insn of
+      BINOP (s) ->
+        case pop2 (env) of [y, x, env] -> 
+          if isCmpOp (s)
+          then [push (env, x), code <+  Binop ("^", eax, eax) 
+                                    <+> binop ("cmp", y, x) 
+                                    <+  Set (suffix (s), "%al")
+                                    <+  Mov (eax, x)]
+          elif compare (s, "/") == 0 -- op1 / op2
+          then [push (env, x), code <+ Mov (x, eax)
+                                    <+ Cltd
+                                    <+ IDiv (y)
+                                    <+ Mov (eax, x)]
+          elif compare (s, "%") == 0
+          then [push (env, x), code <+ Mov (x, eax)
+                                    <+ Cltd
+                                    <+ IDiv (y)
+                                    <+ Mov (edx, x)]
+          elif compare (s, "&&") == 0 !! compare (s, "!!") == 0
+          then [push (env, x), code <+  Binop ("^", eax, eax)
+                                    <+> binop ("test", x, x)
+                                    <+  Set ("nz", "%al")
+                                    <+  Mov (eax, x)
+                                    <+  Binop ("^", eax, eax)
+                                    <+> binop ("test", y, y)
+                                    <+  Set ("nz", "%al")
+                                    <+  Binop (s, eax, x)]
+          else [push (env, x), code <+> binop (s, y, x)]
+          fi
         esac
-      }, [env, emptyBuffer ()], code)
+    | ST (l) ->
+        case pop (env) of
+          [op1, env] -> [ env
+                        , code <+> move (op1, loc (env, l))]
+        esac
+    | STI -> 
+        case pop2 (env) of
+          [v, ref, env] -> 
+        case allocate (env) of
+            -- NOTE: ref == s
+          [s, env] -> [ env, code <+  Mov (ref, eax) 
+                                  <+  Mov (v, I (0, eax))
+                                  <+> move (v, s)]
+        esac esac
+    | LD (l) ->
+        -- NOTE:Now binop not work with arguments because they're being moved on the symbolic stack before.
+        --      It can be avoided by pushing `Arg (i)` on stack.
+        case allocate (env) of
+          [s, env] -> [ env
+                      , code <+> move (loc (env, l), s)]
+        esac
+    | LDA (l) -> 
+        case allocate (env) of
+          [s, env] -> [ env
+                      , code <+ Lea (loc (env, l), s)]
+        esac
+    | CONST (n) -> 
+        case allocate (env) of 
+          [s, env] -> [env, code <+ Mov (L (n), s)]
+        esac
+    | LABEL (s)    -> [retrieveStack (env, s), code <+ Label (s)]
+    | DROP -> 
+        case pop (env) of
+          [_, env] -> [env, code]
+        esac
+    | DUP          -> failure ("DUP")
+    | JMP (l)      -> [setBarrier (setStack (env, l)), code <+ Jmp (l)]
+    | CJMP (cond, l) -> 
+        case pop (env) of
+          [x, env] -> [ setStack (env, l)
+                      , code <+> binop ("test", x, x) 
+                             <+  CJmp (cond, l)]
+        esac
+    | BEGIN (fLabel, nArgs, nLocals) -> 
+      env := enterFunction (env, fLabel, nLocals);
+      [env, code <+> prologue (fLabel)] 
+    | GLOBAL (name) -> [addGlobal (env, name), code]
+    | END ->
+      case epilogue (env) of
+        [env, epilogueCode] -> [env, code <+> epilogueCode] 
+      esac
+    | CALL (f, n)       -> compileCall ([env, code], f, n)
+    | BUILTIN (name, n) -> compileExternalCall ([env, code], "L" ++ name, n)
+    | STRING (s) ->
+      -- NOTE: push here seems illegal 
+      case addString (env, s) of
+        [env, l] -> compileExternalCall ([push (env, M ("$" ++ l)), code], "Bstring", 1)
+      esac
+    | ARRAY (n) -> compileCVarargCall ([env, code], "Barray", n)
+    | STA       -> compileExternalCall ([env, code], "Bsta", 3)
+    | ELEM      -> compileExternalCall ([env, code], "Belem", 2)
+    esac fi
   }
 
-  compile (env, code) 
+  foldl (compileInsn, [env, emptyBuffer ()], codeSM)
 }
 
 -- A top-level codegeneration function. Takes a driver's environment and a stack machine program,
