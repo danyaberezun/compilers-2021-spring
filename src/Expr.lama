@@ -50,6 +50,7 @@ public fun evalOp (op, l, r) {
 --        Ref     (string)             |
 --        Const   (int)                |
 --        Binop   (string, expr, expr) |
+--        Scope   (def list, expr)     |
 --        Call    (string, expr list)  |
 --        Ignore  (expr)               |
 --        String  (string)             |
@@ -100,10 +101,156 @@ fun evalList (c, exprs) {
   esac
 }
 
-fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+fun eval (c@[st, w], expr) {
+  case expr of
+    Assn    (expr1, expr2)       -> assn (c, expr1, expr2)
+  | Seq     (expr1, expr2)       -> seq (c, expr1, expr2)
+  | Skip                         -> [c, Void]
+  | Read    (x)                  -> read (c, x)
+  | Write   (expr)               -> write (c, expr)
+  | If      (cond, expr1, expr2) -> evalIf (c, cond, expr1, expr2)
+  | While   (cond, innerExpr)    -> evalWhile (c, expr, innerExpr, cond)
+  | DoWhile (expr, cond)         -> eval (eval (c, expr)[0], While (cond, expr))
+  | Var     (x)                  -> [c, lookup (st, x)]
+  | Ref     (x)                  -> [c, x]
+  | Const   (i)                  -> [c, i]
+  | Binop   (op, expr1, expr2)   -> binop (c, op, expr1, expr2)
+  | Ignore  (expr)               -> [eval (c, expr)[0], Void]
+  | Scope   ({}, expr)           -> eval (c, expr)
+  | Scope   (defs, expr)         -> scope (c, defs, expr)
+  | Call    (f, exprs)           -> call (c, exprs, f)
+  | String  (s)                  -> [c, s]
+  | Array   (exprs)              -> evalArray (c, exprs)
+  | Elem    (arr, i)             -> evalElem (c, arr, i)
+  | ElemRef (arr, i)             -> evalElemRef (c, arr, i)
+  esac
 }
 
+fun evalElemRef (c, arr, i) {
+  case evalArrayAndIndex (c, arr, i) of
+    [c, arr, i] -> [c, ElemRef (arr, i)]
+  esac      
+}
+
+fun evalElem (c, arr, i) {
+  case evalArrayAndIndex (c, arr, i) of
+    [c, arr, i] -> [c, arr[i]]
+  esac      
+}
+
+fun evalArrayAndIndex (c, arr, i) {
+  case eval (c, arr) of
+    [c, arr] ->
+      case eval (c, i) of
+        [c, i] -> [c, arr, i]
+      esac
+  esac      
+}
+
+fun evalArray (c, exprs) {
+  case evalList (c, exprs) of
+    [c@[st1, w1], vals] -> [c, listArray (vals)]
+  esac
+}
+
+fun call (c@[st, w], exprs, f) {
+  case evalList (c, exprs) of 
+    [c@[st1, w1], vals] ->
+      case st1.lookupFun (f) of
+        Fun (args, External) -> 
+          case evalBuiltin (f, vals, w) of
+            [v, w] -> [[st, w], v]
+          esac
+      | Fun (args, expr) ->
+          case eval ([addArgs (enterFunction (st1), args, vals), w1], expr) of
+            [c@[st2, w2], v] -> [[leaveFunction (st, st2.getGlobal), w2], v]
+          esac
+      esac
+  esac
+}
+
+fun scope (c@[st, w], defs, expr) {
+  case eval ([addFunOrVarNames (enterScope (st), defs), w], expr) of
+    [c@[st1, w1], v] -> [[leaveScope (st1), w1], v]
+  esac
+}
+
+fun addFunOrVarNames (st, defs) {
+  foldl (
+    fun (st, def) {
+      case def of
+        Var (names)         -> addNames (st, names)
+      | Fun (f, args, expr) -> addFunction (st, f, args, expr)
+      esac
+    }, 
+    st, 
+    defs
+  )
+}
+
+fun addArgs (st, args, vals) {
+  foldl (
+    fun (st, [a, v]) {
+      st.addName (a, v)
+    }, 
+    st, 
+    zip (args, vals)
+  )
+}
+
+fun binop (c, op, expr1, expr2) {
+  case evalList (c, {expr1, expr2}) of
+    [c, {expr1, expr2}] -> [c, evalOp (op, expr1, expr2)]
+  esac
+}
+
+fun evalIf (c, cond, expr1, expr2) {
+  case eval (c, cond) of
+    [c, cond] ->
+      if cond == 0
+      then eval (c, expr2)
+      else eval (c, expr1)
+      fi
+  esac
+}
+
+fun evalWhile (c@[st, w], expr, innerExpr, cond) {
+  case eval (c, cond) of
+    [c, cond] ->
+      if cond == 0
+      then [c, Void]
+      else eval (eval (c, innerExpr)[0], expr)
+      fi
+  esac
+}
+
+fun assn (c, expr1, expr2) {
+  case evalList (c, {expr1, expr2}) of
+    [c@[st, w], {expr1, expr2}] -> 
+      case expr1 of 
+       ElemRef (arr, i) -> 
+          arr[i] := expr2;
+          [c, expr2]
+      | _ -> [[st <- [expr1, expr2], w], expr2]
+      esac
+  esac
+}
+
+fun seq (c, expr1, expr2) {
+  case evalList (c, {expr1, expr2}) of
+    [c, {expr1, expr2}] -> [c, expr2]
+  esac
+}
+
+fun read (c@[st, w], x) {
+  case readWorld (w) of
+    [n, w] -> [[st <- [x, n], w], Void]
+  esac
+}
+
+fun write (c@[st, w], expr) {
+  [[st, writeWorld (eval (c, expr)[1], w)], Void]
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
