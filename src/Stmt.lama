@@ -18,9 +18,57 @@ import World;
 --        If      (expr, stmt, stmt) |
 --        While   (expr, stmt)       |
 --        DoWhile (stmt, expr)
+public fun evalStmtAssn ([st, w], Assn (name, expr)) {
+  [st <- [name, evalExpr (st, expr)], w]
+}
+
+public fun evalStmtSeq (c, Seq (stmtLeft, stmtRight)) {
+  eval (eval (c, stmtLeft), stmtRight)
+}
+
+public fun evalStmtSkip (c, Skip) {
+  c
+}
+
+public fun evalStmtRead ([st, w], Read (name)) {
+  var world = readWorld (w);
+  [st <- [name, world[0]], world[1]]
+}
+
+public fun evalStmtWrite ([st, w], Write (expr)) {
+  [st, writeWorld (evalExpr (st, expr), w)]
+}
+
+public fun evalStmtIf (c, If (e, st1, st2)) {
+  case evalExpr (c[0], e) of
+        0 -> eval (c, st2) |
+        _ -> eval (c, st1)
+      esac
+}
+
+public fun evalStmtWhile (c, While (e, st)) {
+  case evalExpr (c[0], e) of
+        0 -> c |
+        _ -> eval (eval (c, st), While (e, st))
+      esac
+}
+
+public fun evalStmtDoWhile (c, DoWhile (st, e)) {
+  eval (eval (c, st), While (e, st))
+}
 
 fun eval (c, stmt) {
-  failure ("Stmt eval not implemented\n")
+  case stmt of 
+  Assn (_, _)   -> evalStmtAssn (c, stmt) |
+  Seq (_, _)    -> evalStmtSeq (c, stmt) |
+  Skip      -> evalStmtSkip (c, stmt) |
+  Read (_)    -> evalStmtRead (c, stmt) |
+  Write (_)     -> evalStmtWrite (c, stmt) |
+  If (_, _, _)  -> evalStmtIf (c, stmt) |
+  While (_, _)  -> evalStmtWhile (c, stmt) |
+  DoWhile (_, _)  -> evalStmtDoWhile (c, stmt) |
+  _         -> failure ("Eval is not implemented for this operation\n")
+esac
 }
 
 -- Evaluates a program with a given input and returns an output
