@@ -57,10 +57,16 @@ public rSkip        = createRegexp ("skip\\b", "skip"),
        rOd          = createRegexp ("od\\b", """od"""),
        rFor         = createRegexp ("for\\b", """for"""),
        rVar         = createRegexp ("var\\b", """var"""),
-       rVal         = createRegexp ("val\\b", """val"""),
        rFun         = createRegexp ("fun\\b", """fun""");
       
+-- Parser := a r = ((s -> a) -> r) -> s -> a
+
+-- Matcher := (buf, pos, line, col)
+-- MatchResult := Success (String, Matcher) | Fail (String, line, col)
+-- @type: cont -> Matcher -> MatchResult 
 var whiteSpace = token (rWhiteSpace);
+
+-- a |> lift (b) ~ a >> b
 
 -- Public parsers for concrete tokens
 -- Generic token parser; t is either a string or a regular expression
@@ -78,7 +84,6 @@ public kSkip    = s (rSkip),
        kOd      = s (rOd),
        kFor     = s (rFor),
        kVar     = s (rVar),
-       kVal     = s (rVal),       
        kFun     = s (rFun),
        decimal  = s (rDecimal),
        chrlit   = syntax (x=s[rChar] {case substring (x, 1, x.length - 2) of
