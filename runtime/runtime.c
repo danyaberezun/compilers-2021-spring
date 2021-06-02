@@ -23,8 +23,8 @@ typedef struct {
 } data; 
 
 typedef struct {
-  int tag; 
-  data contents; 
+  int tag;
+  data contents;
 } sexp;
 
 int Llength (void *p) {
@@ -33,25 +33,25 @@ int Llength (void *p) {
 }
 
 extern void* Bsexp (int bn, ...) {
-  va_list args; 
-  int     i;    
-  int     ai;  
-  size_t *p;  
-  sexp   *r;  
-  data   *d;  
+  va_list args;
+  int     i;
+  int     ai;
+  size_t *p;
+  sexp   *r;
+  data   *d;
   int n = UNBOX(bn);
 
   r = (sexp*) malloc (sizeof(int) * (n+1));
   d = &(r->contents);
   r->tag = 0;
-    
+
   d->tag = SEXP_TAG | ((n-1) << 3);
-  
+
   va_start(args, bn);
-  
+
   for (i=0; i<n-1; i++) {
     ai = va_arg(args, int);
-    
+
     p = (size_t*) ai;
     ((int*)d->contents)[i] = ai;
   }
