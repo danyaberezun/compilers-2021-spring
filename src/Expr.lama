@@ -79,7 +79,7 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
-                                        
+
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
@@ -94,11 +94,101 @@ fun evalList (c, exprs) {
   esac
 }
 
-(* Assignment *)
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    Const (v) -> [c, v] |
+    Var (v) -> [c, lookup(s, v)] |
+    Ref (x) -> [c, Ref(x)] |
+    Binop (o, e1, e2) ->
+      case evalList(c, {e1, e2}) of
+        [c, {lhs, rhs}] -> [c, evalOp(o, lhs, rhs)]
+      esac |
+    Assn (e1, e2) ->
+      case evalList(c, {e1, e2}) of
+        [[s, w], {Ref(n), v}] -> [[s <- [n, v], w], v]
+      esac |
+    Seq (s1, s2) ->
+      case eval(c, s1) of
+        [c, _] -> eval(c, s2)
+      esac |
+    Read (n) ->
+      var res = readWorld(w);
+      [[(s <- [n, res[0]]), res[1]], Bottom] |
+    Write (se) ->
+      case eval(c, se) of
+        [[s, w], v] -> [[s, writeWorld(v, w)], Bottom]
+      esac |
+    If (cond, b1, b2) ->
+      case eval(c, cond) of
+        [c, 0] -> eval(c, b2) |
+        [c, _] -> eval(c, b1)
+      esac |
+    While (cond, body) ->
+      case eval(c, cond) of
+        [c, 0] -> [c, Bottom] |
+        _ -> eval(eval(c, body)[0], expr)
+      esac |
+    DoWhile (body, cond) ->
+      case eval(eval(c, body)[0], cond) of
+        [c, 0] -> [c, Bottom] |
+        [c, _] -> eval(c, expr)
+      esac |
+    Ignore (se) -> [eval(c, se)[0], Bottom] |
+    Scope(defs, e) ->
+      if size (defs) == 0 then
+        eval (c, e)
+      else
+        s := enterScope(s);
+        while size(defs) > 0 do
+          s := case defs[0] of
+            Var (vs) -> addNames (s, vs) |
+            Fun (name, args, body) -> addFunction (s, name, args, body)
+          esac;
+          defs := defs.tl
+        od;
+        case eval([s, w], e) of
+          [[s, w], v] ->
+            [[leaveScope(s), w], v]
+        esac
+      fi |
+      Call(name, args) ->
+        checkFun(s, name);
+        case lookup(s, name) of Fun(argNames, body) ->
+          var oldS = s;
+          case evalList(c, args) of [[s, w], argValues] ->
+            s := enterFunction(s);
+            while size(argNames) > 0 do
+              s := addName(s, argNames[0], argValues[0]);
+              argNames := argNames.tl;
+              argValues := argValues.tl
+            od;
+            case eval([s, w], body) of [[s, w], ret] ->
+              s := leaveFunction(oldS, getGlobal (s));
+              [[s, w], ret]
+            esac
+          esac
+        esac |
+    Skip -> [c, Bottom]
+  esac
 }
-(* End *)
+
+public fun evalBinop (s, e1, e2) {
+  case s of
+    "+" -> e1 + e2 |
+    "-" -> e1 - e2 |
+    "*" -> e1 * e2 |
+    "/" -> e1 / e2 |
+    "%" -> e1 % e2 |
+    "<" -> e1 < e2 |
+    ">" -> e1 > e2 |
+    "<=" -> e1 <= e2 |
+    ">=" -> e1 >= e2 |
+    "==" -> e1 == e2 |
+    "!=" -> e1 != e2 |
+    "&&" -> e1 && e2 |
+    "!!" -> e1 !! e2
+  esac
+}
 
 -- Evaluates a program with a given input and returns an output
 public fun evalExpr (input, expr) {
