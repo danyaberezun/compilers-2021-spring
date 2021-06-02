@@ -1,0 +1,248 @@
+-- Stack machine.
+
+import Array;
+import List;
+import Fun;
+import Collection;
+import World;
+import State;
+import Expr;
+import Buffer;
+
+-- Stack code printer. Takes a list of SM instructions, return its
+-- string representation.
+public fun showSMInsn (i) {
+  case i of
+    Read         -> sprintf ("READ")
+  | Write        -> sprintf ("WRITE")
+  | Binop (s)    -> sprintf ("BINOP %s", s)
+  | LD    (x)    -> sprintf ("LD %s", x)
+  | ST    (x)    -> sprintf ("ST %s", x)
+  | Const (n)    -> sprintf ("CONST %d", n)
+  | LABEL (s)    -> sprintf ("LABEL %s", s)
+  | JMP   (l)    -> sprintf ("JMP %s", l)
+  | CJMP  (c, l) -> sprintf ("CJMP %s, %s", c, l)
+  esac
+}
+
+public fun showSM (prg) {
+  map (fun (i) {showSMInsn (i) ++ "\n"}, prg).stringcat
+}
+
+-- Evaluation environment: keeps a mapping between labels and (sub)programs
+fun initEvalEnv (insns) {
+  var map =
+    fix (fun (rec) {
+          fun ([m, insns]) {
+            case insns of
+              {}               -> m
+            | LABEL (lab) : tl -> rec ([addMap (m, lab, insns), tl])
+            | _ : tl           -> rec ([m, tl])
+            esac
+          }
+        }) $ [emptyMap (compare), insns];
+
+  [fun (l) {
+     case findMap (map, l) of Some (insns) -> insns esac
+  }]
+}
+
+-- Accessor function
+fun fromLabel (env, lab) {
+  env [0] (lab)
+}
+
+public fun evalInsnRead ([stack, st, w], Read) {
+  var world = readWorld (w);
+  [world[0] : stack, st, world[1]]
+}
+
+public fun evalInsnWrite ([value : stack, st, w], Write) {
+  [stack, st, writeWorld (value, w)]
+}
+
+public fun evalInsnBinop ([exprRight : exprLeft : stack, st, w], Binop (op)) {
+  [evalExprBinop (op, exprLeft, exprRight) : stack, st, w]
+}
+
+public fun evalInsnLd ([stack, st, w], LD (name)) {
+  [st(name) : stack, st, w]
+}
+
+public fun evalInsnSt ([value:stack, st, w], ST (name)) {
+  [stack, st <- [name, value], w]
+}
+
+public fun evalInsnConst ([stack, st, w], Const (value)) {
+  [value : stack, st, w]
+}
+
+-- Stack machine interpreter. Takes an SM-configuration and a program,
+-- returns a final configuration
+fun eval (env, c, insns) {
+  fun oldInsnsCheck (c, insn) {
+    case insn of
+      Read       -> evalInsnRead (c, insn) |
+      Write      -> evalInsnWrite (c, insn) |
+      Binop (_)  -> evalInsnBinop (c, insn) |
+      LD (_)     -> evalInsnLd (c, insn) |
+      ST (_)     -> evalInsnSt (c, insn) |
+      Const  (_) -> evalInsnConst (c, insn) |
+      _          -> failure ("eval is not implemented for this operation\n")
+    esac
+  } 
+
+  fun newInsnsCheck (c, insns) {
+    case insns.hd of
+      JMP (l) -> [[c[0], c[1], c[2]], env.fromLabel (l)] |
+      CJMP (cond, l) -> (
+        if (compare("nz", cond) == 0 && c[0].hd != 0 !! compare("z", cond) == 0 && c[0].hd == 0)
+          then [[c[0].tl, c[1], c[2]], env.fromLabel (l)]
+          else [[c[0].tl, c[1], c[2]], insns.tl]
+        fi
+      ) |
+      _ -> [[c[0], c[1], c[2]], insns.tl]
+    esac
+  }
+
+  while size(insns) > 0 do
+    -- printf("%s\n", insns.hd.string);
+    case insns of
+      _ -> (
+        var newData = newInsnsCheck (oldInsnsCheck (c, insns.hd), insns);
+        c := newData[0];
+        insns := newData[1]
+      )
+    esac
+  od;
+  c    
+}
+
+-- Runs a stack machine for a given input and a given program, returns an output
+public fun evalSM (input, insns) {
+  eval ([{}, emptyState, createWorld (input)], insns)[2].getOutput
+}
+
+-- Compilation environment: generates labels
+fun makeCompEnv (n) {
+  [fun () {
+     [sprintf ("L%d", n), makeCompEnv (n+1)]
+  }]
+}
+
+fun initCompEnv () {
+  makeCompEnv (0)
+}
+
+-- Accessor function: generates one label
+fun genLabel (env) {
+  env [0] ()
+}
+
+-- Utility function: generates n labels
+fun genLabels (env, n) {
+  fun inner (env, n) {
+    if n == 0
+    then {env}
+    else case env.genLabel of
+           [lab, env] -> lab : inner (env, n-1)
+         esac
+    fi
+  }
+
+  listArray (inner (env, n))
+}
+
+public fun compileExprVar (Var (name)) {
+  singletonBuffer (LD (name))
+}
+
+public fun compileExprConst (Const (value)) {
+  singletonBuffer (Const (value))
+}
+
+public fun compileExprBinop (Binop (op, exprLeft, exprRight)) {
+  compileExprBuffer (exprLeft) <+> compileExprBuffer (exprRight) <+> singletonBuffer (Binop (op))
+}
+
+-- Compiles an expression into a stack machine code.
+-- Takes an expression, returns a list 
+-- of stack machine instructions
+fun compileExpr (expr) {
+  getBuffer (compileExprBuffer (expr))
+}
+
+fun compileExprBuffer (expr) {
+  case expr of
+    Var (v)           -> compileExprVar (expr) | 
+    Const (_)         -> compileExprConst (expr) |
+    Binop (s, e1, e2) -> compileExprBinop (expr) |
+    _                 -> failure ("compileExpr is not implemented for this operation\n")
+  esac
+}
+
+public fun compileStmtAssn (Assn (name, expr), env) {
+  [compileExprBuffer(expr) <+> singletonBuffer (ST (name)), env]
+}
+
+public fun compileStmtSeq (Seq (stmtLeft, stmtRight), env) {
+  var newData = compileSMBuffer (stmtLeft, env);
+  var insns = newData[0];
+  newData := compileSMBuffer (stmtRight, newData[1]);
+  [insns.concatBuffer(newData[0]), newData[1]]
+}
+
+public fun compileStmtRead (Read (name), env) {
+  [singletonBuffer (Read) <+> singletonBuffer (ST (name)), env]
+}
+
+public fun compileStmtWrite (Write (expr), env) {
+  [compileExprBuffer (expr) <+> singletonBuffer (Write), env]
+} 
+
+public fun compileStmtSkip (Skip, env) {
+  [emptyBuffer (), env]
+} 
+
+public fun compileStmtWhile (While (c, s), env) {
+  case env.genLabels(2) of [l1, l2, newEnv] ->
+    var newData = compileSMBuffer (s, newEnv);
+    [singletonBuffer (JMP (l1)) <+ LABEL (l2) <+> newData[0] <+ LABEL (l1)
+      <+> compileExprBuffer (c) <+ CJMP ("nz", l2), newData[1]]
+  esac
+}
+
+public fun compileStmtDoWhile (DoWhile(s, c), env) {
+  case env.genLabels(1) of [l, newEnv] ->
+    var newData = compileSMBuffer (s, newEnv);
+    [singletonBuffer (LABEL (l)) <+> newData[0] <+> compileExprBuffer (c) <+ CJMP ("nz", l), newData[1]]
+  esac  
+}
+
+public fun compileIf (If (c, st1, st2), env) {
+  case env.genLabels(2) of [l1, l2, newEnv] ->
+    var newData = compileSMBuffer (st1, newEnv);
+    var insns = compileExprBuffer (c) <+ CJMP ("z", l1) <+> newData[0];
+    newData := compileSMBuffer (st2, newData[1]);
+    [insns <+ JMP (l2) <+ LABEL (l1) <+> newData[0] <+ LABEL (l2), newData[1]]
+  esac
+}
+
+-- Compiles a statement into a stack machine code.
+-- Takes a statement, returns a list of stack machine
+-- instructions.
+public fun compileSMBuffer (stmt, env) {
+  case stmt of
+    Assn (_, _)  -> compileStmtAssn (stmt, env) |
+    Seq (_, _)   -> compileStmtSeq (stmt, env) |
+    Skip         -> compileStmtSkip (stmt, env) |
+    Read (_)     -> compileStmtRead (stmt, env) |
+    Write (_)    -> compileStmtWrite (stmt, env) |
+    While (c, s) -> compileStmtWhile (stmt, env) |
+    _           -> failure ("compileSM is not implemented for this operation\n")
+  esac
+}
+
+public fun compileSM (stmt) {
+  getBuffer (compileSMBuffer (stmt, initCompEnv ())[0])
+}
