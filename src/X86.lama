@@ -273,22 +273,85 @@ fun suffix (op) {
   esac
 }
 
+fun binopCompile (op, e1, e2) {
+   case op of
+     "+" -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, eax, e2)) |
+     "-" -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, e2, eax)) <+> move (eax, e2) |
+     "*" -> move (e1, eax)
+       <+> singletonBuffer (Binop (op, e2, eax)) <+> move (eax, e2)|
+     "/" -> move (e1, eax) <+ Cltd <+ IDiv(e2) <+> move (eax, e2) |
+     "%" -> move (e1, eax) <+ Cltd <+ IDiv(e2) <+> move (edx, e2) |
+     "<" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     ">" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     "<=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     ">=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     "==" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     "!=" -> move (e2, eax) <+ Binop ("cmp", eax, e1) <+ Mov (L(0), eax)
+       <+ Set (suffix (op), "%al") <+> move (eax, e2) |
+     "&&" -> move (L(0), edx) <+> binopCompile ("<", edx, e1) <+> binopCompile ("<", edx, e2)
+       <+> binopCompile ("+", e1, e2) <+>  move (L(1), edx) <+> binopCompile ("<", edx, e2) |
+     "!!" -> move (L(0), edx) <+> binopCompile ("<", edx, e1) <+> binopCompile ("<", edx, e2)
+       <+> binopCompile ("+", e1, e2) <+> binopCompile ("<", edx, e2)
+   esac
+ }
+
 -- Compiles stack machine code into a list of x86 instructions. Takes an environment
 -- and stack machine code, returns an updated environment and x86 code.
+public fun compileRead (env, code) {
+  case env.allocate of
+    [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
+  esac
+}
+
+public fun compileWrite (env, code) {
+  case env.pop of
+    [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
+  esac
+}
+
+public fun compileConst (env, code, n) {
+  case env.allocate of
+    [s, env] -> [env, code <+> move (L (n), s)]
+  esac
+}
+
+public fun compileLD (env, code, x) {
+  case env.addGlobal (x).allocate of
+    [s, env] -> [env, code <+> move (env.loc (x), s)]
+  esac
+}
+
+public fun compileST (env, code, x) {
+  case env.addGlobal (x).pop of
+    [s, env] -> [env, code <+> move (s, env.loc (x))]
+  esac
+}
+
+public fun compileBinop (env, code, op) {
+  case env.pop2 of
+    [e2, e1, env] -> [env.push(e2), code <+> binopCompile(op, e1, e2)]
+  esac
+}
+
 fun compile (env, code) {
   foldl (
     fun ([env, scode], i) {
       var code = scode <+ Meta ("# " ++ showSMInsn (i) ++ "\n");
       case i of
-        READ ->
-          case env.allocate of
-            [s, env] -> [env, code <+ Call ("Lread") <+ Mov (eax, s)]
-          esac             
-      | WRITE ->
-          case env.pop of
-            [s, env] -> [env, code <+ Push (s) <+ Call ("Lwrite") <+ Pop (eax)]
-          esac
-      | _ -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
+        Read       -> compileRead (env, code) |           
+        Write      -> compileWrite (env, code) |
+        Const (n)  -> compileConst (env, code, n) |
+        LD (x)     -> compileLD (env, code, x) |
+        ST (x)     -> compileST (env, code, x) |
+        Binop (op) -> compileBinop (env, code, op) |
+        _          -> failure ("codegeneration for instruction %s is not yet implemented\n", i.string)
       esac
     }, [env, emptyBuffer ()], code)
 }
