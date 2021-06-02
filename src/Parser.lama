@@ -95,30 +95,17 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn (Ref (ident), value)), expr)]
              esac
            },
            [{}, expr],
            defs)
   }
-
-  fun expandValDefs (defs, expr) {
-    foldr (fun ([defs, expr], [ident, value]) {     
-             [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
-           },
-           [{}, expr],
-           defs)
-  }
-  
-  case 
+  case
     foldr (fun ([defs, expr], def) {
              case def of
                f@Fun (_, _, _) -> [f : defs, expr]
-             | Val (ds) ->
-                 case expandValDefs (ds, expr) of
-                   [ds, expr] -> [Val (ds) : defs, expr]
-                 esac
-             | Var (ds) ->             
+             | Var (ds) ->
                  case expandVarDefs (ds, expr) of
                    [ds, expr] -> [Var (ds) : defs, expr]
                  esac
@@ -169,9 +156,10 @@ fun reifyPatternBindings (matched, brs) {
       | bindings ->
            [pat,
              expandScope (
-               {Val (map (
+               {Var (map (
                       fun ([name, path]) {
-                        [name, foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path)]
+                        var value = foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path);
+                        [name, Some (value)]
                       },
                       bindings))},
                br
@@ -224,12 +212,79 @@ var
                           None        -> returnST $ Sexp (x, {})
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
-    } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
+    } | inbr[s("("), scopeExpr, s(")")]
+      | loc=pos kSkip { fun (a) { assertVoid (a, returnST $ Skip, loc)   } }
+      | loc=pos kWhile condE=exp kDo bodyE=scopeExpr kOd {
+            fun (a) {
+              var n = chainST ({condE (Val), bodyE (Void)}) => fun ({cond, body}) { While (cond, body)};
+              assertVoid (a, n, loc)
+            }
+          }
+      |loc=pos kDo bodyE=scopeExpr kWhile condE=exp kOd {
+          fun (a) {
+            var n = chainST ({bodyE (Void), condE (Val)}) => fun ({body, cond}) {
+              distributeScope (body, fun (bodyExpr) { DoWhile (bodyExpr, cond)})
+            };
+            assertVoid (a, n, loc)
+          }
+        }
+      |loc=pos kFor initSE=scopeExpr s[","] condE=exp s[","] stepE=exp kDo bodySE=scopeExpr
+          kOd {
+            fun (a) {
+              var res = chainST ({initSE (Void), condE (Val), stepE (Void), bodySE (Void)}) => fun ({init, cond, step, body}) {
+                var loopBody = Seq (body, step);
+                var loop = While (cond, loopBody);
+                distributeScope (init, fun (initExpr) {
+                  Seq (initExpr, loop)
+                })
+              };
+              assertVoid (a, res, loc)
+            }
+        } 
+      | kIf condE=exp kThen thenSE=scopeExpr elseP=elseParser {
+          fun (a) { chainST ({condE (Val), thenSE (a), elseP (a)}) => fun ({cond, thenBody, elseBody}) {If (cond, thenBody, elseBody)}}} 
+      
+      |kCase scrutineeE=exp kOf patternsExprsP=listPatternsParser kEsac {
+        fun (a) {
+                chainST ({scrutineeE (Val), patternsExprsP (a), freshName}) => fun ({scrutinee, patternsExprs, varName}) {
+                    var curDefinition = Var ({ varName });
+                    var curAssn = Assn (Ref (varName), scrutinee);
+                    var curCase = Case (varName, reifyPatternBindings (varName, patternsExprs));
+                    var curExpr = Seq (Ignore (curAssn), curCase);
+                    Scope ({curDefinition}, curExpr)
+                }
+        }
+    }
+  );
 
-  basic = memo $ eta (
+var elseParser = memo $ eta syntax (
+    kElif condE=exp kThen thenSE=scopeExpr elseP=elseParser {
+      fun (a) {
+        chainST ({condE (Val), thenSE (a), elseP (a)}) => fun ({cond, thenBody, elseBody}) { If (cond, thenBody, elseBody)}}}
+    | -kElse scopeExpr -kFi
+    | loc=pos kFi {fun (a) {assertVoid (a, returnST (Skip), loc)}}
+  );
+
+var patternParser = memo $ eta syntax (
+    s["_"] {Wildcard}
+    | x=decimal {Const (stringInt (x))}
+    | s["["] patterns=list0[patternParser] s["]"] { Array (patterns)}
+    | n=uident s["("] patterns=list0[patternParser] s[")"] { Sexp (n, patterns)}
+    | n=uident { Sexp (n, {}) }
+    | x=lident s["@"] pattern=patternParser {Named (x, Some (pattern))}
+    | x=lident { Named (x, None)}
+  );
+
+var patternExprParser = memo $ eta syntax (
+      pattern=patternParser s["->"] e=scopeExpr {fun (a) { e (a) => fun (expr) { [pattern, expr] } } }
+  );
+
+var listPatternsParser = memo $ eta syntax (
+      patternExprsP=patternExprParser { fun (a) { patternExprsP (a) => fun (patternExpr) { {patternExpr} } } }
+    | patternExprsP=patternExprParser s["|"] otherCases=listPatternsParser {
+      fun (a) { chainST ({patternExprsP (a), otherCases (a)}) => fun ({patternExpr, rest}) {patternExpr : rest}}});
+  
+var  basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
                                  fun (a) {assertValue (a, l (Ref) =>> fun (l) {
                                                           r (Val) =>  fun (r) {
@@ -297,9 +352,6 @@ var
                                                       esac})] s[";"] {
       chainST (ds) => fun (ds) {Var (ds)}
     } |
-    kVal ds=list[syntax (x=lident s["="] e=basic {e (Val) => fun (e) {[x, e]}})] s[";"] {
-      chainST (ds) => fun (ds) {Val (ds)}
-    } |  
     kFun name=lident args=inbr[s("("), list0 (lident), s(")")] body=inbr[s("{"), scopeExpr, s("}")] {
       body (Weak) => fun (body) {Fun (name, args, body)}
     }
