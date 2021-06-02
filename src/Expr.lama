@@ -1,5 +1,5 @@
 -- Expression evaluator
-
+-- Alhasan Alkhaddour M41381c - Final
 import List;
 import Array;
 import State;
@@ -101,8 +101,215 @@ fun evalList (c, exprs) {
   esac
 }
 
+-- Define scope vars
+fun initScopeElements(st, defs){
+  while size(defs) > 0 do
+    st := case defs[0] of 
+           Var (v) -> addNames (st, v)
+         | Val (v) -> addNames (st, v)
+         | Fun (f, args, body) -> addFunction (st, f, args, body)
+         esac;
+    defs := defs.tl
+  od;
+  st
+}
+
+-- Add Fun args to state
+fun regArgs (st, argsNames, args){
+  while size(args) > 0 do
+    st := addName(st, argsNames[0], Val(args[0]));
+    argsNames := argsNames.tl;
+    args := args.tl
+  od;
+  st
+}
+
+-- Eval branches in Case statement
+fun evalBranches (c, branches, scrutinee) {
+  case branches of
+      [pattern, branch] : branches -> 
+        if match (pattern, scrutinee) 
+            then eval (c, branch)
+            else evalBranches (c, branches, scrutinee)
+        fi
+  esac
+}
+
+-- match received pattern with given scrutinee
+fun match (pattern, scrutinee) {
+  case [pattern, scrutinee] of
+      [Named (_, pattern), scrutinee]       -> match (pattern, scrutinee)
+    | [Array (args), vals]                  -> matchList (args, arrayList (vals))
+    | [Const (n), scrutinee]                -> n == scrutinee
+    | [Wildcard, scrutinee]                 -> 1 
+    | [Sexp (s1, args1), Sexp (s2, args2)]    ->  if compare (s1, s2) == 0                     -- S-epressions have the same name
+                                                    then matchList (args1, arrayList (args2))  -- Check also args
+                                                  else 0
+                                              fi  
+    | _ -> 0
+  esac
+}
+
+-- match a list of patterns with scrutinees
+fun matchList (patterns, scrutinees) {
+  case [patterns, scrutinees] of 
+      [pattern: patterns, scrutinee : scrutinees] ->  
+          if match (pattern, scrutinee)
+              then matchList (patterns, scrutinees)
+              else 0
+          fi
+  | [{}, {}]   -> 1
+  | _          -> 0
+  esac
+}
+
+-- s: a state; partial maps from variables into values
+-- w: a world; holds input-output streams
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+  case expr of
+    -- Assn    (expr, expr)     
+      Assn(var_, val_) ->
+          case evalList (c, {var_, val_}) of
+              [c, {ElemRef(lst, idx), v}] -> 
+                  lst[idx] := v; 
+                  [c,v]
+            | [[s,w], {Ref(x),v}] ->
+                  var newSt = s <- [x, Val(v)];
+                  [[newSt, w], v]
+          esac
+
+    -- Seq     (expr, expr)         
+    | Seq (exp1, exp2) -> 
+          case eval(c, exp1) of
+              [c, _] -> eval(c, exp2)
+          esac 
+
+    -- Skip                         
+    | Skip -> [c, Void]
+
+    -- if      (expr, expr, expr)   
+    | If (cond, thenStmt, elseStmt) ->
+          case eval(c, cond) of
+                [c, 0] -> eval(c, elseStmt) 
+              | [c, _] -> eval(c, thenStmt)
+          esac 
+
+    -- While   (expr, expr)         
+    | While (cond, body) ->
+        case eval(c, cond) of 
+            [c, 0] -> [c, Void] 
+          | _ -> var newSt = eval(c, body)[0];
+                 eval(newSt, expr)              -- Check While again
+        esac 
+    
+    -- Repeat  (expr, expr)         
+    | DoWhile (cond, body) ->
+        var newSt = eval(c, body)[0];          -- execute body at least once
+        case eval(newSt, cond) of              -- then start checking condition
+            [c, 0] -> [c, Void] 
+            | [c, _] -> eval(c, expr)
+        esac  
+
+    -- Var     (string)             
+    | Var (v) -> 
+        [c, case lookupVal (s, v) of Val (v2) -> v2 esac]
+
+    -- Ref     (string)             
+    | Ref (x) -> 
+        [c, Ref(x)]
+
+    -- Const   (int)                
+    | Const (n) -> 
+        [c, n]
+
+    -- Binop   (string, expr, expr) 
+    | Binop (op, l_expr, r_expr) -> 
+          case eval (c, l_expr) of [c, l_val] -> 
+              case eval (c, r_expr) of [c, r_val] -> 
+                  [c, evalOp (op, l_val, r_val)] 
+              esac 
+          esac
+    
+    -- Scopes(list, expr)
+    | Scope (defs, body) -> 
+        if size (defs) == 0 then
+            eval (c, body)
+        else
+            s := enterScope (s);
+            s := initScopeElements (s, defs);
+            case eval ([s,w], body) of
+                [[s,w], r] -> [[leaveScope (s), w], r]
+            esac
+        fi
+    
+    -- Call    (string, expr list)  
+    | Call (f, args) ->  
+        case lookup (s, f) of Fun (argsNames, body) ->              -- get Fun definition
+            case evalList (c, args) of [[s, w], args] ->            -- Evaluate passed args 
+                s := regArgs(enterFunction (s), argsNames, args);   -- Create new state with args as params in it
+                case body of External ->                            -- In case of built-in functions, body is marked as External (Check fun evalExpr)
+                    case evalBuiltin (f, args, w) of [result, w] ->
+                        [ [leaveFunction(c[0], getGlobal(s)), w], result]
+                    esac 
+                  | _ ->
+                    case eval ([s, w], body) of [[s,w], result] -> 
+                        [ [leaveFunction(c[0], getGlobal(s)), w], result]
+                    esac                  
+                esac
+            esac
+        esac  
+
+    -- Ignore  (expr)               
+    | Ignore (exprs) -> 
+        [eval(c, exprs)[0], Void]
+        
+    -- String  (string)             
+    | String(s) ->  
+        [c, s] 
+
+    -- Array   (expr list)          
+    | Array(lst) ->
+        case evalList(c, lst) of 
+            [c, elements] -> [c, listArray(elements)]
+        esac 
+
+    -- Elem    (expr, expr)         
+    | Elem (container, idx_expr) -> 
+        case evalList (c, {container, idx_expr}) of
+            [c, {container, idx}] -> 
+                case container of
+                    Sexp (name, lst) -> [c, lst[idx]]
+                  | _ -> [c, container[idx]]
+                esac
+        esac
+    
+    -- ElemRef (expr, expr)         
+    | ElemRef (container, idx_expr) -> 
+        case evalList (c, {container, idx_expr}) of
+            [c, {container, idx}] -> 
+                case container of
+                    Sexp (name, lst) -> [c, ElemRef (lst, idx)] 
+                  | _ -> [c, ElemRef (container, idx)]
+          esac 
+        esac
+
+    -- Sexp (String, List)
+    | Sexp (name, lst) -> 
+        case evalList (c, lst) of
+            [c, lst] -> [c, Sexp (name,listArray(lst))]
+        esac
+
+    -- Case (expr, exprs)
+    | Case (scrutinee, branches) -> 
+        case eval (c, scrutinee) of
+            [c, scrutinee] -> 
+                evalBranches (c, branches, scrutinee)
+        esac
+
+    -- Something out of our universe    
+    | _ ->
+        failure ("Undefined expression: %s\n\n", string(expr))
+  esac
 }
 
 
