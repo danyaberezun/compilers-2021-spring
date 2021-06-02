@@ -95,7 +95,7 @@ fun expandScope (defs, expr) {
     foldr (fun ([defs, expr], def) {     
              case def of
                 [ident, None]         -> [ident : defs, expr]
-             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Set (ident, value)), expr)]
+             |  [ident, Some (value)] -> [ident : defs, Seq (Ignore (Assn ( Ref(ident), value)), expr)]
              esac
            },
            [{}, expr],
@@ -169,9 +169,9 @@ fun reifyPatternBindings (matched, brs) {
       | bindings ->
            [pat,
              expandScope (
-               {Val (map (
+               {Var (map (
                       fun ([name, path]) {
-                        [name, foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path)]
+                        [name, Some (foldr (fun (p, i) {Elem (p, Const (i))}, Var (matched), path))]
                       },
                       bindings))},
                br
@@ -225,10 +225,147 @@ var
                         | Some (args) -> chainST (args) => fun (args) {Sexp (x, args)}
                         esac, loc)}
     } |
-  
-    $(failure ("the rest of primary parsing in not implemented\n"))),
-   
+	
+								loc=pos kSkip {
+									fun (a) {
+										assertVoid (a, returnST (Skip), loc)
+									}
+								  } |
+								loc=pos kIf cond=exp kThen thenExp=exp elseExp=parseElse {
+									fun (a) {
+										var condst = cond (Val);
+										var thenst = thenExp (a);
+										var elsest = elseExp (a);
+										chainST ({condst, thenst, elsest}) => fun ({cond, thenExp, elseExp}) {
+											If (cond, thenExp, elseExp)
+										}
+									}
+								  } |
+								  loc=pos kWhile cond=exp kDo body=scopeExpr kOd {
+									  fun (a) {
+										var condst = cond (Val);
+										var bodyst = body (Void);
+										var res = chainST ({condst, bodyst}) => fun ({cond, body}) {
+										  While (cond, body)
+										};
+										assertVoid (a, res, loc)
+									  }
+									} |
+									loc=pos kDo body=scopeExpr kWhile cond=exp  kOd {
+										  fun (a) {
+											var condst = cond (Val);
+											var bodyst = body (Void);
+											var res = chainST ({bodyst,condst}) => fun ({body, cond}) {
+												distributeScope (body, fun (bodyExpr) {
+													DoWhile (bodyExpr, cond)
+												})
+											};
+											assertVoid (a, res, loc)
+										  }
+										} |
+								  loc=pos kFor init=scopeExpr s[","] cond=exp s[","] step=exp kDo body=scopeExpr kOd {
+									fun (a) {
+										var initst = init(Void);
+										var condst = cond(Val);
+										var bodyst = body(Void);
+										var stepst = step(Void);
+										var res = chainST ({initst, condst, stepst, bodyst}) => 
+											fun ({init, cond, step, body}) {
+												distributeScope (
+													init,
+													fun(init) {
+														Seq (
+															init,
+															While (cond, Seq (body, step))
+														)
+													}
+												)
+											};
+										assertVoid (a, res, loc)
+									}
+								  } |
+								  loc = pos kCase vexp=exp kOf patterns=patternsExprs kEsac {
+										fun (a) {
+											var vst = vexp(Val);
+											var patternsst = patterns(a);
+											chainST ({vst, patternsst, freshName}) => fun ({vexp, patterns, vname}) {
+												var curdefs = Var ({vname});
+												var curexp = Seq (
+														Ignore (Assn (Ref (vname), vexp))
+													,	Case (vname, reifyPatternBindings(vname, patterns))
+													);
+												Scope ({curdefs}, curexp)
+											}
+										}
+								  } |
 
+								inbr[s ("("), scopeExpr, s(")")] ),
+   
+      parseElse = memo $ eta syntax (
+		loc=pos kElif cond=exp kThen thenExp=exp elseExp=parseElse  {
+			fun (a) {
+				var condst = cond (Val);
+ 				var thenst = thenExp (a);
+ 				var elsest = elseExp (a);
+ 				chainST ({condst, thenst, elsest}) => fun ({cond, thenBody, elseBody}) {
+					If (cond, thenBody, elseBody)
+				}
+			}
+		} |
+		loc=pos kElse elseExp=exp kFi {
+			elseExp
+		}  |
+		loc=pos kFi {
+			fun (a) {
+				assertVoid (a, returnST(Skip), loc)
+			}
+		}
+	  ),
+	  decl = memo $ eta syntax (
+			loc=pos kVar vars=list[syntax (lident (s["="] expr=basic { expr(Val)})?)] s[";"] {
+				Var (vars)
+			} |
+			loc=pos kFun funname=lident args=inbr[s("("), list0(lident), s(")")] body=inbr[s("{"), scopeExpr, s("}")] {
+				Fun (funname, args, body(Weak))
+			}
+	  ),
+	  patternExpr = memo $ eta syntax (
+			p=patternParser s["->"] expr=scopeExpr {
+				fun (a) {
+					var expST = expr (a);
+					expST => fun (expr) {[p, expr]}
+				}
+			}
+		),
+	patternsExprs = memo $ eta syntax (
+		pattern=patternExpr {
+			fun (a) {
+				var patternst = pattern (a);
+				patternst => fun (patternExpr) {
+					{patternExpr}
+				}
+			}
+		} |
+		pattern = patternExpr s["|"] tail=patternsExprs {
+			fun (a) {
+				var patternst =  pattern(a);
+				var tailst = tail(a);
+				chainST ({patternst, tailst}) => fun ({pattern, tail}) {
+					pattern : tail
+				}
+			}
+		}
+	), 
+	
+	  patternParser = memo $ eta syntax (
+			s["_"] {Wild} |
+			x=decimal {Const (stringInt (x))} |
+			s["["] patterns=list0[patternParser] s["]"] {Array (patterns)} |
+			sexpName=uident s["("] patterns=list0[patternParser] s[")"] {Sexp (sexpName, patterns)} |
+			sexpName=uident {Sexp (sexpName, {})} |
+			varName=lident s["@"] pattern=patternParser {Named (varName, Some (pattern))} |
+			varName=lident {Named (varName, None)}
+	  ),
   basic = memo $ eta (
     expr ({[Right, {[s (":="), fun (l, loc, r) {
                                  fun (a) {assertValue (a, l (Ref) =>> fun (l) {

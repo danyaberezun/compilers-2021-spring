@@ -41,12 +41,11 @@ public fun evalOp (op, l, r) {
 -- A expression is represented by a data structure of the following shape:
 --
 -- expr = Assn    (expr, expr)         |
---        Set     (string, expr)       |
 --        Seq     (expr, expr)         |
 --        Skip                         |
 --        if      (expr, expr, expr)   |
 --        While   (expr, expr)         |
---        Repeat  (expr, expr)         |
+--        DoWhile (expr, expr)         |
 --        Var     (string)             |
 --        Ref     (string)             |
 --        Const   (int)                |
@@ -86,13 +85,37 @@ fun addNames (state, names) {
 fun addFunction (state, name, args, body) {
   state.addName (name, Fun (args, body))
 }
+
+fun addDefinitions (state, deflist) {
+	case deflist of
+		def : othersdef -> (
+			case def of 
+					Var (name) -> addDefinitions(addNames(state, name), othersdef)
+				|	Fun (name, args, body) -> addDefinitions(addFunction(state, name, args, body), othersdef)
+			esac
+			
+		)
+		|	_ -> state
+	esac
+}
+
+fun addArgs (state, args, values) {
+	case [args, values] of
+			[arg:otherArgs, value:otherValues] -> (
+				var news = addName(state, arg, Var(value));
+				addArgs (news, otherArgs, otherValues)
+			)
+		|	_ -> state
+	esac
+}
+
                                         
 -- Evaluates a list of expressions, properly threading a configurations.
 -- Returns the final configuration and the list of values
 fun evalList (c, exprs) {
   case foldl (fun ([c, vals], e) {
                 case eval (c, e) of
-                  [c, vl] -> [c, vl : vals]
+                  [c, v] -> [c, v : vals]
                 esac
               },
               [c, {}],
@@ -101,8 +124,224 @@ fun evalList (c, exprs) {
   esac
 }
 
+
+
+fun matchArrays (arr_p, arr_v) {
+	case [arr_p, arr_v] of
+			[{}, {}] -> true
+		|	[{}, _] -> false
+		|	[_, {}] -> false
+		|	[p : arr_p_tail, v:arr_v_tail] -> (
+			if (match(v, p))
+			then matchArrays(arr_p_tail, arr_v_tail)
+			else false
+			fi
+		)
+	esac
+}
+
+
+fun match (v, pattern) {
+	case [pattern, v] of 
+			[Wild, _] -> true
+		|	[Const (v1), v2] -> v1 == v2
+		|	[arr1 @ Array (_), arr2] -> matchArrays (arr1, arrayList (arr2))
+		|	[Sexp (name1, arr1), Sexp(name2, arr2)] -> compare (name1, name2) == 0 && matchArrays (arr1, arrayList (arr2))
+		|	[Named (_, None), _] -> true
+		|	[Named (_, Some (p1)), v] -> match (v, p1)
+	esac
+}
+
+
+
+fun mathcRec (v, pattens) {
+	case pattens of 
+		[pattern, expr] : oterpatterns -> (
+			if (match (v, pattern))
+			then expr
+			else mathcRec (v, oterpatterns)
+			fi
+		)
+	esac
+}
+
+
+
 fun eval (c@[s, w], expr) {
-  failure ("evalExpr not implemented\n")
+	case expr of
+			Assn (expr1, expr2) -> 
+				case eval (c, expr1) of
+						[c1, Ref(name)] -> 
+							case eval (c1, expr2) of 
+								[c2@[st2, w2], value] ->
+									[[st2 <- [name, Var (value)], w2], value]
+							esac
+					|	[c1, ElemRef (arr, i)] -> 
+							case eval (c1, expr2) of 
+								[c2, value] ->
+									arr[i] := value;
+									[c2, value]
+							esac
+				esac
+		|	Seq (expr1, expr2) -> (
+		    var res =  eval (c, expr1);
+			eval(res[0], expr2)
+		)
+		|	Skip -> [c, None]
+		|	Read (expr) -> (
+			case eval (c, expr) of 
+				[c1@[st1, w1], Ref(name)] -> (
+					case readWorld(w1) of 
+						[value, w2] -> [[st1 <- [name, value], w2], None]
+					esac
+				)
+			esac
+		)
+		|	Write   (expr) -> (
+			case eval (c, expr) of 
+				[[st1, w1], value] -> (
+					var w2 = writeWorld (value, w1);
+					[[st1, w2], None]
+				)
+			esac
+		)
+		|	If      (cond, thenExpr, elseExpr) -> (
+			case eval (c, cond) of 
+					[c1, 0] -> eval (c1, elseExpr)
+				|	[c1, _] -> eval (c1, thenExpr)
+			esac
+		)
+		|	While   (cond, body) -> (
+			case eval (c, cond) of
+					[c1, 0] -> [c1, None]
+				|	[c1, _] -> (
+						var res = eval (c1, body);
+						eval (res[0], While (cond, body))
+					)
+			esac
+		)
+		|	DoWhile (body, cond) ->  (
+			var res = eval (c, body);
+			eval (res[0], While (cond, body))
+		)
+		|	Var     (name) -> (
+			case lookup(s, name) of
+				Var (value) -> [c, value]
+			esac
+		)
+		|	Ref     (name) -> [c, Ref(name)]
+		|	Const   (value) -> [c, value]
+		|	Binop   (op, expr1, expr2) -> (
+			case eval (c, expr1)of 
+				[c1, res1] -> (
+					case eval (c1, expr2) of
+						[c2, res2] -> [c2, evalOp (op, res1, res2)]
+					esac
+				)
+			esac
+		)
+		|	Scope (deflist, expr) -> (
+			var s0 = enterScope (s);
+			var s1 = addDefinitions  (s0, deflist);
+			var res = eval ([s1, w], expr);
+			case res of 
+				[newc, resVal] -> (
+					case newc of 
+						[s2, neww] -> (
+							var news = leaveScope (s2);
+							[[news, neww], resVal]
+						)
+					esac
+				)
+			esac
+		)
+		|	Ignore  (expr) -> (
+				var res = eval(c, expr);
+				[res[0], None]
+			)
+		|	String (x) -> [c, x]
+		| Call (funName, args) -> (
+			case lookup (s, funName) of 
+				Fun (argsNames, body) -> (
+					case evalList(c, args) of
+						[c1@[s1, w1], argsRes] -> (
+							case body of 
+								External -> (
+										case evalBuiltin (funName, argsRes, w1) of 
+											[res, w2] -> [[s1, w2], res]
+										esac
+								)
+								|	_ -> (
+									var s2 = enterFunction(s1) . addArgs (argsNames, argsRes);
+									case eval ([s2, w1], body) of
+										[c3@[s3, w3], fres] -> (
+											var s4 = leaveFunction (s, getGlobal(s3));
+											[[s4, w3], fres]
+										)
+									esac
+								)
+								
+							esac
+						)
+					esac
+				)
+			esac
+		)
+		|	Array (elems) -> (
+			case evalList (c, elems) of 
+				[newc, elemRes] -> [newc, listArray(elemRes)]
+			esac
+		)
+		|	Elem (arr, i) -> (
+			case eval (c, arr) of
+				[c1, arrRes] -> (
+					case eval (c1, i) of 
+						[newc, iRes] -> (
+							case arrRes of 
+									Sexp (name, arr) -> [newc, arr[iRes]]
+								|	_ -> [newc, arrRes[iRes]]
+							esac
+						
+						)
+					esac
+				)
+			esac
+		)
+		|	ElemRef (arr, i) -> (
+			case eval (c, arr) of
+				[c1, arrRes] -> (
+					case eval (c1, i) of 
+						[newc, iRes] -> (
+							case arrRes of 
+									Sexp (name, arr) -> [newc, ElemRef(arr, iRes)]
+								|	_ -> [newc, ElemRef(arrRes, iRes)]
+							
+							esac
+						)
+					esac
+				)
+			esac
+		)
+		|	Sexp (name, elems) -> (
+			case evalList (c, elems) of
+				[newc, elemsRes] -> (
+					[newc, Sexp (name, listArray(elemsRes))]
+				)
+			esac
+		)
+		| Case (name, patterns) -> (
+			case lookup (s, name) of 
+				Var (v) ->  (
+					var res = mathcRec (v, patterns);
+					eval (c, res)
+				)
+			esac
+		)
+		
+		  
+			  
+			
+	esac
 }
 
 
